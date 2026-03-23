@@ -86,13 +86,24 @@
 ## 核心组件
 
 - `cwma/apps/cpa_warden.py`：兼容上游的扫描/维护/上传 CLI 实现
-- `cwma/apps/auto_maintain.py`：面向 Windows 的调度与目录监听实现
+- `cwma/auto/app.py`：面向 Windows 的调度与目录监听主编排入口
+- `cwma/apps/auto_maintain.py`：保留历史包路径的兼容适配层
 - `cwma/scheduler/smart_scheduler.py`：上传/维护批次决策的调度策略模型
+- `cwma/common/config_parsing.py` + `cwma/auto/config.py`：公共配置解析工具与 watcher 设置加载/模型模块
+- `cwma/auto/snapshots.py`：从运行编排中抽出的纯快照逻辑模块
+- `cwma/auto/locking.py`：从 watcher 运行时抽出的单实例锁模块（含 Windows 文件锁行为）
+- `cwma/auto/dashboard.py`：从 watcher 中抽出的终端仪表盘格式化与着色纯函数模块
+- `cwma/auto/process_output.py`：从 watcher 中抽出的子进程输出解码/告警过滤/环境变量构建模块
+- `cwma/auto/progress_parser.py`：从 watcher 中抽出的子进程日志到进度状态的解析规则模块
+- `cwma/auto/output_pump.py`：从 watcher 中抽出的子进程输出写入与泵线程启动模块
+- `cwma/auto/zip_intake.py`：从 watcher 中抽出的 ZIP 路径/签名探测与解压后端模块
+- `cwma/auto/process_runner.py`：从 watcher 中抽出的子进程启动/终止编排辅助模块
 - `auto_maintain.py` / `cpa_warden.py` / `smart_scheduler.py`：根目录兼容入口（保持现有脚本/命令可用）
 - `auto_maintain.bat`：`uv -> python` 回退启动器
 - `start_auto_maintain_optimized.bat`：生产化参数模板
 - `auto_maintain.config.example.json`：watcher 配置模板
 - `tests/test_auto_maintain.py`：调度与文件生命周期回归测试
+- `tests/test_auto_modules.py`：`config` / `locking` / `dashboard` / `process_output` / `progress_parser` / `output_pump` / `zip_intake` / `process_runner` 抽取模块级测试
 
 ## 环境要求
 

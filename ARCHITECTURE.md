@@ -11,20 +11,209 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Entry point: `main()` via root compatibility script `cpa_warden.py`
 - Public interface: CLI modes (`scan`, `maintain`, `upload`, `maintain-refill`) and related flags
 - Responsibility: core CPA API interactions, account classification, actions, and exports
-- Test coverage status: currently validated through CLI checks and production usage; no dedicated unit-test module yet
+- Internal note: CLI argument parsing is delegated to `cwma/warden/cli.py` while keeping app-layer compatibility wrapper `parse_args(...)`
+- Internal note: interactive prompt primitives are delegated to `cwma/warden/interactive.py` via app-layer wrappers
+- Test coverage status: currently validated through CLI checks, production usage, and module tests (`tests/test_warden_cli_module.py`, `tests/test_warden_interactive_module.py`)
 
-### `cwma/apps/auto_maintain.py`
+### `cwma/warden/cli.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `build_parser`, `parse_cli_args`
+- Responsibility: centralized CPA warden CLI parser construction and argument parsing
+- Test file: `tests/test_warden_cli_module.py`
+
+### `cwma/warden/interactive.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `prompt_string`, `prompt_int`, `prompt_float`, `prompt_yes_no`, `prompt_choice`
+- Responsibility: reusable interactive prompt primitives for string/number/boolean/choice input handling
+- Test file: `tests/test_warden_interactive_module.py`
+
+### `cwma/auto/app.py`
 
 - Entry point: `main()` via root compatibility script `auto_maintain.py`
 - Public interface: `--watch-config`, environment-variable overrides, and `--once`
 - Responsibility: orchestration loop, upload/maintain concurrency, snapshotting, lock control, ZIP intake, retry/fail-fast policy
+- Internal note: runtime upload/maintain state transitions are now funneled through centralized adapter methods to reduce duplicated field wiring and keep lifecycle paths consistent
+- Internal note: startup/watch-iteration orchestration branches were extracted into dedicated coordinator methods to reduce `run()` complexity
+- Internal note: run-once completion checks, watch-cycle sleep policy, and stage-failure resolution are coordinated through dedicated helper methods
+- Internal note: startup/watch stage execution now goes through a unified `_run_stage(...)` helper for consistent failure gating
+- Internal note: channel-specific success side effects are routed through dedicated handlers (`_handle_maintain_success` / `_handle_upload_success`) to isolate post-success orchestration
+- Internal note: upload start path is decomposed into dedicated helper steps (batch sizing, start decision, start payload prep, process launch) to keep channel lifecycle branches small and testable
+- Internal note: non-success process-exit feedback application is deduplicated through `_apply_non_success_process_exit_feedback(...)` for maintain/upload poll paths
+- Internal note: maintain/upload poll prelude now uses `_collect_exited_process_code(...)` to standardize exited-process collection + process-handle clearing
+- Internal note: upload-success postprocess path is decomposed into dedicated helper steps (snapshot sync, queue/progress apply, follow-up deep check, post-upload maintain queueing)
+- Internal note: maintain/upload poll lifecycle decision apply paths are deduplicated through `_decide_maintain_process_exit(...)` and `_decide_upload_process_exit(...)`
+- Internal note: upload deep-scan path (`check_and_maybe_upload`) is decomposed into dedicated helper steps for scan inputs, cadence gate, stability resolve, and queue/no-change state transitions
+- Internal note: active-upload source probe path is decomposed into dedicated helper steps for probe input capture, decision, state apply, and refresh dispatch
+- Internal note: maintain/upload poll decision dispatch is decomposed into dedicated helper methods (`_handle_maintain_poll_decision` / `_handle_upload_poll_decision`) for consistent success/shutdown/non-success routing
+- Internal note: maintain/upload start-error lifecycle now routes through dedicated decision + retry-feedback helpers to keep channel failure paths symmetric
+- Internal note: maintain/upload subprocess launch wiring is centralized via `_start_channel_process(...)`; maintain pre-start guards/skip handling are split into focused helpers
+- Internal note: upload deep-scan no-change/no-pending branches now share `_record_upload_scan_baseline(...)` to keep snapshot/count/signature updates consistent
+- Internal note: startup/watch multi-stage execution now reuses `_run_stage_sequence(...)` for consistent ordered execution and fail-fast short-circuiting
+- Internal note: startup configuration log emission is centralized through `_settings_log_rows(...)` to reduce duplicated output wiring
+- Internal note: upload cleanup core logic is extracted to `cwma/auto/upload_cleanup.py`; app-layer methods now focus on orchestration + logging
+- Internal note: progress panel rendering now uses `cwma/auto/panel_render.py` pure helpers, with `render_progress_snapshot` split into snapshot build, line composition, and signature-gate steps
+- Internal note: startup bootstrap decisions are extracted to `cwma/auto/startup_flow.py` (`seed`, `zip follow-up`, `startup action plan`) with `_run_startup_phase` focused on orchestration
+- Internal note: watch-cycle due-maintain advancement and upload-check gating are extracted to `cwma/auto/watch_cycle.py` for pure decision logic reuse
 - Test file: `tests/test_auto_maintain.py`
+
+### `cwma/apps/auto_maintain.py`
+
+- Entry point: package-compatibility adapter for legacy imports and script paths
+- Public interface: compatibility alias to `cwma/auto/app.py`
+- Responsibility: keep existing `cwma.apps.auto_maintain` import targets stable during/after Stage-2 refactor
 
 ### `cwma/scheduler/smart_scheduler.py`
 
-- Entry point: imported by `cwma/apps/auto_maintain.py`
+- Entry point: imported by `cwma/auto/app.py`
 - Public interface: `SmartSchedulerConfig`, `SmartSchedulerPolicy`
 - Responsibility: centralized scheduling policy decisions for adaptive upload batching and incremental maintain deferral rules
+
+### `cwma/common/config_parsing.py`
+
+- Entry point: imported by `cwma/auto/app.py` and `cwma/apps/cpa_warden.py`
+- Public interface: `parse_bool_value`, `parse_int_value`, `resolve_path`, `load_json_object`, `pick_setting`
+- Responsibility: shared strict config parsing and JSON/path helpers for cross-app consistency
+
+### `cwma/auto/config.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `Settings`, `load_watch_config`, `load_settings`
+- Responsibility: watcher settings model + env/watch-config/default resolution
+
+### `cwma/auto/channel_commands.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `build_maintain_command`, `build_upload_command`, `format_maintain_start_message`, `format_upload_start_message`
+- Responsibility: channel command assembly and start-log message formatting helpers
+
+### `cwma/auto/channel_lifecycle.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `decide_maintain_start_error`, `decide_upload_start_error`, `decide_maintain_process_exit`, `decide_upload_process_exit`
+- Responsibility: channel lifecycle decisions (start-error + process-exit retry/success/failure/shutdown) as pure functions
+
+### `cwma/auto/channel_runner.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `ChannelStartResult`, `ProcessPollResult`, `start_channel_with_handler`, `poll_process_exit`
+- Responsibility: shared channel start/poll wrappers that bridge low-level process launch with start-error handling and process-exit probing
+
+### `cwma/auto/channel_feedback.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: message/stage helpers such as `format_command_*`, `maintain_pending_progress_stage`, `non_success_exit_progress_stage`, `build_non_success_exit_feedback`
+- Responsibility: centralize channel-facing lifecycle log text and status-to-progress-stage mapping to avoid duplicated branch text in maintain/upload orchestration
+
+### `cwma/auto/channel_start_prep.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `MaintainStartPrep`, `UploadStartPrep`, `prepare_maintain_start`, `prepare_upload_start`
+- Responsibility: centralize channel start preparation payloads (scope-file derivation, command assembly, start-log context) before process launch
+
+### `cwma/auto/channel_status.py`
+
+- Entry point: imported by auto-maintain modules
+- Public interface: channel/stage/state/status constants (e.g. `CHANNEL_UPLOAD`, `STAGE_PENDING`, `STATUS_RETRY`)
+- Responsibility: single source of truth for channel and progress-status string constants to avoid drift across parser/dashboard/lifecycle modules
+
+### `cwma/auto/snapshots.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `build_snapshot_lines`, `write_snapshot_lines`, `read_snapshot_lines`, `build_snapshot_file`, `compute_uploaded_baseline`, `compute_pending_upload_snapshot`, `extract_names_from_snapshot`
+- Responsibility: snapshot line/file helpers and pure baseline/name-scope transformations isolated from runtime orchestration
+
+### `cwma/auto/locking.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `InstanceLockState`, `acquire_instance_lock`, `release_instance_lock`, `is_pid_running`, `read_lock_pid`
+- Responsibility: single-instance lock acquisition/release and stale-lock detection, including Windows file-lock path
+
+### `cwma/auto/dashboard.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `fit_panel_line`, `panel_border_line`, `apply_panel_colors`
+- Responsibility: pure terminal panel layout/color helpers reused by watcher dashboard rendering
+
+### `cwma/auto/panel_snapshot.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `PanelSnapshot`, `build_panel_snapshot`
+- Responsibility: pure dashboard snapshot composition from runtime state (queue/progress/state/retry metrics), isolated from rendering side effects
+
+### `cwma/auto/process_output.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `preferred_decoding_order`, `decode_child_output_line`, `build_child_process_env`, `should_log_child_alert_line`
+- Responsibility: child-process output decoding order, subprocess env defaults, and alert-line filtering
+
+### `cwma/auto/progress_parser.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `ProgressUpdate`, `ProgressParseResult`, `parse_progress_line`
+- Responsibility: parse upload/maintain child log lines into normalized progress-state updates
+- Internal note: maintain progress stage mapping is centralized as module-level constants to avoid inline map drift
+
+### `cwma/auto/runtime_state.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `build_upload_queue_state`, `unpack_upload_queue_state`, `build_maintain_queue_state`, `unpack_maintain_queue_state`, `build_maintain_runtime_state`, `unpack_maintain_runtime_state`
+- Responsibility: pure conversion helpers between orchestrator runtime fields and queue/runtime dataclasses
+
+### `cwma/auto/upload_postprocess.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `build_upload_success_postprocess`, `UploadSuccessPostProcessResult`
+- Responsibility: post-upload success pipeline decisions (uploaded baseline merge, pending snapshot derivation, queue/progress state, uploaded-name extraction)
+
+### `cwma/auto/active_probe.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `ActiveUploadProbeState`, `ActiveUploadProbeDecision`, `decide_active_upload_probe`
+- Responsibility: active-upload source-change probe decision state machine (change detection, detection logging gate, deep-scan cooldown gate)
+
+### `cwma/auto/upload_scan_cadence.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `UploadScanCadenceDecision`, `decide_upload_deep_scan`
+- Responsibility: pure deep-scan cadence decision for upload watcher checks (force/retry/change/interval triggers and counter transitions)
+
+### `cwma/auto/scope_files.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `write_scope_names`
+- Responsibility: maintain/upload scope-file serialization shared by both channels
+
+### `cwma/auto/maintain_queue.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `MaintainQueueState`, `MaintainStartDecision`, `MaintainRuntimeState`, `QueueMaintainResult`, `clear_maintain_queue_state`, `queue_maintain_request`, `decide_maintain_start_scope`, `merge_incremental_maintain_names`, `mark_maintain_retry`, `mark_maintain_runtime_retry`, `mark_maintain_success`, `mark_maintain_terminal_failure`
+- Responsibility: maintain queue + lifecycle transitions for full/incremental requests, start-scope slicing, and retry/success/failure state handling
+
+### `cwma/auto/upload_queue.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `UploadQueueState`, `UploadStartDecision`, `UploadMergeResult`, `clear_upload_queue_state`, `decide_upload_start`, `mark_upload_retry`, `mark_upload_success`, `mark_upload_terminal_failure`, `mark_upload_no_changes`, `mark_upload_no_pending_discovered`, `merge_pending_upload_snapshot`
+- Responsibility: upload queue normalization plus start/retry/success/failure and deep-scan queue reconciliation transitions
+
+### `cwma/auto/output_pump.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `append_child_output_line`, `start_output_pump_thread`
+- Responsibility: append child output lines to channel log files and run pump threads over child stdout
+
+### `cwma/auto/process_runner.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `launch_child_command`, `start_channel_command`, `terminate_running_process`
+- Responsibility: generic child command launch/start and graceful terminate/kill fallback behavior
+
+### `cwma/auto/zip_intake.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `list_zip_paths`, `compute_zip_signature`, `count_zip_files`, `list_zip_json_entries`, `extract_zip_with_bandizip`, `extract_zip_with_windows_builtin`, `inspect_zip_archives`
+- Responsibility: ZIP path/signature discovery plus extraction/inspection orchestration for watcher intake flow
 
 ### Compatibility Entrypoints (`repo root`)
 
@@ -156,3 +345,4 @@ Default state directory: `.auto_maintain_state`
 - Runtime state directory is ignored.
 - `auth_files` keeps only `.gitkeep` tracked.
 - Sensitive local config (`config.json`) is ignored.
+

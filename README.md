@@ -86,13 +86,24 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
 ## Key Components
 
 - `cwma/apps/cpa_warden.py`: upstream-compatible CPA scanner / maintainer / uploader CLI implementation
-- `cwma/apps/auto_maintain.py`: Windows-oriented scheduler and watcher implementation
+- `cwma/auto/app.py`: Windows-oriented scheduler and watcher orchestrator host
+- `cwma/apps/auto_maintain.py`: compatibility adapter for legacy package import paths
 - `cwma/scheduler/smart_scheduler.py`: scheduling policy model for upload/maintain batch decisions
+- `cwma/common/config_parsing.py` + `cwma/auto/config.py`: shared config parsing utilities plus watcher settings loader/model
+- `cwma/auto/snapshots.py`: pure snapshot helpers extracted from runtime orchestration
+- `cwma/auto/locking.py`: single-instance lock backend (including Windows file-lock behavior) extracted from watcher runtime
+- `cwma/auto/dashboard.py`: terminal panel formatting/color helpers extracted as pure rendering helpers
+- `cwma/auto/process_output.py`: child-process output decoding/alert filtering/environment helpers extracted for process supervision reuse
+- `cwma/auto/progress_parser.py`: child log-line to progress-state parsing rules extracted as reusable pure parser
+- `cwma/auto/output_pump.py`: child-process output append/pump thread helpers extracted for process supervision reuse
+- `cwma/auto/zip_intake.py`: ZIP path/signature discovery and extraction backend helpers extracted for intake pipeline reuse
+- `cwma/auto/process_runner.py`: child process launch/terminate helpers extracted for command supervision reuse
 - `auto_maintain.py` / `cpa_warden.py` / `smart_scheduler.py`: root-level compatibility entrypoints (existing scripts/commands keep working)
 - `auto_maintain.bat`: launcher with `uv -> python` fallback
 - `start_auto_maintain_optimized.bat`: tuned profile for production-like unattended runs
 - `auto_maintain.config.example.json`: watcher profile template
 - `tests/test_auto_maintain.py`: regression tests for scheduling and file lifecycle behavior
+- `tests/test_auto_modules.py`: module-level tests for extracted `config` / `locking` / `dashboard` / `process_output` / `progress_parser` / `output_pump` / `zip_intake` / `process_runner` helpers
 
 ## Requirements
 
