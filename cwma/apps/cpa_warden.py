@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import getpass
 import hashlib
 import json
 import logging
@@ -20,6 +19,16 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from ..common import load_json_object as load_json_object_common
+from ..common import parse_bool_value as parse_bool_common
+from ..warden.cli import parse_cli_args
+from ..warden.interactive import (
+    prompt_choice as prompt_choice_interactive,
+    prompt_float as prompt_float_interactive,
+    prompt_int as prompt_int_interactive,
+    prompt_string as prompt_string_interactive,
+    prompt_yes_no as prompt_yes_no_interactive,
+)
 
 try:
     import aiohttp
@@ -439,20 +448,17 @@ def config_lookup(conf: dict[str, Any], *keys: str, default: Any = None) -> Any:
 
 
 def parse_bool_config(value: Any, *, key: str) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        if value in {0, 1}:
-            return bool(value)
-        raise RuntimeError(f"{key} 必须是布尔值（true/false 或 1/0），当前={value!r}")
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "y", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "n", "off"}:
-            return False
-        raise RuntimeError(f"{key} 必须是布尔值（true/false 或 1/0），当前={value!r}")
-    raise RuntimeError(f"{key} 必须是布尔值（true/false 或 1/0），当前类型={type(value).__name__}")
+    try:
+        return parse_bool_common(
+            key,
+            value,
+            true_values={"1", "true", "yes", "y", "on"},
+            false_values={"0", "false", "no", "n", "off"},
+        )
+    except ValueError:
+        if isinstance(value, (bool, int, str)):
+            raise RuntimeError(f"{key} 必须是布尔值（true/false 或 1/0），当前={value!r}") from None
+        raise RuntimeError(f"{key} 必须是布尔值（true/false 或 1/0），当前类型={type(value).__name__}") from None
 
 
 def load_config_json(path: str, required: bool = False) -> dict[str, Any]:
@@ -463,12 +469,9 @@ def load_config_json(path: str, required: bool = False) -> dict[str, Any]:
         return {}
 
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception as exc:
+        data = load_json_object_common(p, encoding="utf-8")
+    except ValueError as exc:
         raise RuntimeError(f"读取配置文件失败: {exc}") from exc
-
-    if not isinstance(data, dict):
-        raise RuntimeError("配置文件格式错误: 顶层必须是 JSON 对象")
 
     return data
 
@@ -2946,67 +2949,28 @@ async def run_maintain_refill_async(conn: sqlite3.Connection, settings: dict[str
 
 
 def prompt_string(label: str, default: str, *, secret: bool = False) -> str:
-    shown_default = default or "空"
-    prompt = f"{label}（默认 {shown_default}）: "
-    raw = getpass.getpass(prompt) if secret else input(prompt)
-    raw = raw.strip()
-    return raw or default
+    return prompt_string_interactive(label, default, secret=secret)
 
 
 def prompt_int(label: str, default: int, *, min_value: int = 0) -> int:
-    raw = input(f"{label}（默认 {default}）: ").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except Exception:
-        print("输入无效，使用默认值。")
-        return default
-    if value < min_value:
-        print(f"输入过小，使用最小值 {min_value}。")
-        return min_value
-    return value
+    return prompt_int_interactive(label, default, min_value=min_value)
 
 
 def prompt_float(label: str, default: float, *, min_value: float = 0.0, max_value: float | None = None) -> float:
-    raw = input(f"{label}（默认 {default:g}）: ").strip()
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except Exception:
-        print("输入无效，使用默认值。")
-        return default
-    if value < min_value:
-        print(f"输入过小，使用最小值 {min_value:g}。")
-        return min_value
-    if max_value is not None and value > max_value:
-        print(f"输入过大，使用最大值 {max_value:g}。")
-        return max_value
-    return value
+    return prompt_float_interactive(
+        label,
+        default,
+        min_value=min_value,
+        max_value=max_value,
+    )
 
 
 def prompt_yes_no(label: str, default: bool) -> bool:
-    default_text = "yes" if default else "no"
-    raw = input(f"{label}（默认 {default_text}）[yes/no]: ").strip().lower()
-    if not raw:
-        return default
-    if raw in {"y", "yes"}:
-        return True
-    if raw in {"n", "no"}:
-        return False
-    print("输入无效，使用默认值。")
-    return default
+    return prompt_yes_no_interactive(label, default)
 
 
 def prompt_choice(label: str, options: list[str], default: str) -> str:
-    raw = input(f"{label}（默认 {default}）[{ '/'.join(options) }]: ").strip().lower()
-    if not raw:
-        return default
-    if raw in options:
-        return raw
-    print("输入无效，使用默认值。")
-    return default
+    return prompt_choice_interactive(label, options, default)
 
 
 def choose_mode_interactive() -> str:
@@ -3099,70 +3063,7 @@ def ensure_credentials(settings: dict[str, Any], interactive: bool) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="基于 auth-files + wham/usage + auth-files 上传的交互式 CPA 账号维护脚本")
-    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="配置文件路径（默认: config.json）")
-    parser.add_argument("--mode", choices=["scan", "maintain", "upload", "maintain-refill"], help="运行模式")
-    parser.add_argument("--target-type", help="按 files[].type 过滤")
-    parser.add_argument("--provider", help="按 provider 过滤")
-    parser.add_argument("--probe-workers", type=int, help="api-call 探测并发")
-    parser.add_argument("--action-workers", type=int, help="删除/禁用/启用并发")
-    parser.add_argument("--timeout", type=int, help="请求超时秒数")
-    parser.add_argument("--retries", type=int, help="单账号探测失败重试次数")
-    parser.add_argument("--delete-retries", type=int, help="删除动作失败重试次数")
-    parser.add_argument("--user-agent", help="wham/usage 探测使用的 User-Agent")
-    parser.add_argument("--quota-action", choices=["disable", "delete"], help="限额账号处理动作")
-    parser.add_argument("--quota-disable-threshold", type=float, help="剩余额度比例触发禁用阈值（0~1，默认 0 表示仅耗尽）")
-    parser.add_argument("--maintain-names-file", help="维护范围名称文件（每行一个 auth 名称，仅 maintain 模式生效）")
-    parser.add_argument("--upload-names-file", help="上传范围名称文件（每行一个 auth 名称，仅 upload 模式生效）")
-    parser.add_argument("--db-path", help="SQLite 状态库路径")
-    parser.add_argument("--invalid-output", help="401 导出文件路径")
-    parser.add_argument("--quota-output", help="限额导出文件路径")
-    parser.add_argument("--log-file", help="日志文件路径")
-    parser.add_argument("--debug", action="store_true", help="开启调试模式，在终端打印更详细信息")
-    parser.add_argument("--upload-dir", help="upload 模式下认证文件目录")
-    parser.add_argument("--upload-workers", type=int, help="upload 模式并发数")
-    parser.add_argument("--upload-retries", type=int, help="upload 模式失败重试次数")
-    parser.add_argument("--upload-method", choices=["json", "multipart"], help="upload 模式上传方式")
-    parser.add_argument("--min-valid-accounts", type=int, help="maintain-refill 模式下最小有效账号阈值")
-    parser.add_argument("--refill-strategy", choices=["to-threshold", "fixed"], help="maintain-refill 模式补充策略")
-    parser.add_argument("--register-command", help="外部注册命令（仅 maintain-refill + auto_register）")
-    parser.add_argument("--register-timeout", type=int, help="外部注册命令超时秒数")
-    parser.add_argument("--register-workdir", help="外部注册命令工作目录")
-    upload_force_group = parser.add_mutually_exclusive_group()
-    upload_force_group.add_argument("--upload-force", dest="upload_force", action="store_true", help="upload 模式强制上传远端同名文件")
-    upload_force_group.add_argument("--no-upload-force", dest="upload_force", action="store_false", help="upload 模式不强制上传远端同名文件")
-
-    delete_group = parser.add_mutually_exclusive_group()
-    delete_group.add_argument("--delete-401", dest="delete_401", action="store_true", help="维护模式下自动删除 401")
-    delete_group.add_argument("--no-delete-401", dest="delete_401", action="store_false", help="维护模式下不删除 401")
-
-    reenable_group = parser.add_mutually_exclusive_group()
-    reenable_group.add_argument("--auto-reenable", dest="auto_reenable", action="store_true", help="维护模式下自动启用恢复账号")
-    reenable_group.add_argument("--no-auto-reenable", dest="auto_reenable", action="store_false", help="维护模式下不自动启用恢复账号")
-    parser.add_argument(
-        "--reenable-scope",
-        choices=["signal", "managed"],
-        help="自动恢复候选范围：signal=按实时信号，managed=仅恢复本工具曾禁用账号",
-    )
-
-    register_group = parser.add_mutually_exclusive_group()
-    register_group.add_argument("--auto-register", dest="auto_register", action="store_true", help="maintain-refill 模式不足时启用外部注册命令")
-    register_group.add_argument("--no-auto-register", dest="auto_register", action="store_false", help="maintain-refill 模式不足时不启用外部注册命令")
-
-    recursive_group = parser.add_mutually_exclusive_group()
-    recursive_group.add_argument("--upload-recursive", dest="upload_recursive", action="store_true", help="upload 模式递归扫描子目录")
-    recursive_group.add_argument("--no-upload-recursive", dest="upload_recursive", action="store_false", help="upload 模式仅扫描当前目录")
-
-    parser.set_defaults(
-        delete_401=None,
-        auto_reenable=None,
-        auto_register=None,
-        debug=None,
-        upload_recursive=None,
-        upload_force=None,
-    )
-    parser.add_argument("--yes", action="store_true", help="跳过删除确认")
-    return parser.parse_args()
+    return parse_cli_args(DEFAULT_CONFIG_PATH)
 
 
 def run_async_or_exit(coro: Any) -> Any:
