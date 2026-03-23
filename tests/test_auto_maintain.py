@@ -211,6 +211,49 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertTrue(maintainer.pending_maintain)
             self.assertEqual(maintainer.pending_maintain_names, {"a.json", "b.json"})
 
+    def test_can_start_maintain_while_upload_channel_is_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+
+            maintainer.upload_process = _DoneProcess(0)
+            maintainer.queue_maintain("scheduled maintain")
+
+            with mock.patch("auto_maintain.subprocess.Popen", return_value=_DoneProcess(0)) as popen:
+                result = maintainer.maybe_start_maintain()
+
+            self.assertEqual(result, 0)
+            self.assertIsNotNone(maintainer.maintain_process)
+            self.assertEqual(popen.call_count, 1)
+            cmd = popen.call_args.args[0]
+            self.assertIn("--mode", cmd)
+            self.assertIn("maintain", cmd)
+
+    def test_can_start_upload_while_maintain_channel_is_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+
+            maintainer.maintain_process = _DoneProcess(0)
+            maintainer.pending_upload_snapshot = ["dummy|1|1"]
+            maintainer.pending_upload_reason = "detected JSON changes"
+
+            with mock.patch("auto_maintain.subprocess.Popen", return_value=_DoneProcess(0)) as popen:
+                result = maintainer.maybe_start_upload()
+
+            self.assertEqual(result, 0)
+            self.assertIsNotNone(maintainer.upload_process)
+            self.assertEqual(popen.call_count, 1)
+            cmd = popen.call_args.args[0]
+            self.assertIn("--mode", cmd)
+            self.assertIn("upload", cmd)
+
 
 if __name__ == "__main__":
     unittest.main()
