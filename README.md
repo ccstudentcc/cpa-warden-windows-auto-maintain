@@ -69,6 +69,7 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
 - `auto_maintain.py`: Windows-oriented scheduler and watcher
 - `auto_maintain.bat`: launcher with `uv -> python` fallback
 - `start_auto_maintain_optimized.bat`: tuned profile for production-like unattended runs
+- `auto_maintain.config.example.json`: watcher profile template
 - `tests/test_auto_maintain.py`: regression tests for scheduling and file lifecycle behavior
 
 ## Requirements
@@ -97,12 +98,18 @@ Set at least:
 - `base_url`
 - `token`
 
-3. Keep `auth_files` as an input directory placeholder.
+3. Prepare watcher profile configuration.
+
+```bash
+copy auto_maintain.config.example.json auto_maintain.config.json
+```
+
+4. Keep `auth_files` as an input directory placeholder.
 
 - This repo tracks only `auth_files/.gitkeep`.
 - Runtime JSON/ZIP files under `auth_files` are ignored by git.
 
-4. Start the optimized watcher profile.
+5. Start the optimized watcher profile.
 
 ```bat
 start_auto_maintain_optimized.bat
@@ -112,6 +119,7 @@ start_auto_maintain_optimized.bat
 
 - `.auto_maintain_state/` is runtime-only and ignored by git.
 - `auth_files/*` is ignored except `auth_files/.gitkeep`.
+- `auto_maintain.config.json` is local runtime profile and ignored by git.
 - Recommended runtime artifacts stay outside commits:
 - `.auto_maintain_state/cpa_warden_maintain.sqlite3`
 - `.auto_maintain_state/cpa_warden_upload.sqlite3`
@@ -124,11 +132,13 @@ start_auto_maintain_optimized.bat
 
 ## Operational Defaults In Optimized Launcher
 
-`start_auto_maintain_optimized.bat` currently enables:
+`start_auto_maintain_optimized.bat` now reads `auto_maintain.config.json` (or creates it from `auto_maintain.config.example.json` on first run).
+
+Current template defaults (`auto_maintain.config.example.json`):
 
 - maintain interval: `2400s`
-- watch interval: `30s`
-- upload stable wait: `10s`
+- watch interval: `15s`
+- upload stable wait: `5s`
 - deep scan interval: `120` loops
 - maintain after upload: enabled
 - delete uploaded source JSON: enabled
@@ -136,12 +146,13 @@ start_auto_maintain_optimized.bat
 - single-instance lock: enabled
 - fail-fast on command failure: enabled
 
-It also supports custom `BANDIZIP_PATH` from environment and falls back to `D:\Bandizp\Bandizip.exe` only when not set.
+It also keeps env override capability for all watcher settings.
 
 ## Useful Environment Variables
 
 Main variables consumed by `auto_maintain.py`:
 
+- `WATCH_CONFIG_PATH`
 - `AUTH_DIR`, `CONFIG_PATH`, `STATE_DIR`
 - `MAINTAIN_DB_PATH`, `UPLOAD_DB_PATH`
 - `MAINTAIN_LOG_FILE`, `UPLOAD_LOG_FILE`
@@ -154,10 +165,16 @@ Main variables consumed by `auto_maintain.py`:
 - `INSPECT_ZIP_FILES`, `AUTO_EXTRACT_ZIP_JSON`, `DELETE_ZIP_AFTER_EXTRACT`
 - `BANDIZIP_PATH`, `BANDIZIP_TIMEOUT_SECONDS`, `USE_WINDOWS_ZIP_FALLBACK`
 
+Precedence:
+
+- Environment variables
+- `--watch-config` / `WATCH_CONFIG_PATH` JSON file
+- Built-in defaults
+
 One-cycle dry run:
 
 ```bash
-uv run python auto_maintain.py --once
+uv run python auto_maintain.py --watch-config ./auto_maintain.config.json --once
 ```
 
 ## Core CLI Compatibility

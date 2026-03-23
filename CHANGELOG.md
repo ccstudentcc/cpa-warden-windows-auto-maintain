@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Added `NOTICE` with explicit upstream attribution to `fantasticjoe/cpa-warden` and derivative baseline commit `f3778f4`
 - Added `ARCHITECTURE.md` describing module responsibilities, runtime flow, and state files for the Windows automation stack
+- Added `auto_maintain.config.example.json` as a tracked watcher profile template
+- Added watcher CLI option `--watch-config` (`WATCH_CONFIG_PATH` supported) for loading watcher settings from JSON
 
 ### Changed
 
@@ -35,6 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Replaced silent exception swallowing in critical runtime paths with warning logs
 - Launcher now relies on Python-side lock arbitration instead of pre-filtering by PID reuse in batch script
 - Corrected default Bandizip path spelling in optimized launcher profile
+- `start_auto_maintain_optimized.bat` now bootstraps and uses `auto_maintain.config.json` instead of hardcoding watcher env values
+- Watcher setting resolution now follows: environment variables > watch config JSON > built-in defaults
 
 ## [0.2.0] - 2026-03-09
 

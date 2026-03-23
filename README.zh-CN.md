@@ -69,6 +69,7 @@
 - `auto_maintain.py`：面向 Windows 的调度与目录监听器
 - `auto_maintain.bat`：`uv -> python` 回退启动器
 - `start_auto_maintain_optimized.bat`：生产化参数模板
+- `auto_maintain.config.example.json`：watcher 配置模板
 - `tests/test_auto_maintain.py`：调度与文件生命周期回归测试
 
 ## 环境要求
@@ -97,12 +98,18 @@ copy config.example.json config.json
 - `base_url`
 - `token`
 
-3. 保持 `auth_files` 作为输入目录占位。
+3. 准备 watcher 配置文件。
+
+```bash
+copy auto_maintain.config.example.json auto_maintain.config.json
+```
+
+4. 保持 `auth_files` 作为输入目录占位。
 
 - 仓库只跟踪 `auth_files/.gitkeep`
 - `auth_files` 下运行期 JSON/ZIP 文件均被 git 忽略
 
-4. 启动优化配置。
+5. 启动优化配置。
 
 ```bat
 start_auto_maintain_optimized.bat
@@ -112,6 +119,7 @@ start_auto_maintain_optimized.bat
 
 - `.auto_maintain_state/` 仅用于运行时状态，已被 git 忽略
 - `auth_files/*` 被忽略，仅放行 `auth_files/.gitkeep`
+- `auto_maintain.config.json` 是本地运行配置，已被 git 忽略
 - 建议不纳入提交的运行产物：
 - `.auto_maintain_state/cpa_warden_maintain.sqlite3`
 - `.auto_maintain_state/cpa_warden_upload.sqlite3`
@@ -124,11 +132,13 @@ start_auto_maintain_optimized.bat
 
 ## 优化启动脚本默认策略
 
-`start_auto_maintain_optimized.bat` 当前默认：
+`start_auto_maintain_optimized.bat` 现在会读取 `auto_maintain.config.json`（首次运行若不存在，会从 `auto_maintain.config.example.json` 生成）。
+
+当前模板默认值（`auto_maintain.config.example.json`）：
 
 - 维护周期：`2400s`
-- 监听周期：`30s`
-- 上传稳定等待：`10s`
+- 监听周期：`15s`
+- 上传稳定等待：`5s`
 - 深度扫描间隔：`120` 次循环
 - 上传完成后触发维护：开启
 - 上传成功后删除源 JSON：开启
@@ -136,12 +146,13 @@ start_auto_maintain_optimized.bat
 - 单实例锁：开启
 - 命令失败即停：开启
 
-并且优先使用环境变量 `BANDIZIP_PATH`，仅在未设置时回退到 `D:\Bandizp\Bandizip.exe`。
+并且所有 watcher 配置都支持环境变量覆盖。
 
 ## 常用环境变量
 
 `auto_maintain.py` 主要读取：
 
+- `WATCH_CONFIG_PATH`
 - `AUTH_DIR`、`CONFIG_PATH`、`STATE_DIR`
 - `MAINTAIN_DB_PATH`、`UPLOAD_DB_PATH`
 - `MAINTAIN_LOG_FILE`、`UPLOAD_LOG_FILE`
@@ -154,10 +165,16 @@ start_auto_maintain_optimized.bat
 - `INSPECT_ZIP_FILES`、`AUTO_EXTRACT_ZIP_JSON`、`DELETE_ZIP_AFTER_EXTRACT`
 - `BANDIZIP_PATH`、`BANDIZIP_TIMEOUT_SECONDS`、`USE_WINDOWS_ZIP_FALLBACK`
 
+优先级：
+
+- 环境变量
+- `--watch-config` / `WATCH_CONFIG_PATH` 指定的 JSON 文件
+- 内置默认值
+
 单轮自检运行：
 
 ```bash
-uv run python auto_maintain.py --once
+uv run python auto_maintain.py --watch-config ./auto_maintain.config.json --once
 ```
 
 ## 核心 CLI 兼容性

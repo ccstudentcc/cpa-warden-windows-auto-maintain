@@ -35,6 +35,7 @@ uv run python -m unittest -v tests/test_auto_maintain.py
 Do not commit runtime artifacts:
 
 - `config.json`
+- `auto_maintain.config.json`
 - `.auto_maintain_state/*`
 - `auth_files/*` (except `auth_files/.gitkeep`)
 - local SQLite/log/export files

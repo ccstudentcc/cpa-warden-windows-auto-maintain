@@ -16,7 +16,7 @@ This repository provides a Windows-first automation layer on top of the CPA main
 ### `auto_maintain.py`
 
 - Entry point: `main()` via `uv run python auto_maintain.py`
-- Public interface: environment-variable-driven scheduler/watcher plus `--once`
+- Public interface: `--watch-config`, environment-variable overrides, and `--once`
 - Responsibility: orchestration loop, upload/maintain concurrency, snapshotting, lock control, ZIP intake, retry/fail-fast policy
 - Test file: `tests/test_auto_maintain.py`
 
@@ -29,8 +29,14 @@ This repository provides a Windows-first automation layer on top of the CPA main
 ### `start_auto_maintain_optimized.bat`
 
 - Entry point: operational profile launcher
-- Public interface: environment profile values and pass-through args
-- Responsibility: production-like defaults for interval, retry, state paths, ZIP handling, and lock behavior
+- Public interface: `auto_maintain.config.json` profile + pass-through args
+- Responsibility: bootstrap watcher profile file and launch `auto_maintain.py --watch-config ...`
+
+### `auto_maintain.config.example.json`
+
+- Entry point: copied to `auto_maintain.config.json` for local runtime usage
+- Public interface: JSON watcher profile keys mirroring watcher env names in snake_case
+- Responsibility: repository-tracked default profile for Windows automation runs
 
 ## Runtime Data Flow
 
@@ -40,6 +46,17 @@ This repository provides a Windows-first automation layer on top of the CPA main
 4. Upload completion updates baseline snapshot and optionally deletes uploaded files.
 5. Optional post-upload maintain is queued.
 6. Runtime state persists under `.auto_maintain_state`.
+
+## Settings Resolution Model
+
+- Watcher config JSON is loaded from:
+  - `--watch-config`
+  - or `WATCH_CONFIG_PATH`
+  - or local `auto_maintain.config.json` (if present)
+- Final setting precedence:
+  - environment variables
+  - watcher config JSON
+  - built-in defaults
 
 ## Concurrency Model
 

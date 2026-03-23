@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import argparse
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from auto_maintain import AutoMaintainer, Settings
+from auto_maintain import AutoMaintainer, Settings, load_settings
 
 
 class _DoneProcess:
@@ -21,6 +24,7 @@ def _build_settings(base_dir: Path, auth_dir: Path) -> Settings:
     state_dir = base_dir / "state"
     return Settings(
         base_dir=base_dir,
+        watch_config_path=None,
         auth_dir=auth_dir,
         state_dir=state_dir,
         config_path=None,
@@ -253,6 +257,49 @@ class AutoMaintainTests(unittest.TestCase):
             cmd = popen.call_args.args[0]
             self.assertIn("--mode", cmd)
             self.assertIn("upload", cmd)
+
+    def test_load_settings_reads_watch_config_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            watch_cfg = Path(tmp) / "watch.json"
+            watch_cfg.write_text(
+                json.dumps(
+                    {
+                        "watch_interval_seconds": 21,
+                        "upload_stable_wait_seconds": 3,
+                        "run_upload_on_start": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(once=False, watch_config=str(watch_cfg))
+            with mock.patch.dict(os.environ, {}, clear=True):
+                settings = load_settings(args)
+            self.assertEqual(settings.watch_interval_seconds, 21)
+            self.assertEqual(settings.upload_stable_wait_seconds, 3)
+            self.assertFalse(settings.run_upload_on_start)
+            self.assertEqual(settings.watch_config_path, watch_cfg)
+
+    def test_load_settings_env_overrides_watch_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            watch_cfg = Path(tmp) / "watch.json"
+            watch_cfg.write_text(
+                json.dumps(
+                    {
+                        "watch_interval_seconds": 30,
+                        "run_upload_on_start": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(once=False, watch_config=str(watch_cfg))
+            with mock.patch.dict(
+                os.environ,
+                {"WATCH_INTERVAL_SECONDS": "11", "RUN_UPLOAD_ON_START": "1"},
+                clear=True,
+            ):
+                settings = load_settings(args)
+            self.assertEqual(settings.watch_interval_seconds, 11)
+            self.assertTrue(settings.run_upload_on_start)
 
 
 if __name__ == "__main__":

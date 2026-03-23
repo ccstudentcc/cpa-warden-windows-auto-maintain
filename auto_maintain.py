@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import json
 import os
 import shutil
 import signal
@@ -21,27 +22,34 @@ def log(message: str) -> None:
     print(f"[{ts}] {message}", flush=True)
 
 
-def parse_bool_env(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    normalized = raw.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
+def parse_bool_value(name: str, raw: object) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, int):
+        if raw in {0, 1}:
+            return bool(raw)
+        raise ValueError(f"{name} must be 0/1/true/false/yes/no/on/off, got: {raw}")
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
     raise ValueError(f"{name} must be 0/1/true/false/yes/no/on/off, got: {raw}")
 
 
-def parse_int_env(name: str, default: int, minimum: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        value = default
-    else:
+def parse_int_value(name: str, raw: object, minimum: int) -> int:
+    if isinstance(raw, bool):
+        raise ValueError(f"{name} must be an integer, got: {raw}")
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, str):
         try:
             value = int(raw.strip())
         except ValueError as exc:
             raise ValueError(f"{name} must be an integer, got: {raw}") from exc
+    else:
+        raise ValueError(f"{name} must be an integer, got: {raw}")
     if value < minimum:
         raise ValueError(f"{name} must be >= {minimum}, got: {value}")
     return value
@@ -54,16 +62,35 @@ def resolve_path(base_dir: Path, raw: str) -> Path:
     return p
 
 
-def parse_path_env(base_dir: Path, name: str, default: str) -> Path:
-    raw = (os.getenv(name) or "").strip()
-    if not raw:
-        raw = default
-    return resolve_path(base_dir, raw)
+def load_watch_config(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid watch config JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Watch config root must be an object: {path}")
+    return payload
+
+
+def pick_setting(
+    env_name: str,
+    config_data: dict[str, object],
+    config_key: str,
+    default: object,
+) -> object:
+    env_raw = os.getenv(env_name)
+    if env_raw is not None and env_raw.strip() != "":
+        return env_raw.strip()
+    cfg_raw = config_data.get(config_key)
+    if cfg_raw is not None and not (isinstance(cfg_raw, str) and cfg_raw.strip() == ""):
+        return cfg_raw
+    return default
 
 
 @dataclass
 class Settings:
     base_dir: Path
+    watch_config_path: Path | None
     auth_dir: Path
     state_dir: Path
     config_path: Path | None
@@ -241,6 +268,7 @@ class AutoMaintainer:
 
     def log_settings(self) -> None:
         log("Started auto maintenance loop.")
+        log(f"WATCH_CONFIG_PATH={self.settings.watch_config_path or '(none)'}")
         log(f"AUTH_DIR={self.settings.auth_dir}")
         log(f"STATE_DIR={self.settings.state_dir}")
         log(f"MAINTAIN_DB_PATH={self.settings.maintain_db_path}")
@@ -1147,20 +1175,88 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Auto maintain + folder watch uploader for cpa-warden.",
     )
+    parser.add_argument(
+        "--watch-config",
+        help="Watcher config JSON path (env WATCH_CONFIG_PATH also supported).",
+    )
     parser.add_argument("--once", action="store_true", help="Run one cycle and exit.")
     return parser.parse_args()
 
 
 def load_settings(args: argparse.Namespace) -> Settings:
     base_dir = Path(__file__).resolve().parent
-    auth_dir = resolve_path(base_dir, os.getenv("AUTH_DIR", str(base_dir / "auth_files")))
-    state_dir = resolve_path(base_dir, os.getenv("STATE_DIR", str(base_dir / ".auto_maintain_state")))
-    maintain_db_path = parse_path_env(base_dir, "MAINTAIN_DB_PATH", str(state_dir / "cpa_warden_maintain.sqlite3"))
-    upload_db_path = parse_path_env(base_dir, "UPLOAD_DB_PATH", str(state_dir / "cpa_warden_upload.sqlite3"))
-    maintain_log_file = parse_path_env(base_dir, "MAINTAIN_LOG_FILE", str(state_dir / "cpa_warden_maintain.log"))
-    upload_log_file = parse_path_env(base_dir, "UPLOAD_LOG_FILE", str(state_dir / "cpa_warden_upload.log"))
+    watch_config_data: dict[str, object] = {}
+    watch_config_path: Path | None = None
 
-    config_raw = os.getenv("CONFIG_PATH", "").strip()
+    watch_config_raw = (args.watch_config or os.getenv("WATCH_CONFIG_PATH", "")).strip()
+    if watch_config_raw:
+        watch_config_path = resolve_path(base_dir, watch_config_raw)
+        if not watch_config_path.exists():
+            raise ValueError(f"WATCH_CONFIG_PATH not found: {watch_config_path}")
+        if watch_config_path.is_dir():
+            raise ValueError(f"WATCH_CONFIG_PATH must be a file path, not a directory: {watch_config_path}")
+        watch_config_data = load_watch_config(watch_config_path)
+    else:
+        default_watch_config = base_dir / "auto_maintain.config.json"
+        if default_watch_config.exists() and default_watch_config.is_file():
+            watch_config_path = default_watch_config
+            watch_config_data = load_watch_config(default_watch_config)
+
+    auth_dir = resolve_path(
+        base_dir,
+        str(pick_setting("AUTH_DIR", watch_config_data, "auth_dir", str(base_dir / "auth_files"))),
+    )
+    state_dir = resolve_path(
+        base_dir,
+        str(pick_setting("STATE_DIR", watch_config_data, "state_dir", str(base_dir / ".auto_maintain_state"))),
+    )
+
+    maintain_db_path = resolve_path(
+        base_dir,
+        str(
+            pick_setting(
+                "MAINTAIN_DB_PATH",
+                watch_config_data,
+                "maintain_db_path",
+                str(state_dir / "cpa_warden_maintain.sqlite3"),
+            )
+        ),
+    )
+    upload_db_path = resolve_path(
+        base_dir,
+        str(
+            pick_setting(
+                "UPLOAD_DB_PATH",
+                watch_config_data,
+                "upload_db_path",
+                str(state_dir / "cpa_warden_upload.sqlite3"),
+            )
+        ),
+    )
+    maintain_log_file = resolve_path(
+        base_dir,
+        str(
+            pick_setting(
+                "MAINTAIN_LOG_FILE",
+                watch_config_data,
+                "maintain_log_file",
+                str(state_dir / "cpa_warden_maintain.log"),
+            )
+        ),
+    )
+    upload_log_file = resolve_path(
+        base_dir,
+        str(
+            pick_setting(
+                "UPLOAD_LOG_FILE",
+                watch_config_data,
+                "upload_log_file",
+                str(state_dir / "cpa_warden_upload.log"),
+            )
+        ),
+    )
+
+    config_raw = str(pick_setting("CONFIG_PATH", watch_config_data, "config_path", "")).strip()
     config_path: Path | None = None
     if config_raw:
         config_path = resolve_path(base_dir, config_raw)
@@ -1173,6 +1269,7 @@ def load_settings(args: argparse.Namespace) -> Settings:
 
     return Settings(
         base_dir=base_dir,
+        watch_config_path=watch_config_path,
         auth_dir=auth_dir,
         state_dir=state_dir,
         config_path=config_path,
@@ -1180,26 +1277,108 @@ def load_settings(args: argparse.Namespace) -> Settings:
         upload_db_path=upload_db_path,
         maintain_log_file=maintain_log_file,
         upload_log_file=upload_log_file,
-        maintain_interval_seconds=parse_int_env("MAINTAIN_INTERVAL_SECONDS", 3600, 1),
-        watch_interval_seconds=parse_int_env("WATCH_INTERVAL_SECONDS", 15, 1),
-        upload_stable_wait_seconds=parse_int_env("UPLOAD_STABLE_WAIT_SECONDS", 20, 0),
-        deep_scan_interval_loops=parse_int_env("DEEP_SCAN_INTERVAL_LOOPS", 40, 1),
-        maintain_retry_count=parse_int_env("MAINTAIN_RETRY_COUNT", 1, 0),
-        upload_retry_count=parse_int_env("UPLOAD_RETRY_COUNT", 1, 0),
-        command_retry_delay_seconds=parse_int_env("COMMAND_RETRY_DELAY_SECONDS", 20, 1),
-        run_maintain_on_start=parse_bool_env("RUN_MAINTAIN_ON_START", True),
-        run_upload_on_start=parse_bool_env("RUN_UPLOAD_ON_START", True),
-        run_maintain_after_upload=parse_bool_env("RUN_MAINTAIN_AFTER_UPLOAD", True),
-        maintain_assume_yes=parse_bool_env("MAINTAIN_ASSUME_YES", False),
-        delete_uploaded_files_after_upload=parse_bool_env("DELETE_UPLOADED_FILES_AFTER_UPLOAD", True),
-        inspect_zip_files=parse_bool_env("INSPECT_ZIP_FILES", True),
-        auto_extract_zip_json=parse_bool_env("AUTO_EXTRACT_ZIP_JSON", True),
-        delete_zip_after_extract=parse_bool_env("DELETE_ZIP_AFTER_EXTRACT", True),
-        bandizip_path=os.getenv("BANDIZIP_PATH", r"C:\Program Files\Bandizip\Bandizip.exe"),
-        bandizip_timeout_seconds=parse_int_env("BANDIZIP_TIMEOUT_SECONDS", 120, 1),
-        use_windows_zip_fallback=parse_bool_env("USE_WINDOWS_ZIP_FALLBACK", True),
-        continue_on_command_failure=parse_bool_env("CONTINUE_ON_COMMAND_FAILURE", False),
-        allow_multi_instance=parse_bool_env("ALLOW_MULTI_INSTANCE", False),
+        maintain_interval_seconds=parse_int_value(
+            "MAINTAIN_INTERVAL_SECONDS",
+            pick_setting("MAINTAIN_INTERVAL_SECONDS", watch_config_data, "maintain_interval_seconds", 3600),
+            1,
+        ),
+        watch_interval_seconds=parse_int_value(
+            "WATCH_INTERVAL_SECONDS",
+            pick_setting("WATCH_INTERVAL_SECONDS", watch_config_data, "watch_interval_seconds", 15),
+            1,
+        ),
+        upload_stable_wait_seconds=parse_int_value(
+            "UPLOAD_STABLE_WAIT_SECONDS",
+            pick_setting("UPLOAD_STABLE_WAIT_SECONDS", watch_config_data, "upload_stable_wait_seconds", 20),
+            0,
+        ),
+        deep_scan_interval_loops=parse_int_value(
+            "DEEP_SCAN_INTERVAL_LOOPS",
+            pick_setting("DEEP_SCAN_INTERVAL_LOOPS", watch_config_data, "deep_scan_interval_loops", 40),
+            1,
+        ),
+        maintain_retry_count=parse_int_value(
+            "MAINTAIN_RETRY_COUNT",
+            pick_setting("MAINTAIN_RETRY_COUNT", watch_config_data, "maintain_retry_count", 1),
+            0,
+        ),
+        upload_retry_count=parse_int_value(
+            "UPLOAD_RETRY_COUNT",
+            pick_setting("UPLOAD_RETRY_COUNT", watch_config_data, "upload_retry_count", 1),
+            0,
+        ),
+        command_retry_delay_seconds=parse_int_value(
+            "COMMAND_RETRY_DELAY_SECONDS",
+            pick_setting("COMMAND_RETRY_DELAY_SECONDS", watch_config_data, "command_retry_delay_seconds", 20),
+            1,
+        ),
+        run_maintain_on_start=parse_bool_value(
+            "RUN_MAINTAIN_ON_START",
+            pick_setting("RUN_MAINTAIN_ON_START", watch_config_data, "run_maintain_on_start", True),
+        ),
+        run_upload_on_start=parse_bool_value(
+            "RUN_UPLOAD_ON_START",
+            pick_setting("RUN_UPLOAD_ON_START", watch_config_data, "run_upload_on_start", True),
+        ),
+        run_maintain_after_upload=parse_bool_value(
+            "RUN_MAINTAIN_AFTER_UPLOAD",
+            pick_setting("RUN_MAINTAIN_AFTER_UPLOAD", watch_config_data, "run_maintain_after_upload", True),
+        ),
+        maintain_assume_yes=parse_bool_value(
+            "MAINTAIN_ASSUME_YES",
+            pick_setting("MAINTAIN_ASSUME_YES", watch_config_data, "maintain_assume_yes", False),
+        ),
+        delete_uploaded_files_after_upload=parse_bool_value(
+            "DELETE_UPLOADED_FILES_AFTER_UPLOAD",
+            pick_setting(
+                "DELETE_UPLOADED_FILES_AFTER_UPLOAD",
+                watch_config_data,
+                "delete_uploaded_files_after_upload",
+                True,
+            ),
+        ),
+        inspect_zip_files=parse_bool_value(
+            "INSPECT_ZIP_FILES",
+            pick_setting("INSPECT_ZIP_FILES", watch_config_data, "inspect_zip_files", True),
+        ),
+        auto_extract_zip_json=parse_bool_value(
+            "AUTO_EXTRACT_ZIP_JSON",
+            pick_setting("AUTO_EXTRACT_ZIP_JSON", watch_config_data, "auto_extract_zip_json", True),
+        ),
+        delete_zip_after_extract=parse_bool_value(
+            "DELETE_ZIP_AFTER_EXTRACT",
+            pick_setting("DELETE_ZIP_AFTER_EXTRACT", watch_config_data, "delete_zip_after_extract", True),
+        ),
+        bandizip_path=str(
+            pick_setting(
+                "BANDIZIP_PATH",
+                watch_config_data,
+                "bandizip_path",
+                r"C:\Program Files\Bandizip\Bandizip.exe",
+            )
+        ),
+        bandizip_timeout_seconds=parse_int_value(
+            "BANDIZIP_TIMEOUT_SECONDS",
+            pick_setting("BANDIZIP_TIMEOUT_SECONDS", watch_config_data, "bandizip_timeout_seconds", 120),
+            1,
+        ),
+        use_windows_zip_fallback=parse_bool_value(
+            "USE_WINDOWS_ZIP_FALLBACK",
+            pick_setting("USE_WINDOWS_ZIP_FALLBACK", watch_config_data, "use_windows_zip_fallback", True),
+        ),
+        continue_on_command_failure=parse_bool_value(
+            "CONTINUE_ON_COMMAND_FAILURE",
+            pick_setting(
+                "CONTINUE_ON_COMMAND_FAILURE",
+                watch_config_data,
+                "continue_on_command_failure",
+                False,
+            ),
+        ),
+        allow_multi_instance=parse_bool_value(
+            "ALLOW_MULTI_INSTANCE",
+            pick_setting("ALLOW_MULTI_INSTANCE", watch_config_data, "allow_multi_instance", False),
+        ),
         run_once=bool(args.once),
     )
 
