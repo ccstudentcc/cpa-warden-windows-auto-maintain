@@ -1,0 +1,1875 @@
+from __future__ import annotations
+
+import argparse
+import atexit
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+import zipfile
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, Iterable, TextIO
+
+from .config import Settings, load_settings as load_auto_settings
+from .active_probe import ActiveUploadProbeDecision, ActiveUploadProbeState, decide_active_upload_probe
+from .channel_status import (
+    CHANNEL_MAINTAIN,
+    CHANNEL_UPLOAD,
+    STAGE_DEFERRED,
+    STAGE_FAILED,
+    STAGE_IDLE,
+    STAGE_PENDING,
+    STAGE_PENDING_FULL,
+    STAGE_PENDING_INCREMENTAL,
+    STAGE_RETRY_WAIT,
+    STAGE_RUNNING,
+    STAGE_START_FAILED,
+    STATE_IDLE,
+    STATE_PENDING,
+    STATE_RUNNING,
+    STATUS_RETRY,
+    STATUS_SHUTDOWN,
+    STATUS_SUCCESS,
+)
+from .channel_commands import (
+    build_maintain_command as build_maintain_command_rows,
+    build_upload_command as build_upload_command_rows,
+    format_maintain_start_message as format_maintain_start_message_rows,
+    format_upload_start_message as format_upload_start_message_rows,
+)
+from .channel_feedback import (
+    build_non_success_exit_feedback,
+    format_command_completed_message,
+    format_command_start_failed_message,
+    format_command_start_retry_message,
+    maintain_pending_progress_stage,
+)
+from .channel_lifecycle import (
+    MaintainStartErrorDecision,
+    MaintainProcessExitDecision,
+    UploadStartErrorDecision,
+    UploadProcessExitDecision,
+    decide_maintain_process_exit,
+    decide_maintain_start_error,
+    decide_upload_process_exit,
+    decide_upload_start_error,
+)
+from .channel_start_prep import (
+    MaintainStartPrep,
+    UploadStartPrep,
+    prepare_maintain_start,
+    prepare_upload_start,
+)
+from .channel_runner import poll_process_exit, start_channel_with_handler
+from .dashboard import (
+    apply_panel_colors as apply_dashboard_panel_colors,
+    color_text as dashboard_color_text,
+    fit_panel_line as fit_dashboard_panel_line,
+    panel_border_line as dashboard_border_line,
+    state_color_code as dashboard_state_color_code,
+)
+from .locking import (
+    InstanceLockState,
+    acquire_instance_lock as acquire_lock_state,
+    is_pid_running as is_pid_running_helper,
+    read_lock_pid as read_lock_pid_helper,
+    release_instance_lock as release_lock_state,
+)
+from .maintain_queue import (
+    MaintainRuntimeState,
+    MaintainQueueState,
+    decide_maintain_start_scope,
+    merge_incremental_maintain_names,
+    queue_maintain_request,
+)
+from .output_pump import (
+    append_child_output_line as append_output_line,
+    start_output_pump_thread,
+)
+from .panel_render import (
+    PanelLinesContext,
+    SignatureHeartbeatGate,
+    build_plain_panel_lines,
+    panel_signature,
+    should_skip_render_by_signature_gate,
+)
+from .panel_snapshot import PanelSnapshot, build_panel_snapshot
+from .process_runner import terminate_running_process
+from .process_output import (
+    build_child_process_env as build_child_process_env_map,
+    decode_child_output_line as decode_process_output_line,
+    preferred_decoding_order as preferred_process_decoding_order,
+    should_log_child_alert_line as should_log_process_alert_line,
+)
+from .progress_parser import parse_progress_line
+from .runtime_state import (
+    build_maintain_queue_state,
+    build_maintain_runtime_state,
+    build_upload_queue_state,
+    unpack_maintain_queue_state,
+    unpack_maintain_runtime_state,
+    unpack_upload_queue_state,
+)
+from .scope_files import write_scope_names
+from .snapshots import (
+    build_snapshot_file as build_snapshot_file_rows,
+    build_snapshot_lines as build_snapshot_lines_rows,
+    compute_pending_upload_snapshot as compute_pending_upload_snapshot_rows,
+    compute_uploaded_baseline as compute_uploaded_baseline_rows,
+    extract_names_from_snapshot as extract_names_from_snapshot_rows,
+    read_snapshot_lines as read_snapshot_lines_rows,
+    write_snapshot_lines as write_snapshot_lines_rows,
+)
+from .startup_flow import (
+    build_startup_action_plan,
+    decide_startup_seed,
+    decide_startup_zip_follow_up,
+)
+from .zip_intake import (
+    compute_zip_signature as compute_zip_signature_rows,
+    count_zip_files as count_zip_rows,
+    extract_zip_with_bandizip as extract_zip_with_bandizip_rows,
+    extract_zip_with_windows_builtin as extract_zip_with_windows_builtin_rows,
+    inspect_zip_archives as inspect_zip_archives_rows,
+    list_zip_json_entries as list_zip_json_entries_rows,
+    list_zip_paths as list_zip_paths_rows,
+    ps_quote as ps_quote_rows,
+)
+from .upload_queue import (
+    UploadQueueState,
+    decide_upload_start,
+    mark_upload_no_changes,
+    mark_upload_no_pending_discovered,
+    merge_pending_upload_snapshot,
+)
+from .upload_scan_cadence import decide_upload_deep_scan
+from .upload_postprocess import (
+    UploadSuccessPostProcessResult,
+    build_upload_success_postprocess,
+)
+from .upload_cleanup import cleanup_uploaded_files, prune_empty_dirs_under
+from ..scheduler.smart_scheduler import SmartSchedulerConfig, SmartSchedulerPolicy
+from .watch_cycle import (
+    decide_scheduled_maintain_enqueues,
+    decide_watch_upload_check_gate,
+)
+
+
+def log(message: str) -> None:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {message}", flush=True)
+
+
+class AutoMaintainer:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.cpa_script = self.settings.base_dir / "cpa_warden.py"
+        self.last_uploaded_snapshot_file = self.settings.state_dir / "last_uploaded_snapshot.txt"
+        self.current_snapshot_file = self.settings.state_dir / "current_snapshot.txt"
+        self.stable_snapshot_file = self.settings.state_dir / "stable_snapshot.txt"
+        self.instance_lock_file = self.settings.state_dir / "auto_maintain.lock"
+        self.instance_lock_token: str | None = None
+        self.instance_lock_handle: TextIO | None = None
+        self.instance_started_at = datetime.now()
+        self.shutdown_requested = False
+        self.shutdown_reason: str | None = None
+        self.upload_process: subprocess.Popen | None = None
+        self.maintain_process: subprocess.Popen | None = None
+        self._windows_console_handler = None
+        self.deep_scan_counter = 0
+        self.pending_upload_retry = False
+        self.pending_source_changes_during_upload = False
+        self.last_active_upload_deep_scan_at = 0.0
+        self.last_json_count = 0
+        self.last_zip_signature: tuple[str, ...] = tuple()
+        self.pending_upload_snapshot: list[str] | None = None
+        self.pending_upload_reason: str | None = None
+        self.inflight_upload_snapshot: list[str] | None = None
+        self.upload_attempt = 0
+        self.maintain_attempt = 0
+        self.upload_retry_due_at = 0.0
+        self.maintain_retry_due_at = 0.0
+        self.pending_maintain = False
+        self.pending_maintain_reason: str | None = None
+        self.pending_maintain_names: set[str] | None = None
+        self.inflight_maintain_names: set[str] | None = None
+        self.maintain_names_file = self.settings.state_dir / "maintain_names_scope.txt"
+        self.upload_names_file = self.settings.state_dir / "upload_names_scope.txt"
+        self.maintain_cmd_output_file = self.settings.state_dir / "maintain_command_output.log"
+        self.upload_cmd_output_file = self.settings.state_dir / "upload_command_output.log"
+        self.output_lock = threading.Lock()
+        self.console_lock = threading.Lock()
+        self.upload_progress_state: dict[str, int | str] = {"stage": STAGE_IDLE, "done": 0, "total": 0}
+        self.maintain_progress_state: dict[str, int | str] = {"stage": STAGE_IDLE, "done": 0, "total": 0}
+        self.last_progress_render_at = 0.0
+        self.progress_render_interval_seconds = 0.4
+        self.progress_render_heartbeat_seconds = 8.0
+        self.last_progress_signature = ""
+        self.panel_height = 8
+        self.panel_title = "CPA Warden Auto Dashboard"
+        self.panel_enabled = self._detect_panel_capability()
+        self.panel_color_enabled = (
+            self.panel_enabled
+            and os.getenv("AUTO_MAINTAIN_PANEL_COLOR", "1").strip() not in {"0", "false", "False"}
+        )
+        self.panel_initialized = False
+        self.upload_output_thread: threading.Thread | None = None
+        self.maintain_output_thread: threading.Thread | None = None
+        self.zip_extract_processed_signatures: dict[str, str] = {}
+        self.last_incremental_maintain_started_at = 0.0
+        self.last_incremental_defer_reason: str | None = None
+        self.next_maintain_due_at: float | None = None
+        self.scheduler_policy = SmartSchedulerPolicy(
+            SmartSchedulerConfig(
+                enabled=self.settings.smart_schedule_enabled,
+                adaptive_upload_batching=self.settings.adaptive_upload_batching,
+                base_upload_batch_size=self.settings.upload_batch_size,
+                upload_high_backlog_threshold=self.settings.upload_high_backlog_threshold,
+                upload_high_backlog_batch_size=self.settings.upload_high_backlog_batch_size,
+                adaptive_maintain_batching=self.settings.adaptive_maintain_batching,
+                base_incremental_maintain_batch_size=self.settings.incremental_maintain_batch_size,
+                maintain_high_backlog_threshold=self.settings.maintain_high_backlog_threshold,
+                maintain_high_backlog_batch_size=self.settings.maintain_high_backlog_batch_size,
+                incremental_maintain_min_interval_seconds=(
+                    self.settings.incremental_maintain_min_interval_seconds
+                ),
+                incremental_maintain_full_guard_seconds=(
+                    self.settings.incremental_maintain_full_guard_seconds
+                ),
+            )
+        )
+
+    def ensure_paths(self) -> None:
+        if not self.cpa_script.exists():
+            raise RuntimeError(f"cpa_warden.py not found: {self.cpa_script}")
+
+        self.settings.auth_dir.mkdir(parents=True, exist_ok=True)
+        if not self.settings.auth_dir.is_dir():
+            raise RuntimeError(f"AUTH_DIR is not a directory: {self.settings.auth_dir}")
+
+        self.settings.state_dir.mkdir(parents=True, exist_ok=True)
+        if not self.settings.state_dir.is_dir():
+            raise RuntimeError(f"STATE_DIR is not a directory: {self.settings.state_dir}")
+
+        self.settings.maintain_db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.settings.upload_db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.settings.maintain_log_file.parent.mkdir(parents=True, exist_ok=True)
+        self.settings.upload_log_file.parent.mkdir(parents=True, exist_ok=True)
+        self.maintain_cmd_output_file.parent.mkdir(parents=True, exist_ok=True)
+        self.upload_cmd_output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    def _run_startup_phase(self) -> int:
+        initial_snapshot = self.build_snapshot(self.current_snapshot_file)
+        seed_decision = decide_startup_seed(
+            last_uploaded_snapshot_exists=self.last_uploaded_snapshot_file.exists(),
+        )
+        if seed_decision.should_seed_uploaded_snapshot:
+            self.write_snapshot(self.last_uploaded_snapshot_file, initial_snapshot)
+
+        self.last_json_count = self.get_json_count()
+        if self.settings.inspect_zip_files:
+            self.last_zip_signature = self.get_zip_signature()
+
+        startup_zip_changed = False
+        if self.settings.inspect_zip_files:
+            startup_zip_changed = self.inspect_zip_archives()
+            self.last_json_count = self.get_json_count()
+            self.last_zip_signature = self.get_zip_signature()
+        zip_follow_up = decide_startup_zip_follow_up(
+            inspect_zip_files=self.settings.inspect_zip_files,
+            startup_zip_changed=startup_zip_changed,
+        )
+        if zip_follow_up.should_run_upload_check:
+            if zip_follow_up.log_message:
+                log(zip_follow_up.log_message)
+            handled_exit = self._run_stage(
+                "startup zip-upload-check",
+                lambda: self.check_and_maybe_upload(force_deep_scan=True),
+            )
+            if handled_exit != 0:
+                return handled_exit
+
+        startup_action_plan = build_startup_action_plan(
+            run_maintain_on_start=self.settings.run_maintain_on_start,
+            run_upload_on_start=self.settings.run_upload_on_start,
+        )
+        if startup_action_plan.run_startup_maintain:
+            self.queue_maintain("startup maintain")
+
+        if startup_action_plan.run_startup_upload_check:
+            handled_exit = self._run_stage("startup upload-check", self.check_and_maybe_upload)
+            if handled_exit != 0:
+                return handled_exit
+
+        now = time.monotonic()
+        self.next_maintain_due_at = now + self.settings.maintain_interval_seconds
+
+        handled_exit = self._run_stage_sequence(
+            (
+                ("startup maintain command", self.maybe_start_maintain),
+                ("startup upload command", self.maybe_start_upload),
+            )
+        )
+        if handled_exit != 0:
+            return handled_exit
+        self.render_progress_snapshot(force=True)
+        return 0
+
+    def _run_watch_iteration(self, now: float) -> int:
+        scheduled_decision = decide_scheduled_maintain_enqueues(
+            next_maintain_due_at=self.next_maintain_due_at,
+            now_monotonic=now,
+            maintain_interval_seconds=self.settings.maintain_interval_seconds,
+        )
+        for _ in range(scheduled_decision.enqueue_count):
+            self.queue_maintain("scheduled maintain")
+        self.next_maintain_due_at = scheduled_decision.next_maintain_due_at
+
+        handled_exit = self._run_stage_sequence(
+            (
+                ("upload command", self.poll_upload_process),
+                ("maintain command", self.poll_maintain_process),
+            )
+        )
+        if handled_exit != 0:
+            return handled_exit
+
+        if self.upload_process is not None:
+            handled_exit = self._run_stage("active-upload source probe", self.probe_changes_during_active_upload)
+            if handled_exit != 0:
+                return handled_exit
+
+        # Build new upload batch only when current batch is not running.
+        upload_check_gate = decide_watch_upload_check_gate(
+            upload_running=self.upload_process is not None,
+            has_pending_upload_snapshot=self.pending_upload_snapshot is not None,
+        )
+        if upload_check_gate.should_run_upload_check:
+            handled_exit = self._run_stage("watch upload-check", self.check_and_maybe_upload)
+            if handled_exit != 0:
+                return handled_exit
+
+        handled_exit = self._run_stage_sequence(
+            (
+                ("watch upload command", self.maybe_start_upload),
+                ("watch maintain command", self.maybe_start_maintain),
+            )
+        )
+        if handled_exit != 0:
+            return handled_exit
+
+        self.render_progress_snapshot()
+        return 0
+
+    def _run_stage_sequence(self, stages: Iterable[tuple[str, Callable[[], int]]]) -> int:
+        for stage, runner in stages:
+            handled_exit = self._run_stage(stage, runner)
+            if handled_exit != 0:
+                return handled_exit
+        return 0
+
+    def _run_stage(self, stage: str, runner: Callable[[], int]) -> int:
+        return self._resolve_stage_failure(stage, runner())
+
+    def _resolve_stage_failure(self, stage: str, code: int) -> int:
+        if code == 0:
+            return 0
+        if self.handle_failure(stage, code):
+            return 0
+        return code
+
+    def _is_run_once_cycle_complete(self) -> bool:
+        nothing_running = self.upload_process is None and self.maintain_process is None
+        nothing_pending = (
+            self.pending_upload_snapshot is None
+            and not self.pending_maintain
+            and (not self.pending_upload_retry)
+        )
+        return nothing_running and nothing_pending
+
+    def _sleep_between_watch_cycles(self) -> int | None:
+        if self.settings.run_once:
+            if self._is_run_once_cycle_complete():
+                log("Run-once cycle finished.")
+                return 0
+            if not self.sleep_with_shutdown(1):
+                return 130
+            return None
+
+        if not self.sleep_with_shutdown(self.current_loop_sleep_seconds()):
+            return 130
+        return None
+
+    def run(self) -> int:
+        self.ensure_paths()
+        self.register_shutdown_handlers()
+        self.acquire_instance_lock()
+        atexit.register(self.release_instance_lock)
+        self.set_console_title()
+        self.init_fixed_panel_area()
+        self.log_settings()
+        try:
+            startup_exit = self._run_startup_phase()
+            if startup_exit != 0:
+                return startup_exit
+
+            while True:
+                now = time.monotonic()
+                watch_exit = self._run_watch_iteration(now)
+                if watch_exit != 0:
+                    return watch_exit
+
+                sleep_exit = self._sleep_between_watch_cycles()
+                if sleep_exit is not None:
+                    return sleep_exit
+        finally:
+            self.release_instance_lock()
+
+    def _settings_log_rows(self) -> list[tuple[str, str | int | Path]]:
+        return [
+            ("WATCH_CONFIG_PATH", self.settings.watch_config_path or "(none)"),
+            ("AUTH_DIR", self.settings.auth_dir),
+            ("STATE_DIR", self.settings.state_dir),
+            ("MAINTAIN_DB_PATH", self.settings.maintain_db_path),
+            ("UPLOAD_DB_PATH", self.settings.upload_db_path),
+            ("MAINTAIN_LOG_FILE", self.settings.maintain_log_file),
+            ("UPLOAD_LOG_FILE", self.settings.upload_log_file),
+            ("MAINTAIN_COMMAND_OUTPUT_FILE", self.maintain_cmd_output_file),
+            ("UPLOAD_COMMAND_OUTPUT_FILE", self.upload_cmd_output_file),
+            ("MAINTAIN_NAMES_SCOPE_FILE", self.maintain_names_file),
+            ("UPLOAD_NAMES_SCOPE_FILE", self.upload_names_file),
+            ("MAINTAIN_INTERVAL_SECONDS", self.settings.maintain_interval_seconds),
+            ("WATCH_INTERVAL_SECONDS", self.settings.watch_interval_seconds),
+            ("UPLOAD_STABLE_WAIT_SECONDS", self.settings.upload_stable_wait_seconds),
+            ("UPLOAD_BATCH_SIZE", self.settings.upload_batch_size),
+            ("SMART_SCHEDULE_ENABLED", int(self.settings.smart_schedule_enabled)),
+            ("ADAPTIVE_UPLOAD_BATCHING", int(self.settings.adaptive_upload_batching)),
+            ("UPLOAD_HIGH_BACKLOG_THRESHOLD", self.settings.upload_high_backlog_threshold),
+            ("UPLOAD_HIGH_BACKLOG_BATCH_SIZE", self.settings.upload_high_backlog_batch_size),
+            ("ADAPTIVE_MAINTAIN_BATCHING", int(self.settings.adaptive_maintain_batching)),
+            ("INCREMENTAL_MAINTAIN_BATCH_SIZE", self.settings.incremental_maintain_batch_size),
+            ("MAINTAIN_HIGH_BACKLOG_THRESHOLD", self.settings.maintain_high_backlog_threshold),
+            ("MAINTAIN_HIGH_BACKLOG_BATCH_SIZE", self.settings.maintain_high_backlog_batch_size),
+            (
+                "INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS",
+                self.settings.incremental_maintain_min_interval_seconds,
+            ),
+            (
+                "INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS",
+                self.settings.incremental_maintain_full_guard_seconds,
+            ),
+            ("RUN_MAINTAIN_ON_START", int(self.settings.run_maintain_on_start)),
+            ("RUN_UPLOAD_ON_START", int(self.settings.run_upload_on_start)),
+            ("RUN_MAINTAIN_AFTER_UPLOAD", int(self.settings.run_maintain_after_upload)),
+            ("MAINTAIN_ASSUME_YES", int(self.settings.maintain_assume_yes)),
+            (
+                "DELETE_UPLOADED_FILES_AFTER_UPLOAD",
+                int(self.settings.delete_uploaded_files_after_upload),
+            ),
+            ("INSPECT_ZIP_FILES", int(self.settings.inspect_zip_files)),
+            ("AUTO_EXTRACT_ZIP_JSON", int(self.settings.auto_extract_zip_json)),
+            ("DELETE_ZIP_AFTER_EXTRACT", int(self.settings.delete_zip_after_extract)),
+            ("BANDIZIP_PATH", self.settings.bandizip_path),
+            ("BANDIZIP_TIMEOUT_SECONDS", self.settings.bandizip_timeout_seconds),
+            ("USE_WINDOWS_ZIP_FALLBACK", int(self.settings.use_windows_zip_fallback)),
+            ("DEEP_SCAN_INTERVAL_LOOPS", self.settings.deep_scan_interval_loops),
+            ("ACTIVE_PROBE_INTERVAL_SECONDS", self.settings.active_probe_interval_seconds),
+            (
+                "ACTIVE_UPLOAD_DEEP_SCAN_INTERVAL_SECONDS",
+                self.settings.active_upload_deep_scan_interval_seconds,
+            ),
+            ("MAINTAIN_RETRY_COUNT", self.settings.maintain_retry_count),
+            ("UPLOAD_RETRY_COUNT", self.settings.upload_retry_count),
+            ("COMMAND_RETRY_DELAY_SECONDS", self.settings.command_retry_delay_seconds),
+            ("CONTINUE_ON_COMMAND_FAILURE", int(self.settings.continue_on_command_failure)),
+            ("ALLOW_MULTI_INSTANCE", int(self.settings.allow_multi_instance)),
+            ("INSTANCE_LABEL", self.instance_label()),
+            ("INSTANCE_LOCK_FILE", self.instance_lock_file),
+        ]
+
+    def log_settings(self) -> None:
+        log("Started auto maintenance loop.")
+        for key, value in self._settings_log_rows():
+            log(f"{key}={value}")
+        if self.instance_lock_token:
+            log(f"INSTANCE_LOCK_TOKEN={self.instance_lock_token}")
+
+    def instance_label(self) -> str:
+        started = self.instance_started_at.strftime("%Y-%m-%d %H:%M:%S")
+        return f"cpa-auto-maintain | {started} | {os.getpid()}"
+
+    def set_console_title(self) -> None:
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetConsoleTitleW(self.instance_label())
+        except Exception as exc:
+            log(f"[WARN] Failed to set console title: {exc}")
+
+    def register_shutdown_handlers(self) -> None:
+        signal.signal(signal.SIGINT, self._signal_handler)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, self._signal_handler)
+
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                CTRL_C_EVENT = 0
+                CTRL_BREAK_EVENT = 1
+                CTRL_CLOSE_EVENT = 2
+                CTRL_LOGOFF_EVENT = 5
+                CTRL_SHUTDOWN_EVENT = 6
+
+                event_names = {
+                    CTRL_C_EVENT: "CTRL_C_EVENT",
+                    CTRL_BREAK_EVENT: "CTRL_BREAK_EVENT",
+                    CTRL_CLOSE_EVENT: "CTRL_CLOSE_EVENT",
+                    CTRL_LOGOFF_EVENT: "CTRL_LOGOFF_EVENT",
+                    CTRL_SHUTDOWN_EVENT: "CTRL_SHUTDOWN_EVENT",
+                }
+
+                handler_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
+
+                def _handler(event_type: int) -> bool:
+                    reason = event_names.get(event_type, f"WIN_EVENT_{event_type}")
+                    self.request_shutdown(reason)
+                    return True
+
+                self._windows_console_handler = handler_type(_handler)
+                ctypes.windll.kernel32.SetConsoleCtrlHandler(self._windows_console_handler, True)
+            except Exception as exc:
+                log(f"[WARN] Failed to register Windows console handler: {exc}")
+
+    def _signal_handler(self, signum: int, _frame: object) -> None:
+        self.request_shutdown(f"SIGNAL_{signum}")
+
+    def request_shutdown(self, reason: str) -> None:
+        if self.shutdown_requested:
+            return
+        self.shutdown_requested = True
+        self.shutdown_reason = reason
+        log(f"Shutdown requested: {reason}")
+        self.terminate_active_processes()
+
+    def terminate_process(self, proc: subprocess.Popen | None, *, name: str) -> None:
+        terminate_running_process(
+            proc=proc,
+            name=name,
+            log=log,
+            terminate_timeout_seconds=8,
+            kill_wait_seconds=5,
+        )
+
+    def terminate_active_processes(self) -> None:
+        self.terminate_process(self.upload_process, name=CHANNEL_UPLOAD)
+        self.terminate_process(self.maintain_process, name=CHANNEL_MAINTAIN)
+
+    def sleep_with_shutdown(self, total_seconds: int) -> bool:
+        if total_seconds <= 0:
+            return not self.shutdown_requested
+        deadline = time.time() + total_seconds
+        while time.time() < deadline:
+            if self.shutdown_requested:
+                return False
+            remaining = deadline - time.time()
+            time.sleep(min(0.5, max(0.05, remaining)))
+        return not self.shutdown_requested
+
+    def current_loop_sleep_seconds(self) -> int:
+        if self.upload_process is None and self.maintain_process is None:
+            return self.settings.watch_interval_seconds
+        return min(self.settings.watch_interval_seconds, self.settings.active_probe_interval_seconds)
+
+    def wait_for_stable_snapshot(self, baseline_snapshot: list[str]) -> tuple[int, list[str] | None]:
+        stable_seconds = self.settings.upload_stable_wait_seconds
+        if stable_seconds <= 0:
+            return 0, baseline_snapshot
+
+        poll_seconds = min(2.0, max(0.5, stable_seconds / 4.0))
+        last_change_at = time.time()
+        stable_snapshot = baseline_snapshot
+
+        while True:
+            elapsed = time.time() - last_change_at
+            remaining = stable_seconds - elapsed
+            if remaining <= 0:
+                return 0, stable_snapshot
+
+            if not self.sleep_with_shutdown(min(poll_seconds, remaining)):
+                return 130, None
+
+            latest_snapshot = self.build_snapshot(self.stable_snapshot_file)
+            if latest_snapshot != stable_snapshot:
+                stable_snapshot = latest_snapshot
+                last_change_at = time.time()
+                log(
+                    "Detected additional JSON changes during stability wait. "
+                    f"Reset timer to {stable_seconds}s."
+                )
+
+    def is_pid_running(self, pid: int) -> bool:
+        return is_pid_running_helper(pid)
+
+    def read_lock_pid(self) -> int | None:
+        return read_lock_pid_helper(self.instance_lock_file)
+
+    def acquire_instance_lock(self) -> None:
+        state = acquire_lock_state(
+            lock_file=self.instance_lock_file,
+            state_dir=self.settings.state_dir,
+            allow_multi_instance=self.settings.allow_multi_instance,
+            log=log,
+        )
+        self.instance_lock_token = state.token
+        self.instance_lock_handle = state.handle
+
+    def acquire_instance_lock_windows(self) -> None:
+        if os.name != "nt":
+            raise RuntimeError("Windows lock backend unavailable (msvcrt).")
+        state = acquire_lock_state(
+            lock_file=self.instance_lock_file,
+            state_dir=self.settings.state_dir,
+            allow_multi_instance=False,
+            log=log,
+        )
+        self.instance_lock_token = state.token
+        self.instance_lock_handle = state.handle
+
+    def release_instance_lock(self) -> None:
+        state = InstanceLockState(token=self.instance_lock_token, handle=self.instance_lock_handle)
+        next_state = release_lock_state(
+            lock_file=self.instance_lock_file,
+            allow_multi_instance=self.settings.allow_multi_instance,
+            state=state,
+            log=log,
+        )
+        self.instance_lock_token = next_state.token
+        self.instance_lock_handle = next_state.handle
+
+    def get_json_paths(self) -> list[Path]:
+        return sorted(
+            (p for p in self.settings.auth_dir.rglob("*.json") if p.is_file()),
+            key=lambda p: str(p).lower(),
+        )
+
+    def get_json_count(self) -> int:
+        return len(self.get_json_paths())
+
+    def get_zip_paths(self) -> list[Path]:
+        return list_zip_paths_rows(self.settings.auth_dir)
+
+    def get_zip_signature(self) -> tuple[str, ...]:
+        return compute_zip_signature_rows(self.settings.auth_dir, log=log)
+
+    def get_zip_count(self) -> int:
+        return count_zip_rows(self.settings.auth_dir)
+
+    def zip_json_entries(self, archive: zipfile.ZipFile) -> list[str]:
+        return list_zip_json_entries_rows(archive)
+
+    def inspect_zip_archives(self) -> bool:
+        return inspect_zip_archives_rows(
+            auth_dir=self.settings.auth_dir,
+            inspect_zip_files=self.settings.inspect_zip_files,
+            auto_extract_zip_json=self.settings.auto_extract_zip_json,
+            delete_zip_after_extract=self.settings.delete_zip_after_extract,
+            processed_signatures=self.zip_extract_processed_signatures,
+            extract_zip=self.extract_zip_with_bandizip,
+            log=log,
+        )
+
+    def _ps_quote(self, value: str) -> str:
+        return ps_quote_rows(value)
+
+    def extract_zip_with_windows_builtin(self, zip_path: Path, output_dir: Path) -> int:
+        return extract_zip_with_windows_builtin_rows(
+            zip_path=zip_path,
+            output_dir=output_dir,
+            base_dir=self.settings.base_dir,
+            timeout_seconds=self.settings.bandizip_timeout_seconds,
+            log=log,
+        )
+
+    def extract_zip_with_bandizip(self, zip_path: Path, output_dir: Path) -> int:
+        exit_code = extract_zip_with_bandizip_rows(
+            zip_path=zip_path,
+            output_dir=output_dir,
+            base_dir=self.settings.base_dir,
+            bandizip_path=self.settings.bandizip_path,
+            timeout_seconds=self.settings.bandizip_timeout_seconds,
+            log=log,
+        )
+        if exit_code == 0:
+            return 0
+
+        if self.settings.use_windows_zip_fallback:
+            log(f"Trying Windows built-in unzip fallback: {zip_path.name}")
+            return self.extract_zip_with_windows_builtin(zip_path, output_dir)
+
+        return exit_code
+
+    def snapshot_lines(self) -> list[str]:
+        return build_snapshot_lines_rows(self.get_json_paths(), log=log)
+
+    def write_snapshot(self, target: Path, lines: Iterable[str]) -> None:
+        write_snapshot_lines_rows(target, lines)
+
+    def read_snapshot(self, source: Path) -> list[str]:
+        return read_snapshot_lines_rows(source)
+
+    def build_snapshot(self, target: Path) -> list[str]:
+        return build_snapshot_file_rows(
+            target=target,
+            paths=self.get_json_paths(),
+            log=log,
+        )
+
+    def compute_uploaded_baseline(
+        self,
+        existing_baseline: list[str],
+        uploaded_snapshot: list[str],
+        current_snapshot: list[str],
+    ) -> list[str]:
+        return compute_uploaded_baseline_rows(existing_baseline, uploaded_snapshot, current_snapshot)
+
+    def compute_pending_upload_snapshot(
+        self,
+        current_snapshot: list[str],
+        uploaded_baseline: list[str],
+    ) -> list[str]:
+        return compute_pending_upload_snapshot_rows(current_snapshot, uploaded_baseline)
+
+    def extract_names_from_snapshot(self, snapshot_lines: list[str]) -> set[str]:
+        return extract_names_from_snapshot_rows(snapshot_lines)
+
+    def write_maintain_names_scope(self, names: set[str]) -> Path:
+        return write_scope_names(self.maintain_names_file, names)
+
+    def write_upload_names_scope(self, names: set[str]) -> Path:
+        return write_scope_names(self.upload_names_file, names)
+
+    def delete_uploaded_files_from_snapshot(self, snapshot_lines: list[str]) -> None:
+        result = cleanup_uploaded_files(snapshot_lines)
+        log(
+            "Upload cleanup summary: "
+            f"deleted={result.deleted}, skipped_changed={result.skipped_changed}, "
+            f"skipped_missing={result.skipped_missing}, failed={result.failed}"
+        )
+        self.prune_empty_dirs_under_auth_dir()
+
+    def prune_empty_dirs_under_auth_dir(self) -> None:
+        result = prune_empty_dirs_under(self.settings.auth_dir)
+        log(
+            "Upload empty-dir cleanup summary: "
+            f"removed={result.removed}, skipped_non_empty={result.skipped_non_empty}, "
+            f"skipped_missing={result.skipped_missing}, failed={result.failed}"
+        )
+
+    def command_base(self) -> list[str]:
+        cmd = [sys.executable, str(self.cpa_script)]
+        if self.settings.config_path is not None:
+            cmd.extend(["--config", str(self.settings.config_path)])
+        return cmd
+
+    def update_channel_progress(
+        self,
+        name: str,
+        *,
+        stage: str | None = None,
+        done: int | None = None,
+        total: int | None = None,
+        force_render: bool = False,
+    ) -> None:
+        with self.output_lock:
+            state = self.upload_progress_state if name == CHANNEL_UPLOAD else self.maintain_progress_state
+            if stage is not None:
+                state["stage"] = stage
+            if done is not None:
+                state["done"] = max(0, int(done))
+        if total is not None:
+            state["total"] = max(0, int(total))
+        self.render_progress_snapshot(force=force_render)
+
+    def mark_channel_running(self, name: str) -> None:
+        self.update_channel_progress(name, stage=STAGE_RUNNING, force_render=True)
+
+    def _format_bar(self, done: int, total: int, width: int = 18) -> str:
+        if total <= 0:
+            return "[" + ("-" * width) + "]"
+        ratio = min(1.0, max(0.0, float(done) / float(total)))
+        filled = int(round(ratio * width))
+        return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
+
+    def _compute_upload_queue_batches(self, pending_count: int) -> tuple[int, int]:
+        if pending_count <= 0:
+            return 0, 0
+        maintain_pressure = self.maintain_process is not None or self.pending_maintain
+        next_batch_size = self.scheduler_policy.choose_upload_batch_size(
+            pending_count=pending_count,
+            maintain_pressure=maintain_pressure,
+        )
+        if next_batch_size <= 0:
+            return 0, 0
+        queue_batches = (pending_count + next_batch_size - 1) // next_batch_size
+        return next_batch_size, queue_batches
+
+    def _short_reason(self, reason: str, limit: int = 36) -> str:
+        text = (reason or "-").strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(1, limit - 3)] + "..."
+
+    def _fit_panel_line(self, text: str) -> str:
+        return fit_dashboard_panel_line(text)
+
+    def _panel_border_line(self, char: str = "=") -> str:
+        return dashboard_border_line(char=char)
+
+    def _color_text(self, text: str, code: str) -> str:
+        return dashboard_color_text(text, code, enabled=self.panel_color_enabled)
+
+    def _state_color_code(self, state: str) -> str:
+        return dashboard_state_color_code(state)
+
+    def _apply_panel_colors(
+        self,
+        lines: list[str],
+        *,
+        upload_state: str,
+        maintain_state: str,
+        upload_stage: str,
+        maintain_stage: str,
+    ) -> list[str]:
+        return apply_dashboard_panel_colors(
+            lines,
+            enabled=self.panel_color_enabled,
+            upload_state=upload_state,
+            maintain_state=maintain_state,
+            upload_stage=upload_stage,
+            maintain_stage=maintain_stage,
+        )
+
+    def _preferred_decoding_order(self) -> list[str]:
+        return preferred_process_decoding_order()
+
+    def decode_child_output_line(self, raw: bytes | str) -> str:
+        return decode_process_output_line(raw)
+
+    def build_child_process_env(self) -> dict[str, str]:
+        return build_child_process_env_map()
+
+    def should_log_child_alert_line(self, text: str) -> bool:
+        return should_log_process_alert_line(text)
+
+    def _build_progress_panel_snapshot(self, *, now_monotonic: float) -> PanelSnapshot:
+        return build_panel_snapshot(
+            upload_progress_state=self.upload_progress_state,
+            maintain_progress_state=self.maintain_progress_state,
+            pending_upload_snapshot=self.pending_upload_snapshot,
+            inflight_upload_snapshot=self.inflight_upload_snapshot,
+            pending_upload_reason=self.pending_upload_reason,
+            upload_running=self.upload_process is not None,
+            upload_retry_due_at=self.upload_retry_due_at,
+            pending_maintain=self.pending_maintain,
+            pending_maintain_names=self.pending_maintain_names,
+            pending_maintain_reason=self.pending_maintain_reason,
+            inflight_maintain_names=self.inflight_maintain_names,
+            maintain_running=self.maintain_process is not None,
+            maintain_retry_due_at=self.maintain_retry_due_at,
+            next_maintain_due_at=self.next_maintain_due_at,
+            last_incremental_defer_reason=self.last_incremental_defer_reason,
+            now_monotonic=now_monotonic,
+            compute_upload_queue_batches=self._compute_upload_queue_batches,
+            choose_incremental_maintain_batch_size=(
+                lambda pending_count, upload_pressure: self.scheduler_policy.choose_incremental_maintain_batch_size(
+                    pending_count=pending_count,
+                    upload_pressure=upload_pressure,
+                )
+            ),
+        )
+
+    def _build_progress_panel_lines(self, *, panel_snapshot: PanelSnapshot) -> list[str]:
+        context = PanelLinesContext(
+            panel_title=self.panel_title,
+            now_text=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            panel_mode="fixed" if self.panel_enabled else "log",
+            watch_interval_seconds=self.settings.watch_interval_seconds,
+            upload_bar=self._format_bar(panel_snapshot.upload_done, panel_snapshot.upload_total),
+            maintain_bar=self._format_bar(panel_snapshot.maintain_done, panel_snapshot.maintain_total),
+            upload_reason_text=self._short_reason(panel_snapshot.upload_reason, limit=40),
+            maintain_reason_text=self._short_reason(panel_snapshot.maintain_reason, limit=40),
+            maintain_defer_text=self._short_reason(panel_snapshot.maintain_defer_reason, limit=28),
+        )
+        return build_plain_panel_lines(
+            snapshot=panel_snapshot,
+            context=context,
+            fit_line=self._fit_panel_line,
+            border_line=self._panel_border_line,
+        )
+
+    def _should_skip_progress_render(self, *, force: bool, signature: str, now_monotonic: float) -> bool:
+        return should_skip_render_by_signature_gate(
+            SignatureHeartbeatGate(
+                force=force,
+                signature_unchanged=(signature == self.last_progress_signature),
+                now_monotonic=now_monotonic,
+                last_render_at=self.last_progress_render_at,
+                heartbeat_seconds=self.progress_render_heartbeat_seconds,
+            )
+        )
+
+    def render_progress_snapshot(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        with self.output_lock:
+            if (not force) and (now - self.last_progress_render_at < self.progress_render_interval_seconds):
+                return
+            panel_snapshot = self._build_progress_panel_snapshot(now_monotonic=now)
+            panel_lines_plain = self._build_progress_panel_lines(panel_snapshot=panel_snapshot)
+            signature = panel_signature(panel_lines_plain)
+            if self._should_skip_progress_render(force=force, signature=signature, now_monotonic=now):
+                return
+            self.last_progress_render_at = now
+            self.last_progress_signature = signature
+
+        panel_lines = self._apply_panel_colors(
+            panel_lines_plain,
+            upload_state=panel_snapshot.upload_state,
+            maintain_state=panel_snapshot.maintain_state,
+            upload_stage=panel_snapshot.upload_stage,
+            maintain_stage=panel_snapshot.maintain_stage,
+        )
+        self.render_fixed_panel(panel_lines)
+
+    def parse_child_progress_line(self, name: str, line: str) -> None:
+        text = line.strip()
+        if not text:
+            return
+        current_upload_total = int(self.upload_progress_state.get("total") or 0)
+        parsed = parse_progress_line(
+            channel=name,
+            text=text,
+            current_upload_total=current_upload_total,
+            should_log_alert_line=self.should_log_child_alert_line,
+        )
+        for update in parsed.updates:
+            self.update_channel_progress(
+                update.channel,
+                stage=update.stage,
+                done=update.done,
+                total=update.total,
+                force_render=update.force_render,
+            )
+            return
+
+        if parsed.should_log_alert:
+            log(f"[{name}] {text}")
+
+    def _write_child_output_line(self, name: str, line: str) -> None:
+        target = self.upload_cmd_output_file if name == CHANNEL_UPLOAD else self.maintain_cmd_output_file
+        append_output_line(target=target, line=line)
+
+    def start_output_pump(self, name: str, proc: subprocess.Popen) -> None:
+        def _on_line(line: str) -> None:
+            self._write_child_output_line(name, line)
+            self.parse_child_progress_line(name, line)
+
+        thread = start_output_pump_thread(
+            channel=name,
+            proc=proc,
+            decode_line=self.decode_child_output_line,
+            on_line=_on_line,
+            warn=log,
+        )
+        if thread is None:
+            return
+        if name == CHANNEL_UPLOAD:
+            self.upload_output_thread = thread
+        else:
+            self.maintain_output_thread = thread
+
+    def _detect_panel_capability(self) -> bool:
+        if not sys.stdout.isatty():
+            return False
+        if os.getenv("AUTO_MAINTAIN_FIXED_PANEL", "1").strip() in {"0", "false", "False"}:
+            return False
+        if os.name != "nt":
+            return True
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            if handle in (0, -1):
+                return False
+
+            mode = ctypes.c_uint()
+            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                return False
+
+            enable_vt = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            if mode.value & enable_vt:
+                return True
+            if not kernel32.SetConsoleMode(handle, mode.value | enable_vt):
+                return False
+            return True
+        except Exception:
+            return False
+
+    def init_fixed_panel_area(self) -> None:
+        if (not self.panel_enabled) or self.panel_initialized:
+            return
+        with self.console_lock:
+            if self.panel_initialized:
+                return
+            sys.stdout.write("\n" * self.panel_height)
+            sys.stdout.flush()
+            self.panel_initialized = True
+
+    def render_fixed_panel(self, lines: list[str]) -> None:
+        if not self.panel_enabled:
+            for line in lines:
+                log(line)
+            return
+
+        self.init_fixed_panel_area()
+        with self.console_lock:
+            # Save cursor, jump to top-left, overwrite reserved panel rows, then restore cursor.
+            sys.stdout.write("\x1b[s")
+            sys.stdout.write("\x1b[H")
+            for idx in range(self.panel_height):
+                row_text = lines[idx] if idx < len(lines) else ""
+                sys.stdout.write("\x1b[2K")
+                sys.stdout.write(row_text)
+                if idx < self.panel_height - 1:
+                    sys.stdout.write("\n")
+            sys.stdout.write("\x1b[u")
+            sys.stdout.flush()
+
+    def build_maintain_command(self, maintain_names_file: Path | None = None) -> list[str]:
+        return build_maintain_command_rows(
+            command_base=self.command_base(),
+            maintain_db_path=self.settings.maintain_db_path,
+            maintain_log_file=self.settings.maintain_log_file,
+            maintain_names_file=maintain_names_file,
+            assume_yes=self.settings.maintain_assume_yes,
+        )
+
+    def build_upload_command(self, upload_names_file: Path | None = None) -> list[str]:
+        return build_upload_command_rows(
+            command_base=self.command_base(),
+            auth_dir=self.settings.auth_dir,
+            upload_db_path=self.settings.upload_db_path,
+            upload_log_file=self.settings.upload_log_file,
+            upload_names_file=upload_names_file,
+        )
+
+    def _upload_queue_state(self) -> UploadQueueState:
+        return build_upload_queue_state(
+            pending_snapshot=self.pending_upload_snapshot,
+            pending_reason=self.pending_upload_reason,
+            pending_retry=self.pending_upload_retry,
+            inflight_snapshot=self.inflight_upload_snapshot,
+            attempt=self.upload_attempt,
+            retry_due_at=self.upload_retry_due_at,
+        )
+
+    def _apply_upload_queue_state(self, state: UploadQueueState) -> None:
+        (
+            self.pending_upload_snapshot,
+            self.pending_upload_reason,
+            self.pending_upload_retry,
+            self.inflight_upload_snapshot,
+            self.upload_attempt,
+            self.upload_retry_due_at,
+        ) = unpack_upload_queue_state(state)
+
+    def _maintain_queue_state(self) -> MaintainQueueState:
+        return build_maintain_queue_state(
+            pending=self.pending_maintain,
+            reason=self.pending_maintain_reason,
+            names=self.pending_maintain_names,
+        )
+
+    def _apply_maintain_queue_state(self, state: MaintainQueueState) -> None:
+        (
+            self.pending_maintain,
+            self.pending_maintain_reason,
+            self.pending_maintain_names,
+        ) = unpack_maintain_queue_state(state)
+
+    def _maintain_runtime_state(self) -> MaintainRuntimeState:
+        return build_maintain_runtime_state(
+            queue=self._maintain_queue_state(),
+            inflight_names=self.inflight_maintain_names,
+            attempt=self.maintain_attempt,
+            retry_due_at=self.maintain_retry_due_at,
+        )
+
+    def _apply_maintain_runtime_state(self, state: MaintainRuntimeState) -> None:
+        queue_state, inflight_names, attempt, retry_due_at = unpack_maintain_runtime_state(state)
+        self._apply_maintain_queue_state(queue_state)
+        self.inflight_maintain_names = inflight_names
+        self.maintain_attempt = attempt
+        self.maintain_retry_due_at = retry_due_at
+
+    def queue_maintain(self, reason: str, names: set[str] | None = None) -> None:
+        result = queue_maintain_request(
+            state=self._maintain_queue_state(),
+            reason=reason,
+            names=names,
+        )
+        self._apply_maintain_queue_state(result.state)
+        if result.progress_stage:
+            self.update_channel_progress(CHANNEL_MAINTAIN, stage=result.progress_stage, force_render=True)
+
+    def merge_pending_incremental_maintain_names(self, names: set[str]) -> None:
+        state = merge_incremental_maintain_names(
+            state=self._maintain_queue_state(),
+            names=names,
+        )
+        self._apply_maintain_queue_state(state)
+
+    def _defer_incremental_maintain_if_needed(self, now: float) -> bool:
+        if self.pending_maintain_names is None:
+            return False
+        defer_incremental, defer_reason = self.scheduler_policy.should_defer_incremental_maintain(
+            now_monotonic=now,
+            last_incremental_started_at=self.last_incremental_maintain_started_at,
+            next_full_maintain_due_at=self.next_maintain_due_at,
+            has_pending_full_maintain=(
+                self.pending_maintain and self.pending_maintain_names is None
+            ),
+        )
+        if not defer_incremental:
+            return False
+        if defer_reason != self.last_incremental_defer_reason:
+            log(f"Deferred incremental maintain start: {defer_reason}.")
+            self.last_incremental_defer_reason = defer_reason
+            self.update_channel_progress(CHANNEL_MAINTAIN, stage=STAGE_DEFERRED, force_render=True)
+        return True
+
+    def _compute_maintain_batch_size(self) -> int:
+        if self.pending_maintain_names is None:
+            return 0
+        return self.scheduler_policy.choose_incremental_maintain_batch_size(
+            pending_count=len(self.pending_maintain_names),
+            upload_pressure=(self.upload_process is not None) or bool(self.pending_upload_snapshot),
+        )
+
+    def _decide_maintain_start_scope(self, batch_size: int):
+        decision = decide_maintain_start_scope(
+            state=self._maintain_queue_state(),
+            batch_size=batch_size,
+        )
+        self._apply_maintain_queue_state(decision.state)
+        return decision
+
+    def _prepare_maintain_start(self, *, reason: str, max_attempts: int, scope_names: set[str] | None) -> MaintainStartPrep:
+        return prepare_maintain_start(
+            reason=reason,
+            attempt=self.maintain_attempt,
+            max_attempts=max_attempts,
+            scope_names=scope_names,
+            write_scope_file=self.write_maintain_names_scope,
+            build_command=self.build_maintain_command,
+            format_start_message=lambda attempt, max_attempts, reason, scope_names: (
+                format_maintain_start_message_rows(
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    reason=reason,
+                    maintain_scope_names=scope_names,
+                )
+            ),
+        )
+
+    def _start_channel_process(self, *, channel: str, command: list[str]):
+        return start_channel_with_handler(
+            channel=channel,
+            cmd=command,
+            env=self.build_child_process_env(),
+            cwd=str(self.settings.base_dir),
+            start_output_pump=self.start_output_pump,
+            mark_channel_running=self.mark_channel_running,
+            handle_start_error=self.handle_command_start_error,
+            popen_factory=subprocess.Popen,
+        )
+
+    def _start_maintain_process(self, *, prep: MaintainStartPrep, now: float) -> int:
+        log(prep.log_message)
+        if prep.started_incremental:
+            self.last_incremental_maintain_started_at = now
+        self.inflight_maintain_names = prep.scope_names
+        start_result = self._start_channel_process(
+            channel=CHANNEL_MAINTAIN,
+            command=prep.command,
+        )
+        if start_result.return_code != 0:
+            return start_result.return_code
+        self.maintain_process = start_result.process
+        return 0
+
+    def _can_attempt_maintain_start(self, *, now: float) -> bool:
+        if self.maintain_process is not None:
+            return False
+        if not self.pending_maintain:
+            return False
+        if now < self.maintain_retry_due_at:
+            return False
+        if self._defer_incremental_maintain_if_needed(now):
+            return False
+        self.last_incremental_defer_reason = None
+        return True
+
+    def _handle_maintain_start_scope_skip(self, *, skip_reason: str) -> int:
+        self.maintain_attempt = 0
+        self.maintain_retry_due_at = 0.0
+        log(f"Skipped maintain start: {skip_reason}.")
+        return 0
+
+    def maybe_start_maintain(self) -> int:
+        now = time.monotonic()
+        if not self._can_attempt_maintain_start(now=now):
+            return 0
+        self.maintain_attempt += 1
+        max_attempts = self.settings.maintain_retry_count + 1
+        reason = self.pending_maintain_reason or "unspecified"
+        batch_size = self._compute_maintain_batch_size()
+        decision = self._decide_maintain_start_scope(batch_size)
+        if decision.skip_reason:
+            return self._handle_maintain_start_scope_skip(skip_reason=decision.skip_reason)
+        if not decision.should_start:
+            return 0
+        prep = self._prepare_maintain_start(
+            reason=reason,
+            max_attempts=max_attempts,
+            scope_names=decision.scope_names,
+        )
+        return self._start_maintain_process(prep=prep, now=now)
+
+    def _compute_upload_batch_size(self, state: UploadQueueState) -> int:
+        if state.pending_retry and state.inflight_snapshot is not None:
+            return 1
+        pending_total = len(state.pending_snapshot or [])
+        maintain_pressure = self.maintain_process is not None or self.pending_maintain
+        return self.scheduler_policy.choose_upload_batch_size(
+            pending_count=pending_total,
+            maintain_pressure=maintain_pressure,
+        )
+
+    def _decide_upload_start(self, *, state: UploadQueueState, now: float, batch_size: int):
+        decision = decide_upload_start(
+            state=state,
+            now_monotonic=now,
+            batch_size=batch_size,
+        )
+        self._apply_upload_queue_state(decision.state)
+        return decision
+
+    def _prepare_upload_start(self, *, reason: str, max_attempts: int, batch: list[str]) -> UploadStartPrep:
+        return prepare_upload_start(
+            reason=reason,
+            attempt=self.upload_attempt,
+            max_attempts=max_attempts,
+            batch=batch,
+            pending_total=len(self.pending_upload_snapshot or []),
+            extract_scope_names=self.extract_names_from_snapshot,
+            write_scope_file=self.write_upload_names_scope,
+            build_command=self.build_upload_command,
+            format_start_message=lambda attempt, max_attempts, reason, batch_size, pending_total: (
+                format_upload_start_message_rows(
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    reason=reason,
+                    batch_size=batch_size,
+                    pending_total=pending_total,
+                )
+            ),
+        )
+
+    def _start_upload_process(self, *, prep: UploadStartPrep) -> int:
+        log(prep.log_message)
+        self.inflight_upload_snapshot = list(prep.batch)
+        start_result = self._start_channel_process(
+            channel=CHANNEL_UPLOAD,
+            command=prep.command,
+        )
+        if start_result.return_code != 0:
+            return start_result.return_code
+        self.upload_process = start_result.process
+        return 0
+
+    def maybe_start_upload(self) -> int:
+        if self.upload_process is not None:
+            return 0
+
+        state = self._upload_queue_state()
+        if state.pending_snapshot is None:
+            return 0
+
+        now = time.monotonic()
+        batch_size = self._compute_upload_batch_size(state)
+        decision = self._decide_upload_start(
+            state=state,
+            now=now,
+            batch_size=batch_size,
+        )
+        if decision.waiting_retry:
+            return 0
+        if not decision.can_start:
+            return 0
+
+        self.upload_attempt += 1
+        max_attempts = self.settings.upload_retry_count + 1
+        reason = self.pending_upload_reason or "detected changes"
+        prep = self._prepare_upload_start(
+            reason=reason,
+            max_attempts=max_attempts,
+            batch=decision.batch,
+        )
+        return self._start_upload_process(prep=prep)
+
+    def _decide_maintain_start_error(self) -> MaintainStartErrorDecision:
+        decision = decide_maintain_start_error(
+            state=self._maintain_runtime_state(),
+            retry_count=self.settings.maintain_retry_count,
+            now_monotonic=time.monotonic(),
+            retry_delay_seconds=self.settings.command_retry_delay_seconds,
+        )
+        self._apply_maintain_runtime_state(decision.state)
+        return decision
+
+    def _decide_upload_start_error(self) -> UploadStartErrorDecision:
+        decision = decide_upload_start_error(
+            state=self._upload_queue_state(),
+            retry_count=self.settings.upload_retry_count,
+            now_monotonic=time.monotonic(),
+            retry_delay_seconds=self.settings.command_retry_delay_seconds,
+        )
+        self._apply_upload_queue_state(decision.state)
+        return decision
+
+    def _apply_channel_start_error_retry_result(self, *, channel: str, should_retry: bool) -> int:
+        if not should_retry:
+            return 1
+        log(
+            format_command_start_retry_message(
+                channel,
+                self.settings.command_retry_delay_seconds,
+            )
+        )
+        self.update_channel_progress(channel, stage=STAGE_RETRY_WAIT, force_render=True)
+        return 0
+
+    def _handle_maintain_start_error(self) -> int:
+        self.update_channel_progress(CHANNEL_MAINTAIN, stage=STAGE_START_FAILED, force_render=True)
+        decision = self._decide_maintain_start_error()
+        return self._apply_channel_start_error_retry_result(
+            channel=CHANNEL_MAINTAIN,
+            should_retry=decision.should_retry,
+        )
+
+    def _handle_upload_start_error(self) -> int:
+        self.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_START_FAILED, force_render=True)
+        decision = self._decide_upload_start_error()
+        return self._apply_channel_start_error_retry_result(
+            channel=CHANNEL_UPLOAD,
+            should_retry=decision.should_retry,
+        )
+
+    def handle_command_start_error(self, name: str, exc: Exception) -> int:
+        log(format_command_start_failed_message(name, exc))
+        if name == CHANNEL_MAINTAIN:
+            return self._handle_maintain_start_error()
+        return self._handle_upload_start_error()
+
+    def _handle_maintain_success(self) -> None:
+        log(format_command_completed_message(CHANNEL_MAINTAIN))
+        stage = maintain_pending_progress_stage(
+            has_pending=self.pending_maintain,
+            pending_names=self.pending_maintain_names,
+        )
+        self.update_channel_progress(CHANNEL_MAINTAIN, stage=stage, done=0, total=0, force_render=True)
+
+    def _sync_post_upload_snapshots(self, *, uploaded_snapshot: list[str]) -> UploadSuccessPostProcessResult:
+        previous_uploaded_baseline = self.read_snapshot(self.last_uploaded_snapshot_file)
+
+        if self.settings.delete_uploaded_files_after_upload:
+            self.delete_uploaded_files_from_snapshot(uploaded_snapshot)
+
+        current_snapshot = self.build_snapshot(self.current_snapshot_file)
+        self.write_snapshot(self.stable_snapshot_file, current_snapshot)
+        postprocess = build_upload_success_postprocess(
+            previous_uploaded_baseline=previous_uploaded_baseline,
+            uploaded_snapshot=uploaded_snapshot,
+            current_snapshot=current_snapshot,
+        )
+        self.write_snapshot(self.last_uploaded_snapshot_file, postprocess.uploaded_baseline)
+        self.last_json_count = len(current_snapshot)
+        if self.settings.inspect_zip_files:
+            self.last_zip_signature = self.get_zip_signature()
+        return postprocess
+
+    def _apply_post_upload_queue_state(self, *, postprocess: UploadSuccessPostProcessResult) -> None:
+        self.pending_upload_snapshot = postprocess.queue_snapshot
+        self.pending_upload_reason = postprocess.queue_reason
+        if postprocess.pending_snapshot:
+            log(
+                "Detected files outside uploaded baseline after upload. "
+                f"Queued next upload batch ({len(postprocess.pending_snapshot)} pending)."
+            )
+            self.update_channel_progress(CHANNEL_UPLOAD, stage=postprocess.progress_stage, force_render=True)
+            return
+        self.update_channel_progress(
+            CHANNEL_UPLOAD,
+            stage=postprocess.progress_stage,
+            done=0,
+            total=0,
+            force_render=True,
+        )
+
+    def _run_post_upload_follow_up_check_if_needed(self) -> int:
+        if not self.pending_source_changes_during_upload:
+            return 0
+        self.pending_source_changes_during_upload = False
+        log("Running immediate deep upload check after active-upload source changes.")
+        return self.check_and_maybe_upload(force_deep_scan=True)
+
+    def _queue_post_upload_maintain_if_enabled(self, *, uploaded_names: set[str]) -> None:
+        if not self.settings.run_maintain_after_upload:
+            return
+        if uploaded_names:
+            self.queue_maintain("post-upload maintain", names=uploaded_names)
+            return
+        log("Skipped post-upload maintain: no uploaded names detected.")
+
+    def _handle_upload_success(self, *, uploaded_snapshot: list[str], return_code: int) -> int:
+        log(format_command_completed_message(CHANNEL_UPLOAD))
+        postprocess = self._sync_post_upload_snapshots(uploaded_snapshot=uploaded_snapshot)
+        self._apply_post_upload_queue_state(postprocess=postprocess)
+        follow_up_exit = self._run_post_upload_follow_up_check_if_needed()
+        if follow_up_exit != 0:
+            return follow_up_exit
+        self._queue_post_upload_maintain_if_enabled(uploaded_names=postprocess.uploaded_names)
+        return return_code
+
+    def _apply_non_success_process_exit_feedback(
+        self,
+        *,
+        channel: str,
+        status: str,
+        code: int,
+    ) -> None:
+        feedback = build_non_success_exit_feedback(
+            channel=channel,
+            status=status,
+            code=code,
+            retry_delay_seconds=self.settings.command_retry_delay_seconds,
+        )
+        if feedback.message:
+            log(feedback.message)
+        if feedback.stage is not None:
+            self.update_channel_progress(channel, stage=feedback.stage, force_render=True)
+
+    def _collect_exited_process_code(self, *, channel: str) -> int | None:
+        proc = self.maintain_process if channel == CHANNEL_MAINTAIN else self.upload_process
+        poll_result = poll_process_exit(proc)
+        if not poll_result.exited:
+            return None
+        if channel == CHANNEL_MAINTAIN:
+            self.maintain_process = None
+        else:
+            self.upload_process = None
+        return int(poll_result.code or 0)
+
+    def _decide_maintain_process_exit(self, *, code: int) -> MaintainProcessExitDecision:
+        decision = decide_maintain_process_exit(
+            code=code,
+            shutdown_requested=self.shutdown_requested,
+            state=self._maintain_runtime_state(),
+            retry_count=self.settings.maintain_retry_count,
+            now_monotonic=time.monotonic(),
+            retry_delay_seconds=self.settings.command_retry_delay_seconds,
+        )
+        self._apply_maintain_runtime_state(decision.state)
+        return decision
+
+    def _decide_upload_process_exit(self, *, code: int) -> UploadProcessExitDecision:
+        decision = decide_upload_process_exit(
+            code=code,
+            shutdown_requested=self.shutdown_requested,
+            state=self._upload_queue_state(),
+            retry_count=self.settings.upload_retry_count,
+            now_monotonic=time.monotonic(),
+            retry_delay_seconds=self.settings.command_retry_delay_seconds,
+        )
+        self._apply_upload_queue_state(decision.state)
+        return decision
+
+    def _handle_maintain_poll_decision(
+        self,
+        *,
+        decision: MaintainProcessExitDecision,
+        code: int,
+    ) -> int:
+        if decision.status == STATUS_SUCCESS:
+            self._handle_maintain_success()
+            return decision.return_code
+        if decision.status == STATUS_SHUTDOWN:
+            return decision.return_code
+        self._apply_non_success_process_exit_feedback(
+            channel=CHANNEL_MAINTAIN,
+            status=decision.status,
+            code=code,
+        )
+        return decision.return_code
+
+    def _handle_upload_poll_decision(
+        self,
+        *,
+        decision: UploadProcessExitDecision,
+        code: int,
+        uploaded_snapshot: list[str],
+    ) -> int:
+        if decision.status == STATUS_SUCCESS:
+            return self._handle_upload_success(
+                uploaded_snapshot=uploaded_snapshot,
+                return_code=decision.return_code,
+            )
+        if decision.status == STATUS_SHUTDOWN:
+            return decision.return_code
+        self._apply_non_success_process_exit_feedback(
+            channel=CHANNEL_UPLOAD,
+            status=decision.status,
+            code=code,
+        )
+        self.pending_source_changes_during_upload = False
+        return decision.return_code
+
+    def poll_maintain_process(self) -> int:
+        code = self._collect_exited_process_code(channel=CHANNEL_MAINTAIN)
+        if code is None:
+            return 0
+
+        decision = self._decide_maintain_process_exit(code=code)
+        return self._handle_maintain_poll_decision(decision=decision, code=code)
+
+    def _collect_active_upload_probe_inputs(self) -> tuple[int, tuple[str, ...] | None, float]:
+        current_json_count = self.get_json_count()
+        current_zip_signature: tuple[str, ...] | None = None
+        if self.settings.inspect_zip_files:
+            current_zip_signature = self.get_zip_signature()
+        return current_json_count, current_zip_signature, time.monotonic()
+
+    def _decide_active_upload_probe(
+        self,
+        *,
+        current_json_count: int,
+        current_zip_signature: tuple[str, ...] | None,
+        now_monotonic: float,
+    ) -> ActiveUploadProbeDecision:
+        return decide_active_upload_probe(
+            state=ActiveUploadProbeState(
+                pending_source_changes=self.pending_source_changes_during_upload,
+                last_json_count=self.last_json_count,
+                last_zip_signature=self.last_zip_signature,
+                last_deep_scan_at=self.last_active_upload_deep_scan_at,
+            ),
+            upload_running=True,
+            current_json_count=current_json_count,
+            inspect_zip_files=self.settings.inspect_zip_files,
+            current_zip_signature=current_zip_signature,
+            now_monotonic=now_monotonic,
+            deep_scan_interval_seconds=self.settings.active_upload_deep_scan_interval_seconds,
+        )
+
+    def _apply_active_upload_probe_state(self, *, decision: ActiveUploadProbeDecision) -> None:
+        self.pending_source_changes_during_upload = decision.state.pending_source_changes
+        self.last_json_count = decision.state.last_json_count
+        self.last_zip_signature = decision.state.last_zip_signature
+        self.last_active_upload_deep_scan_at = decision.state.last_deep_scan_at
+
+    def _log_active_upload_source_change_if_needed(self, *, decision: ActiveUploadProbeDecision) -> None:
+        if not decision.should_log_detection:
+            return
+        log(
+            "Detected source changes during active upload ("
+            + ",".join(decision.changed_reasons)
+            + "). Will trigger immediate deep upload check after batch completion."
+        )
+
+    def _refresh_upload_queue_during_active_upload(self) -> int:
+        log("Refreshing upload queue immediately during active upload.")
+        return self.check_and_maybe_upload(
+            force_deep_scan=True,
+            preserve_retry_state=True,
+            skip_stability_wait=True,
+            queue_reason="active-upload source changes",
+        )
+
+    def probe_changes_during_active_upload(self) -> int:
+        if self.upload_process is None:
+            return 0
+
+        current_json_count, current_zip_signature, now_monotonic = self._collect_active_upload_probe_inputs()
+        decision = self._decide_active_upload_probe(
+            current_json_count=current_json_count,
+            current_zip_signature=current_zip_signature,
+            now_monotonic=now_monotonic,
+        )
+        if not decision.source_changed:
+            return 0
+
+        self._apply_active_upload_probe_state(decision=decision)
+        self._log_active_upload_source_change_if_needed(decision=decision)
+        if not decision.should_refresh_upload_queue:
+            return 0
+
+        return self._refresh_upload_queue_during_active_upload()
+
+    def poll_upload_process(self) -> int:
+        code = self._collect_exited_process_code(channel=CHANNEL_UPLOAD)
+        if code is None:
+            return 0
+
+        uploaded_snapshot = self.inflight_upload_snapshot or []
+        decision = self._decide_upload_process_exit(code=code)
+        return self._handle_upload_poll_decision(
+            decision=decision,
+            code=code,
+            uploaded_snapshot=uploaded_snapshot,
+        )
+
+    def handle_failure(self, stage: str, code: int) -> bool:
+        log(f"{stage} failed with exit {code}.")
+        if self.settings.run_once:
+            log("Run-once mode enabled. Exiting on failure.")
+            return False
+        if self.settings.continue_on_command_failure:
+            log("Continue mode enabled. Keep loop alive.")
+            return True
+        return False
+
+    def _current_upload_scan_inputs(self) -> tuple[int, tuple[str, ...]]:
+        current_json_count = self.get_json_count()
+        current_zip_signature = self.get_zip_signature() if self.settings.inspect_zip_files else tuple()
+        return current_json_count, current_zip_signature
+
+    def _should_run_upload_deep_scan(
+        self,
+        *,
+        force_deep_scan: bool,
+        current_json_count: int,
+        current_zip_signature: tuple[str, ...],
+    ) -> bool:
+        cadence = decide_upload_deep_scan(
+            force_deep_scan=force_deep_scan,
+            pending_upload_retry=self.pending_upload_retry,
+            current_json_count=current_json_count,
+            last_json_count=self.last_json_count,
+            inspect_zip_files=self.settings.inspect_zip_files,
+            current_zip_signature=current_zip_signature,
+            last_zip_signature=self.last_zip_signature,
+            deep_scan_counter=self.deep_scan_counter,
+            deep_scan_interval_loops=self.settings.deep_scan_interval_loops,
+        )
+        self.deep_scan_counter = cadence.next_deep_scan_counter
+        return cadence.should_deep_scan
+
+    def _refresh_upload_scan_inputs_after_zip_if_needed(
+        self,
+        *,
+        current_json_count: int,
+        current_zip_signature: tuple[str, ...],
+    ) -> tuple[int, tuple[str, ...]]:
+        if not self.settings.inspect_zip_files:
+            return current_json_count, current_zip_signature
+        zip_changed = self.inspect_zip_archives()
+        if not zip_changed:
+            return current_json_count, current_zip_signature
+        return self.get_json_count(), self.get_zip_signature()
+
+    def _resolve_stable_upload_snapshot(
+        self,
+        *,
+        current_snapshot: list[str],
+        skip_stability_wait: bool,
+    ) -> tuple[int, list[str] | None]:
+        if skip_stability_wait:
+            return 0, current_snapshot
+        log(f"Detected JSON changes. Waiting {self.settings.upload_stable_wait_seconds}s for stability...")
+        stable_wait_exit, stable_snapshot = self.wait_for_stable_snapshot(current_snapshot)
+        if stable_wait_exit != 0:
+            return stable_wait_exit, None
+        if stable_snapshot is None:
+            return 130, None
+        return 0, stable_snapshot
+
+    def _record_upload_scan_baseline(
+        self,
+        *,
+        snapshot: list[str],
+        json_count: int,
+        zip_signature: tuple[str, ...],
+    ) -> None:
+        self.write_snapshot(self.stable_snapshot_file, snapshot)
+        self.last_json_count = json_count
+        if self.settings.inspect_zip_files:
+            self.last_zip_signature = zip_signature
+
+    def _handle_upload_no_changes_detected(
+        self,
+        *,
+        current_snapshot: list[str],
+        current_json_count: int,
+        current_zip_signature: tuple[str, ...],
+        preserve_retry_state: bool,
+    ) -> int:
+        self._record_upload_scan_baseline(
+            snapshot=current_snapshot,
+            json_count=current_json_count,
+            zip_signature=current_zip_signature,
+        )
+        state = mark_upload_no_changes(
+            state=self._upload_queue_state(),
+            preserve_retry_state=preserve_retry_state,
+        )
+        self._apply_upload_queue_state(state)
+        return 0
+
+    def _handle_upload_no_pending_discovered(
+        self,
+        *,
+        stable_snapshot: list[str],
+        current_zip_signature: tuple[str, ...],
+        preserve_retry_state: bool,
+    ) -> int:
+        state = mark_upload_no_pending_discovered(
+            state=self._upload_queue_state(),
+            preserve_retry_state=preserve_retry_state,
+        )
+        self._apply_upload_queue_state(state)
+        self._record_upload_scan_baseline(
+            snapshot=stable_snapshot,
+            json_count=len(stable_snapshot),
+            zip_signature=current_zip_signature,
+        )
+        if self.pending_upload_snapshot is None:
+            self.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_IDLE, done=0, total=0, force_render=True)
+        return 0
+
+    def _queue_pending_upload_snapshot(
+        self,
+        *,
+        pending_snapshot: list[str],
+        queue_reason: str,
+        preserve_retry_state: bool,
+    ) -> int:
+        merge_result = merge_pending_upload_snapshot(
+            state=self._upload_queue_state(),
+            discovered_pending_snapshot=pending_snapshot,
+            queue_reason=queue_reason,
+            preserve_retry_state=preserve_retry_state,
+        )
+        self._apply_upload_queue_state(merge_result.state)
+        merged_pending = merge_result.merged_pending_snapshot
+        log(f"Upload batch queued. pending={len(merged_pending)}")
+        self.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_PENDING, force_render=True)
+        return 0
+
+    def check_and_maybe_upload(
+        self,
+        force_deep_scan: bool = False,
+        *,
+        preserve_retry_state: bool = False,
+        skip_stability_wait: bool = False,
+        queue_reason: str = "detected JSON changes",
+    ) -> int:
+        current_json_count, current_zip_signature = self._current_upload_scan_inputs()
+        if not self._should_run_upload_deep_scan(
+            force_deep_scan=force_deep_scan,
+            current_json_count=current_json_count,
+            current_zip_signature=current_zip_signature,
+        ):
+            return 0
+
+        current_json_count, current_zip_signature = self._refresh_upload_scan_inputs_after_zip_if_needed(
+            current_json_count=current_json_count,
+            current_zip_signature=current_zip_signature,
+        )
+        current_snapshot = self.build_snapshot(self.current_snapshot_file)
+        last_uploaded_snapshot = self.read_snapshot(self.last_uploaded_snapshot_file)
+        if current_snapshot == last_uploaded_snapshot:
+            return self._handle_upload_no_changes_detected(
+                current_snapshot=current_snapshot,
+                current_json_count=current_json_count,
+                current_zip_signature=current_zip_signature,
+                preserve_retry_state=preserve_retry_state,
+            )
+
+        stable_wait_exit, stable_snapshot = self._resolve_stable_upload_snapshot(
+            current_snapshot=current_snapshot,
+            skip_stability_wait=skip_stability_wait,
+        )
+        if stable_wait_exit != 0:
+            return stable_wait_exit
+        if stable_snapshot is None:
+            return 130
+        pending_snapshot = self.compute_pending_upload_snapshot(stable_snapshot, last_uploaded_snapshot)
+        if not pending_snapshot:
+            return self._handle_upload_no_pending_discovered(
+                stable_snapshot=stable_snapshot,
+                current_zip_signature=current_zip_signature,
+                preserve_retry_state=preserve_retry_state,
+            )
+
+        return self._queue_pending_upload_snapshot(
+            pending_snapshot=pending_snapshot,
+            queue_reason=queue_reason,
+            preserve_retry_state=preserve_retry_state,
+        )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Auto maintain + folder watch uploader for cpa-warden.",
+    )
+    parser.add_argument(
+        "--watch-config",
+        help="Watcher config JSON path (env WATCH_CONFIG_PATH also supported).",
+    )
+    parser.add_argument("--once", action="store_true", help="Run one cycle and exit.")
+    return parser.parse_args()
+
+
+def load_settings(args: argparse.Namespace) -> Settings:
+    base_dir = Path(__file__).resolve().parents[2]
+    return load_auto_settings(
+        args=args,
+        base_dir=base_dir,
+        log=log,
+    )
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        settings = load_settings(args)
+        maintainer = AutoMaintainer(settings)
+        return maintainer.run()
+    except KeyboardInterrupt:
+        log("Interrupted by user.")
+        return 130
+    except Exception as exc:
+        log(f"[ERROR] {exc}")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

@@ -22,6 +22,11 @@ class _DoneProcess:
         return self._code
 
 
+class _RunningProcess:
+    def poll(self) -> None:
+        return None
+
+
 def _build_settings(base_dir: Path, auth_dir: Path) -> Settings:
     state_dir = base_dir / "state"
     return Settings(
@@ -72,6 +77,104 @@ def _build_settings(base_dir: Path, auth_dir: Path) -> Settings:
 
 
 class AutoMaintainTests(unittest.TestCase):
+    def test_collect_exited_process_code_returns_none_when_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            maintainer = AutoMaintainer(_build_settings(base, auth_dir))
+
+            running = _RunningProcess()
+            maintainer.upload_process = running  # type: ignore[assignment]
+
+            code = maintainer._collect_exited_process_code(channel="upload")
+
+            self.assertIsNone(code)
+            self.assertIs(maintainer.upload_process, running)
+
+    def test_collect_exited_process_code_clears_process_on_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            maintainer = AutoMaintainer(_build_settings(base, auth_dir))
+
+            maintainer.maintain_process = _DoneProcess(7)  # type: ignore[assignment]
+
+            code = maintainer._collect_exited_process_code(channel="maintain")
+
+            self.assertEqual(code, 7)
+            self.assertIsNone(maintainer.maintain_process)
+
+    def test_upload_queue_state_adapter_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            maintainer = AutoMaintainer(_build_settings(base, auth_dir))
+
+            maintainer.pending_upload_snapshot = ["a|1|1"]
+            maintainer.pending_upload_reason = "queued"
+            maintainer.pending_upload_retry = True
+            maintainer.inflight_upload_snapshot = ["a|1|1"]
+            maintainer.upload_attempt = 2
+            maintainer.upload_retry_due_at = 123.0
+
+            state = maintainer._upload_queue_state()
+            self.assertEqual(state.pending_snapshot, ["a|1|1"])
+            self.assertTrue(state.pending_retry)
+            self.assertEqual(state.attempt, 2)
+
+            state.pending_snapshot = ["b|2|2"]
+            state.pending_reason = "next"
+            state.pending_retry = False
+            state.inflight_snapshot = None
+            state.attempt = 0
+            state.retry_due_at = 0.0
+            maintainer._apply_upload_queue_state(state)
+
+            self.assertEqual(maintainer.pending_upload_snapshot, ["b|2|2"])
+            self.assertEqual(maintainer.pending_upload_reason, "next")
+            self.assertFalse(maintainer.pending_upload_retry)
+            self.assertIsNone(maintainer.inflight_upload_snapshot)
+            self.assertEqual(maintainer.upload_attempt, 0)
+            self.assertEqual(maintainer.upload_retry_due_at, 0.0)
+
+    def test_maintain_runtime_state_adapter_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            maintainer = AutoMaintainer(_build_settings(base, auth_dir))
+
+            maintainer.pending_maintain = True
+            maintainer.pending_maintain_reason = "post-upload"
+            maintainer.pending_maintain_names = {"a.json"}
+            maintainer.inflight_maintain_names = {"b.json"}
+            maintainer.maintain_attempt = 3
+            maintainer.maintain_retry_due_at = 77.0
+
+            runtime = maintainer._maintain_runtime_state()
+            self.assertTrue(runtime.queue.pending)
+            self.assertEqual(runtime.queue.names, {"a.json"})
+            self.assertEqual(runtime.inflight_names, {"b.json"})
+            self.assertEqual(runtime.attempt, 3)
+
+            runtime.queue.pending = False
+            runtime.queue.reason = None
+            runtime.queue.names = None
+            runtime.inflight_names = None
+            runtime.attempt = 0
+            runtime.retry_due_at = 0.0
+            maintainer._apply_maintain_runtime_state(runtime)
+
+            self.assertFalse(maintainer.pending_maintain)
+            self.assertIsNone(maintainer.pending_maintain_reason)
+            self.assertIsNone(maintainer.pending_maintain_names)
+            self.assertIsNone(maintainer.inflight_maintain_names)
+            self.assertEqual(maintainer.maintain_attempt, 0)
+            self.assertEqual(maintainer.maintain_retry_due_at, 0.0)
+
     def test_compute_uploaded_baseline_keeps_only_uploaded_and_still_existing(self) -> None:
         existing_baseline = ["legacy|0|0", "a|1|1"]
         uploaded_snapshot = ["a|1|1", "b|2|2"]
@@ -723,6 +826,68 @@ class AutoMaintainTests(unittest.TestCase):
             raw = "开始并发探测".encode("gb18030")
             decoded = maintainer.decode_child_output_line(raw)
             self.assertEqual(decoded, "开始并发探测")
+
+    def test_is_run_once_cycle_complete_requires_no_running_and_no_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+
+            self.assertTrue(maintainer._is_run_once_cycle_complete())
+            maintainer.pending_upload_snapshot = ["a|1|1"]
+            self.assertFalse(maintainer._is_run_once_cycle_complete())
+            maintainer.pending_upload_snapshot = None
+            maintainer.maintain_process = _DoneProcess(0)
+            self.assertFalse(maintainer._is_run_once_cycle_complete())
+
+    def test_sleep_between_watch_cycles_run_once_complete_returns_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            settings.run_once = True
+            maintainer = AutoMaintainer(settings)
+
+            with mock.patch("auto_maintain.log") as log_mock:
+                result = maintainer._sleep_between_watch_cycles()
+
+            self.assertEqual(result, 0)
+            self.assertTrue(
+                any("Run-once cycle finished." in call.args[0] for call in log_mock.call_args_list if call.args)
+            )
+
+    def test_sleep_between_watch_cycles_run_once_waits_when_not_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            settings.run_once = True
+            maintainer = AutoMaintainer(settings)
+            maintainer.pending_upload_retry = True
+
+            with mock.patch.object(maintainer, "sleep_with_shutdown", return_value=True) as sleep_mock:
+                result = maintainer._sleep_between_watch_cycles()
+
+            self.assertIsNone(result)
+            sleep_mock.assert_called_once_with(1)
+
+    def test_resolve_stage_failure_respects_handle_failure_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+
+            self.assertEqual(maintainer._resolve_stage_failure("watch", 0), 0)
+            with mock.patch.object(maintainer, "handle_failure", return_value=True):
+                self.assertEqual(maintainer._resolve_stage_failure("watch", 9), 0)
+            with mock.patch.object(maintainer, "handle_failure", return_value=False):
+                self.assertEqual(maintainer._resolve_stage_failure("watch", 9), 9)
 
 
 if __name__ == "__main__":

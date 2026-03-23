@@ -1,6 +1,6 @@
 import sys
 
-from cwma.apps import auto_maintain as _impl
+from cwma.auto import app as _impl
 
 if __name__ == "__main__":
     raise SystemExit(_impl.main())
