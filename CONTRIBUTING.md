@@ -53,6 +53,12 @@ If you share logs for debugging, sanitize tokens, account identifiers, and sensi
 
 `README.md` and `README.zh-CN.md` should remain aligned in meaning.
 
+When scheduler/watcher behavior changes, update these sections explicitly:
+
+- "Improvement Highlights / 改进特性总览"
+- "Execution Logic / 执行逻辑（Watcher）"
+- `ARCHITECTURE.md` concurrency/snapshot/failure model sections
+
 ## Security
 
 For vulnerabilities, do not open a public issue first. Follow [SECURITY.md](SECURITY.md).

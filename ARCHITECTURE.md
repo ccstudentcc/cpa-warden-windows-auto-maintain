@@ -41,6 +41,38 @@ This repository provides a Windows-first automation layer on top of the CPA main
 5. Optional post-upload maintain is queued.
 6. Runtime state persists under `.auto_maintain_state`.
 
+## Concurrency Model
+
+- The scheduler has two independent execution channels:
+  - upload channel (`self.upload_process`)
+  - maintain channel (`self.maintain_process`)
+- Each channel has independent pending flags, retry counters, and retry due times.
+- Command launch conditions are channel-local, so maintain can continue while upload is still running.
+- Post-upload maintain is queued as an additional maintain reason, not as an upload blocking step.
+
+## Snapshot Model
+
+Watcher consistency is built around three snapshot files:
+
+- `current_snapshot.txt`: current observed JSON files and metadata
+- `stable_snapshot.txt`: stable snapshot after wait-window confirmation
+- `last_uploaded_snapshot.txt`: uploaded baseline used for change detection
+
+Key rule:
+
+- On upload success, baseline is computed as the intersection of
+  - uploaded in-flight snapshot, and
+  - files that still exist in the current snapshot
+
+This avoids incorrectly marking files created during upload as already uploaded.
+
+## ZIP Intake Model
+
+- ZIP scanning can run before upload checks (`INSPECT_ZIP_FILES=1`).
+- ZIP change detection uses signature delta (path/size/mtime), not only ZIP count.
+- If enabled, ZIP extraction prefers Bandizip and can fall back to Windows extraction.
+- ZIP-derived JSON changes feed into the same stable-snapshot + upload queue pipeline.
+
 ## State Files
 
 Default state directory: `.auto_maintain_state`
@@ -60,6 +92,12 @@ Default state directory: `.auto_maintain_state`
 - Upload and maintain have independent retry counters.
 - `--once` always exits on failure.
 - Single-instance lock is enabled by default (`ALLOW_MULTI_INSTANCE=0`).
+
+## Cleanup Model
+
+- On successful upload, source JSON files can be deleted (`DELETE_UPLOADED_FILES_AFTER_UPLOAD=1`).
+- After file deletion, empty subdirectories under `auth_dir` are pruned.
+- Cleanup is best-effort with warning logs on skipped/failed paths.
 
 ## Git Hygiene Model
 

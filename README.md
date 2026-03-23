@@ -30,6 +30,36 @@ The core value of this project is not replacing `cpa_warden.py`, but orchestrati
 - clean uploaded files and prune empty subdirectories
 - run unattended with fail-fast defaults and explicit retries
 
+## Improvement Highlights
+
+Compared with the baseline derivative commit (`f3778f4`), current watcher behavior includes:
+
+1. Parallel scheduler channels for `upload` and `maintain` so maintenance is no longer blocked by long upload batches.
+2. Split runtime persistence paths for maintain/upload (`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`) and split logs (`MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`).
+3. Upload baseline correctness fix: files created during an in-flight upload are not incorrectly marked as already uploaded.
+4. Snapshot robustness improvements for transient file-system races (disappearing/replaced files while scanning).
+5. Post-upload follow-up batch queueing when files are outside the completed upload baseline.
+6. ZIP change detection by signature delta (path/size/mtime), not only ZIP file count.
+7. Upload cleanup now prunes empty directories under `auth_dir`.
+8. Fail-fast default policy for command failures, with explicit retry controls and stricter `--once` semantics.
+9. `MAINTAIN_ASSUME_YES` support for unattended maintain executions.
+10. Python-side single-instance lock arbitration to reduce duplicate watcher runs.
+
+## Execution Logic (Watcher)
+
+`auto_maintain.py` loop behavior is:
+
+1. Build initial snapshots and initialize `last_uploaded_snapshot` if absent.
+2. Inspect ZIP files (optional) and enqueue upload-check if ZIP extraction produced JSON changes.
+3. Queue startup maintain/upload based on profile flags.
+4. Start maintain and upload commands independently when each channel is idle.
+5. Poll command exits independently:
+   - upload success updates snapshots/baseline and optionally deletes uploaded source files;
+   - maintain success clears maintain retry state.
+6. On upload completion, optionally queue post-upload maintain.
+7. Apply independent retry windows for maintain/upload failures.
+8. In `--once` mode, exit only after all running/pending work finishes; exit non-zero on failures.
+
 ## Key Components
 
 - `cpa_warden.py`: upstream-compatible CPA scanner / maintainer / uploader CLI
@@ -80,11 +110,13 @@ start_auto_maintain_optimized.bat
 - `.auto_maintain_state/` is runtime-only and ignored by git.
 - `auth_files/*` is ignored except `auth_files/.gitkeep`.
 - Recommended runtime artifacts stay outside commits:
-
 - `.auto_maintain_state/cpa_warden_maintain.sqlite3`
 - `.auto_maintain_state/cpa_warden_upload.sqlite3`
 - `.auto_maintain_state/cpa_warden_maintain.log`
 - `.auto_maintain_state/cpa_warden_upload.log`
+- `.auto_maintain_state/last_uploaded_snapshot.txt`
+- `.auto_maintain_state/current_snapshot.txt`
+- `.auto_maintain_state/stable_snapshot.txt`
 
 ## Operational Defaults In Optimized Launcher
 

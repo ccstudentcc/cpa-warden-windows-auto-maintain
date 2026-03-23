@@ -30,6 +30,36 @@
 - 上传后清理源文件，并清理空子目录
 - 支持无人值守运行，默认失败即停，重试策略显式可控
 
+## 改进特性总览
+
+相对衍生基线提交（`f3778f4`），当前 watcher 的关键增强包括：
+
+1. `upload` 与 `maintain` 并发调度，维护不再被长上传批次阻塞。
+2. 维护/上传运行状态彻底拆分：`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`，日志也拆分为 `MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`。
+3. 上传基线一致性修复：上传进行中新出现的文件，不会被误判为“已上传”。
+4. 快照扫描增强：对扫描期间文件瞬时消失/替换等文件系统竞态更稳健。
+5. 上传完成后，若检测到基线外文件，会自动排队下一批上传。
+6. ZIP 变更检测升级为签名比对（路径/大小/mtime），不再只看 ZIP 数量。
+7. 上传清理后会继续清理 `auth_dir` 下空目录。
+8. 默认失败即停（fail-fast），并保留上传/维护独立重试策略；`--once` 语义更严格。
+9. 新增 `MAINTAIN_ASSUME_YES`，便于无人值守维护。
+10. 单实例锁由 Python 侧统一仲裁，降低重复 watcher 并发风险。
+
+## 执行逻辑（Watcher）
+
+`auto_maintain.py` 主循环行为如下：
+
+1. 建立初始快照，若无历史基线则初始化 `last_uploaded_snapshot`。
+2. 可选执行 ZIP 巡检；若解压产生 JSON 变化，会立即进入上传检查。
+3. 按启动参数决定是否排队首轮维护/上传。
+4. 当各自通道空闲时，维护与上传独立启动，互不阻塞。
+5. 独立轮询两个子进程退出状态：
+   - 上传成功会更新快照/基线，并按配置删除已上传源文件；
+   - 维护成功会清理维护重试状态。
+6. 上传成功后可选排队“上传后维护”。
+7. 上传与维护失败分别进入各自重试窗口，互不干扰。
+8. `--once` 模式下，只有运行中和排队任务都完成才退出；失败返回非零码。
+
 ## 核心组件
 
 - `cpa_warden.py`：兼容上游的扫描/维护/上传 CLI
@@ -80,11 +110,13 @@ start_auto_maintain_optimized.bat
 - `.auto_maintain_state/` 仅用于运行时状态，已被 git 忽略
 - `auth_files/*` 被忽略，仅放行 `auth_files/.gitkeep`
 - 建议不纳入提交的运行产物：
-
 - `.auto_maintain_state/cpa_warden_maintain.sqlite3`
 - `.auto_maintain_state/cpa_warden_upload.sqlite3`
 - `.auto_maintain_state/cpa_warden_maintain.log`
 - `.auto_maintain_state/cpa_warden_upload.log`
+- `.auto_maintain_state/last_uploaded_snapshot.txt`
+- `.auto_maintain_state/current_snapshot.txt`
+- `.auto_maintain_state/stable_snapshot.txt`
 
 ## 优化启动脚本默认策略
 
