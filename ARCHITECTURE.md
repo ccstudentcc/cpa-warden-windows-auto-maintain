@@ -20,6 +20,12 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Responsibility: orchestration loop, upload/maintain concurrency, snapshotting, lock control, ZIP intake, retry/fail-fast policy
 - Test file: `tests/test_auto_maintain.py`
 
+### `smart_scheduler.py`
+
+- Entry point: imported by `auto_maintain.py`
+- Public interface: `SmartSchedulerConfig`, `SmartSchedulerPolicy`
+- Responsibility: centralized scheduling policy decisions for adaptive upload batching and incremental maintain deferral rules
+
 ### `auto_maintain.bat`
 
 - Entry point: double-click / shell execution on Windows
@@ -68,6 +74,11 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Each channel has independent pending flags, retry counters, and retry due times.
 - Command launch conditions are channel-local, so maintain can continue while upload is still running.
 - Upload channel supports serial batch slicing so one large snapshot does not block post-upload incremental maintain for early batches.
+- During active upload execution, watcher still performs lightweight JSON-count/ZIP-signature probes; detected changes trigger an immediate forced deep upload check right after current batch completion.
+- Smart scheduler can adapt upload batch size under backlog pressure (`UPLOAD_HIGH_BACKLOG_THRESHOLD` / `UPLOAD_HIGH_BACKLOG_BATCH_SIZE`).
+- Runtime panel snapshots expose per-channel queue state in terminal output (`queue_files`, `queue_batches`, `queue_full`, `queue_incremental`) so operators can observe scheduler backlog behavior directly.
+- Fixed dashboard redraw can be toggled by `AUTO_MAINTAIN_FIXED_PANEL`; color can be toggled by `AUTO_MAINTAIN_PANEL_COLOR`.
+- Incremental maintain can be deferred by cooldown and full-maintain-guard rules (`INCREMENTAL_MAINTAIN_*`).
 - Post-upload maintain is queued as an additional maintain reason, not as an upload blocking step.
 - Scheduled maintain (`MAINTAIN_INTERVAL_SECONDS`) is full-scope.
 - Post-upload maintain is incremental-scope, constrained to uploaded auth names through `--maintain-names-file`.
@@ -105,11 +116,14 @@ Default state directory: `.auto_maintain_state`
 - `cpa_warden_upload.sqlite3`
 - `cpa_warden_maintain.log`
 - `cpa_warden_upload.log`
+- `maintain_command_output.log`
+- `upload_command_output.log`
 - `maintain_names_scope.txt`
 - `upload_names_scope.txt`
 - `last_uploaded_snapshot.txt`
 - `current_snapshot.txt`
 - `stable_snapshot.txt`
+- `auto_maintain_launcher.lock`
 - `auto_maintain.lock`
 
 ## Failure Model
@@ -117,7 +131,9 @@ Default state directory: `.auto_maintain_state`
 - Default behavior is fail-fast (`CONTINUE_ON_COMMAND_FAILURE=0`).
 - Upload and maintain have independent retry counters.
 - `--once` always exits on failure.
-- Single-instance lock is enabled by default (`ALLOW_MULTI_INSTANCE=0`).
+- Single-instance lock is enabled by default (`ALLOW_MULTI_INSTANCE=0`) and enforced in two layers on Windows:
+  - launcher pre-lock (`auto_maintain_launcher.lock`) in `auto_maintain.bat`;
+  - runtime file lock (`auto_maintain.lock`) in `auto_maintain.py` using `msvcrt`.
 
 ## Cleanup Model
 

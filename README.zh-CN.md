@@ -27,7 +27,9 @@
 - 维护任务按计划执行，不再被长时间上传批次阻塞
 - 维护与上传使用分离的 DB/日志路径
 - 支持 ZIP 入口（Bandizip + Windows 回退解压）
+  - 对 ZIP 内嵌套子目录中的 JSON 也会递归识别
 - 上传后清理源文件，并清理空子目录
+- 终端面板会输出上传/维护双通道状态，并展示各自等待队列/积压信息
 - 支持无人值守运行，默认失败即停，重试策略显式可控
 
 ## 改进特性总览
@@ -40,15 +42,25 @@
 2. 上传队列支持按批次切分（`UPLOAD_BATCH_SIZE`），并通过 `--upload-names-file` 做每批精准上传。
    - 单批上传更快结束。
    - 已上传批次可更早触发增量维护。
-3. 维护/上传运行状态彻底拆分：`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`，日志也拆分为 `MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`。
-4. 上传基线一致性修复：部分批次成功时，会与历史已上传基线合并，而不是覆盖。
-5. 快照扫描增强：对扫描期间文件瞬时消失/替换等文件系统竞态更稳健。
-6. 上传完成后，若检测到基线外文件，会自动排队下一批上传。
-7. ZIP 变更检测升级为签名比对（路径/大小/mtime），不再只看 ZIP 数量。
-8. 上传清理后会继续清理 `auth_dir` 下空目录。
-9. 默认失败即停（fail-fast），并保留上传/维护独立重试策略；`--once` 语义更严格。
-10. 新增 `MAINTAIN_ASSUME_YES`，便于无人值守维护。
-11. 单实例锁由 Python 侧统一仲裁，降低重复 watcher 并发风险。
+3. 新增智能调度策略层（`smart_scheduler.py`），兼顾低频与高频场景：
+   - 高积压时自适应放大上传批次；
+   - 增量维护冷却间隔，避免高频下维护抖动；
+   - 全量维护临近保护，避免全量前再启动一轮增量维护。
+4. 维护/上传运行状态彻底拆分：`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`，日志也拆分为 `MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`。
+5. 上传基线一致性修复：部分批次成功时，会与历史已上传基线合并，而不是覆盖。
+6. 快照扫描增强：对扫描期间文件瞬时消失/替换等文件系统竞态更稳健。
+7. 上传完成后，若检测到基线外文件，会自动排队下一批上传。
+8. ZIP 变更检测升级为签名比对（路径/大小/mtime），不再只看 ZIP 数量。
+9. 上传清理后会继续清理 `auth_dir` 下空目录。
+10. 默认失败即停（fail-fast），并保留上传/维护独立重试策略；`--once` 语义更严格。
+11. 新增 `MAINTAIN_ASSUME_YES`，便于无人值守维护。
+12. 单实例锁由 Python 侧统一仲裁，降低重复 watcher 并发风险。
+13. 终端面板支持双通道队列可视化（`queue_files`、`queue_batches`、`queue_full`、`queue_incremental`、重试等待、下次全量维护等待）。
+14. 上传批次运行期间，watcher 仍会做轻量 JSON/ZIP 变化探测，并在该批次结束后立即触发一次强制深度上传检查。
+15. 运行时仪表盘支持固定面板重绘、通道分隔与可选颜色，降低并行上传/维护时的进度输出抖动。
+16. Windows 下单实例保护采用双层机制：
+   - `auto_maintain.bat` 启动器锁文件（`auto_maintain_launcher.lock`）；
+   - `auto_maintain.py` 运行时锁文件（`auto_maintain.lock`）+ `msvcrt` 文件锁。
 
 ## 执行逻辑（Watcher）
 
@@ -61,9 +73,11 @@
    - 上传通道按 `UPLOAD_BATCH_SIZE` 串行消费待上传队列。
    - 每批上传通过 `--upload-names-file` 约束命令侧上传范围。
 5. 独立轮询两个子进程退出状态：
+   - 上传进程运行期间，watcher 仍会做轻量 JSON 数量/ZIP 签名探测；
    - 上传成功会更新快照/基线，并按配置删除已上传源文件；
    - 维护成功会清理维护重试状态。
 6. 上传成功后可选排队“上传后维护”。
+   - 若上传运行期间探测到源变化，会先执行一次强制深扫上传检查（`force_deep_scan=True`），再进入后续流程。
    - 上传后维护通过 `--maintain-names-file` 仅处理“刚完成这一批上传”的账号名称集合。
 7. 上传与维护失败分别进入各自重试窗口，互不干扰。
 8. `--once` 模式下，只有运行中和排队任务都完成才退出；失败返回非零码。
@@ -130,6 +144,8 @@ start_auto_maintain_optimized.bat
 - `.auto_maintain_state/cpa_warden_upload.sqlite3`
 - `.auto_maintain_state/cpa_warden_maintain.log`
 - `.auto_maintain_state/cpa_warden_upload.log`
+- `.auto_maintain_state/maintain_command_output.log`
+- `.auto_maintain_state/upload_command_output.log`
 - `.auto_maintain_state/maintain_names_scope.txt`
 - `.auto_maintain_state/upload_names_scope.txt`
 - `.auto_maintain_state/last_uploaded_snapshot.txt`
@@ -146,6 +162,12 @@ start_auto_maintain_optimized.bat
 - 监听周期：`15s`
 - 上传稳定等待：`5s`
 - 上传批次大小：`100`
+- 智能调度：开启
+- 自适应上传批次：开启
+- 高积压阈值：`400`
+- 高积压批次大小：`300`
+- 增量维护冷却：`20s`
+- 全量维护临近保护：`90s`
 - 深度扫描间隔：`120` 次循环
 - 上传完成后触发维护：开启
 - 上传成功后删除源 JSON：开启
@@ -172,6 +194,12 @@ start_auto_maintain_optimized.bat
 | `watch_interval_seconds` | `15` | watcher 主循环轮询间隔（秒）。 |
 | `upload_stable_wait_seconds` | `5` | 检测到变化后，上传前稳定等待时长（秒）。 |
 | `upload_batch_size` | `100` | 单次 upload 命令最多处理的 JSON 数量；剩余文件进入下一批串行上传。 |
+| `smart_schedule_enabled` | `true` | 是否启用智能调度策略层。 |
+| `adaptive_upload_batching` | `true` | 是否在高积压时自动扩批上传。 |
+| `upload_high_backlog_threshold` | `400` | 待上传数量达到该值时进入高积压上传策略。 |
+| `upload_high_backlog_batch_size` | `300` | 高积压策略下目标上传批次大小。 |
+| `incremental_maintain_min_interval_seconds` | `20` | 两次增量维护启动之间的最小间隔（秒）。 |
+| `incremental_maintain_full_guard_seconds` | `90` | 若全量维护将在该窗口内到期，则延后增量维护。 |
 | `deep_scan_interval_loops` | `120` | 无明显变化时，每 N 轮强制做一次深度扫描。 |
 | `run_maintain_on_start` | `true` | 启动时是否先排队一次维护。 |
 | `run_upload_on_start` | `true` | 启动时是否先做一次上传变化检查。 |
@@ -194,6 +222,7 @@ start_auto_maintain_optimized.bat
 
 - `maintain_interval_seconds` 只控制定时全量维护。
 - 上传后维护按“每个已完成上传批次”的名称集合执行增量维护。
+- 智能调度默认值优先保证低频响应，同时降低高频抖动和重复维护成本。
 - 路径参数支持相对路径（相对仓库根目录解析）。
 
 ## 常用环境变量
@@ -206,12 +235,16 @@ start_auto_maintain_optimized.bat
 - `MAINTAIN_LOG_FILE`、`UPLOAD_LOG_FILE`
 - `MAINTAIN_INTERVAL_SECONDS`、`WATCH_INTERVAL_SECONDS`
 - `UPLOAD_STABLE_WAIT_SECONDS`、`UPLOAD_BATCH_SIZE`、`DEEP_SCAN_INTERVAL_LOOPS`
+- `SMART_SCHEDULE_ENABLED`、`ADAPTIVE_UPLOAD_BATCHING`
+- `UPLOAD_HIGH_BACKLOG_THRESHOLD`、`UPLOAD_HIGH_BACKLOG_BATCH_SIZE`
+- `INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS`、`INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS`
 - `RUN_MAINTAIN_ON_START`、`RUN_UPLOAD_ON_START`、`RUN_MAINTAIN_AFTER_UPLOAD`
 - `MAINTAIN_ASSUME_YES`
 - `MAINTAIN_RETRY_COUNT`、`UPLOAD_RETRY_COUNT`、`COMMAND_RETRY_DELAY_SECONDS`
 - `CONTINUE_ON_COMMAND_FAILURE`、`ALLOW_MULTI_INSTANCE`
 - `INSPECT_ZIP_FILES`、`AUTO_EXTRACT_ZIP_JSON`、`DELETE_ZIP_AFTER_EXTRACT`
 - `BANDIZIP_PATH`、`BANDIZIP_TIMEOUT_SECONDS`、`USE_WINDOWS_ZIP_FALLBACK`
+- `AUTO_MAINTAIN_FIXED_PANEL`、`AUTO_MAINTAIN_PANEL_COLOR`（终端仪表盘渲染开关）
 
 优先级：
 

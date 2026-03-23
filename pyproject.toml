@@ -1,6 +1,6 @@
 [project]
 name = "cpa-warden-windows-auto-maintain"
-version = "0.2.0"
+version = "0.1.0"
 description = "Windows-first automation orchestration built on top of cpa-warden."
 requires-python = ">=3.11"
 license = { text = "MIT" }

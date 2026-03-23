@@ -177,6 +177,14 @@ class ProgressReporter:
             self._progress.stop()
 
 
+def progress_log_step(total: int, target_updates: int = 20) -> int:
+    normalized_total = max(0, int(total))
+    if normalized_total <= 0:
+        return 1
+    normalized_target = max(1, int(target_updates))
+    return max(1, int(math.ceil(normalized_total / normalized_target)))
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1719,7 +1727,8 @@ async def run_upload_async(
         ]
         done = 0
         total = len(tasks)
-        next_report = 100
+        report_step = progress_log_step(total)
+        next_report = report_step
         with ProgressReporter("上传认证文件", total, debug=settings["debug"]) as progress:
             for task in asyncio.as_completed(tasks):
                 results.append(await task)
@@ -1727,7 +1736,7 @@ async def run_upload_async(
                 progress.advance()
                 if (not progress.enabled) and (done >= next_report or done == total):
                     LOGGER.info("上传进度: %s/%s", done, total)
-                    next_report += 100
+                    next_report += report_step
 
     summarize_upload_results(
         results,
@@ -2100,7 +2109,8 @@ async def probe_accounts_async(
 
         done = 0
         total = len(tasks)
-        next_report = 100
+        report_step = progress_log_step(total)
+        next_report = report_step
         with ProgressReporter("探测账号", total, debug=debug) as progress:
             for task in asyncio.as_completed(tasks):
                 probed = classify_account_state(await task, quota_disable_threshold=quota_disable_threshold)
@@ -2109,7 +2119,7 @@ async def probe_accounts_async(
                 progress.advance()
                 if (not progress.enabled) and (done >= next_report or done == total):
                     LOGGER.info("探测进度: %s/%s", done, total)
-                    next_report += 100
+                    next_report += report_step
 
     return results
 
@@ -2389,7 +2399,8 @@ async def run_action_group_async(
         results: list[dict[str, Any]] = []
         done = 0
         total = len(tasks)
-        next_report = 100
+        report_step = progress_log_step(total)
+        next_report = report_step
         action_label = "删除" if fn_name == "delete" else ("禁用" if disabled else "启用")
         with ProgressReporter(f"{action_label}账号", total, debug=debug) as progress:
             for task in asyncio.as_completed(tasks):
@@ -2398,7 +2409,7 @@ async def run_action_group_async(
                 progress.advance()
                 if (not progress.enabled) and (done >= next_report or done == total):
                     LOGGER.info("%s进度: %s/%s", action_label, done, total)
-                    next_report += 100
+                    next_report += report_step
         return results
 
 

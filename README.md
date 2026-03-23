@@ -27,7 +27,9 @@ The core value of this project is not replacing `cpa_warden.py`, but orchestrati
 - run scheduled maintenance without waiting for upload batches to finish
 - keep maintain/upload runtime state isolated with split DB/log files
 - handle ZIP intake for JSON auth files (Bandizip + Windows fallback)
+  - recursively detects JSON entries even when nested in zip subfolders
 - clean uploaded files and prune empty subdirectories
+- display terminal panel snapshots for upload/maintain channels, including queue/backlog scope
 - run unattended with fail-fast defaults and explicit retries
 
 ## Improvement Highlights
@@ -40,15 +42,25 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
 2. Upload queue now supports batch slicing (`UPLOAD_BATCH_SIZE`) and per-batch scoped upload via `--upload-names-file`.
    - Each upload batch completes faster.
    - Incremental maintain can start earlier for already uploaded batches.
-3. Split runtime persistence paths for maintain/upload (`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`) and split logs (`MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`).
-4. Upload baseline correctness fix: partial-batch success merges with existing uploaded baseline instead of overwriting it.
-5. Snapshot robustness improvements for transient file-system races (disappearing/replaced files while scanning).
-6. Post-upload follow-up batch queueing when files are outside the completed upload baseline.
-7. ZIP change detection by signature delta (path/size/mtime), not only ZIP file count.
-8. Upload cleanup now prunes empty directories under `auth_dir`.
-9. Fail-fast default policy for command failures, with explicit retry controls and stricter `--once` semantics.
-10. `MAINTAIN_ASSUME_YES` support for unattended maintain executions.
-11. Python-side single-instance lock arbitration to reduce duplicate watcher runs.
+3. Smart scheduling policy layer (`smart_scheduler.py`) now adapts runtime behavior across low/high-frequency workloads:
+   - adaptive upload batch size under high backlog pressure;
+   - incremental maintain cooldown to avoid over-frequent maintain churn;
+   - full-maintain proximity guard to avoid starting incremental maintain right before scheduled full maintain.
+4. Split runtime persistence paths for maintain/upload (`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`) and split logs (`MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`).
+5. Upload baseline correctness fix: partial-batch success merges with existing uploaded baseline instead of overwriting it.
+6. Snapshot robustness improvements for transient file-system races (disappearing/replaced files while scanning).
+7. Post-upload follow-up batch queueing when files are outside the completed upload baseline.
+8. ZIP change detection by signature delta (path/size/mtime), not only ZIP file count.
+9. Upload cleanup now prunes empty directories under `auth_dir`.
+10. Fail-fast default policy for command failures, with explicit retry controls and stricter `--once` semantics.
+11. `MAINTAIN_ASSUME_YES` support for unattended maintain executions.
+12. Python-side single-instance lock arbitration to reduce duplicate watcher runs.
+13. Terminal panel snapshots now expose per-channel queue visibility (`queue_files`, `queue_batches`, `queue_full`, `queue_incremental`, retries, and next full-maintain wait).
+14. While an upload batch is running, watcher performs lightweight JSON/ZIP change probes and schedules an immediate deep upload check right after that batch completes.
+15. Runtime dashboard supports fixed panel redraw with optional color and channel separators to avoid flicker from mixed parallel progress output.
+16. Single-instance safety is now guarded in two layers on Windows:
+   - launcher lock file (`auto_maintain_launcher.lock`) in `auto_maintain.bat`;
+   - Python runtime lock (`auto_maintain.lock`) with Windows file lock (`msvcrt`) in `auto_maintain.py`.
 
 ## Execution Logic (Watcher)
 
@@ -61,9 +73,11 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
    - Upload channel consumes pending files in serial batches (`UPLOAD_BATCH_SIZE`).
    - Each upload batch uses `--upload-names-file` to scope command-side upload candidates.
 5. Poll command exits independently:
+   - while upload process is active, watcher still runs lightweight JSON-count/ZIP-signature probes;
    - upload success updates snapshots/baseline and optionally deletes uploaded source files;
    - maintain success clears maintain retry state.
 6. On upload completion, optionally queue post-upload maintain.
+   - if source changes were detected during active upload, watcher triggers an immediate forced deep upload check (`force_deep_scan=True`) before normal post-upload flow.
    - The queued post-upload maintain uses `--maintain-names-file` to scope actions to names from the completed upload batch.
 7. Apply independent retry windows for maintain/upload failures.
 8. In `--once` mode, exit only after all running/pending work finishes; exit non-zero on failures.
@@ -130,6 +144,8 @@ start_auto_maintain_optimized.bat
 - `.auto_maintain_state/cpa_warden_upload.sqlite3`
 - `.auto_maintain_state/cpa_warden_maintain.log`
 - `.auto_maintain_state/cpa_warden_upload.log`
+- `.auto_maintain_state/maintain_command_output.log`
+- `.auto_maintain_state/upload_command_output.log`
 - `.auto_maintain_state/maintain_names_scope.txt`
 - `.auto_maintain_state/upload_names_scope.txt`
 - `.auto_maintain_state/last_uploaded_snapshot.txt`
@@ -146,6 +162,12 @@ Current template defaults (`auto_maintain.config.example.json`):
 - watch interval: `15s`
 - upload stable wait: `5s`
 - upload batch size: `100`
+- smart scheduler: enabled
+- adaptive upload batching: enabled
+- high backlog threshold: `400`
+- high backlog batch size: `300`
+- incremental maintain cooldown: `20s`
+- full maintain guard: `90s`
 - deep scan interval: `120` loops
 - maintain after upload: enabled
 - delete uploaded source JSON: enabled
@@ -172,6 +194,12 @@ It also keeps env override capability for all watcher settings.
 | `watch_interval_seconds` | `15` | Main loop poll interval for watcher scheduling. |
 | `upload_stable_wait_seconds` | `5` | Stability wait before enqueuing an upload batch. |
 | `upload_batch_size` | `100` | Max JSON files per upload command batch; pending files continue in next serial upload batch. |
+| `smart_schedule_enabled` | `true` | Enable smart scheduling policy layer for adaptive/balanced behavior. |
+| `adaptive_upload_batching` | `true` | Allow upload batch size to expand under high backlog pressure. |
+| `upload_high_backlog_threshold` | `400` | Pending-upload threshold that activates high-backlog upload batching rules. |
+| `upload_high_backlog_batch_size` | `300` | Target upload batch size when high-backlog batching is active. |
+| `incremental_maintain_min_interval_seconds` | `20` | Minimum interval between starting incremental maintain runs. |
+| `incremental_maintain_full_guard_seconds` | `90` | Defer incremental maintain when scheduled full maintain is due within this window. |
 | `deep_scan_interval_loops` | `120` | Force deep re-scan every N loops even without obvious change. |
 | `run_maintain_on_start` | `true` | Whether to queue a maintain run on startup. |
 | `run_upload_on_start` | `true` | Whether to evaluate upload changes on startup. |
@@ -194,6 +222,7 @@ Notes:
 
 - `maintain_interval_seconds` controls full maintain only.
 - Post-upload maintain is incremental by uploaded names from each completed upload batch.
+- Smart scheduler defaults are tuned to keep low-frequency responsiveness while reducing high-frequency churn.
 - File/path settings can use relative paths (resolved from repo root).
 
 ## Useful Environment Variables
@@ -206,12 +235,16 @@ Main variables consumed by `auto_maintain.py`:
 - `MAINTAIN_LOG_FILE`, `UPLOAD_LOG_FILE`
 - `MAINTAIN_INTERVAL_SECONDS`, `WATCH_INTERVAL_SECONDS`
 - `UPLOAD_STABLE_WAIT_SECONDS`, `UPLOAD_BATCH_SIZE`, `DEEP_SCAN_INTERVAL_LOOPS`
+- `SMART_SCHEDULE_ENABLED`, `ADAPTIVE_UPLOAD_BATCHING`
+- `UPLOAD_HIGH_BACKLOG_THRESHOLD`, `UPLOAD_HIGH_BACKLOG_BATCH_SIZE`
+- `INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS`, `INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS`
 - `RUN_MAINTAIN_ON_START`, `RUN_UPLOAD_ON_START`, `RUN_MAINTAIN_AFTER_UPLOAD`
 - `MAINTAIN_ASSUME_YES`
 - `MAINTAIN_RETRY_COUNT`, `UPLOAD_RETRY_COUNT`, `COMMAND_RETRY_DELAY_SECONDS`
 - `CONTINUE_ON_COMMAND_FAILURE`, `ALLOW_MULTI_INSTANCE`
 - `INSPECT_ZIP_FILES`, `AUTO_EXTRACT_ZIP_JSON`, `DELETE_ZIP_AFTER_EXTRACT`
 - `BANDIZIP_PATH`, `BANDIZIP_TIMEOUT_SECONDS`, `USE_WINDOWS_ZIP_FALLBACK`
+- `AUTO_MAINTAIN_FIXED_PANEL`, `AUTO_MAINTAIN_PANEL_COLOR` (terminal dashboard rendering toggles)
 
 Precedence:
 
