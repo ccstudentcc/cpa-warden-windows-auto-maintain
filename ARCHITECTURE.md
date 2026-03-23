@@ -6,25 +6,33 @@ This repository provides a Windows-first automation layer on top of the CPA main
 
 ## Module Map
 
-### `cpa_warden.py`
+### `cwma/apps/cpa_warden.py`
 
-- Entry point: `main()` via `uv run python cpa_warden.py`
+- Entry point: `main()` via root compatibility script `cpa_warden.py`
 - Public interface: CLI modes (`scan`, `maintain`, `upload`, `maintain-refill`) and related flags
 - Responsibility: core CPA API interactions, account classification, actions, and exports
 - Test coverage status: currently validated through CLI checks and production usage; no dedicated unit-test module yet
 
-### `auto_maintain.py`
+### `cwma/apps/auto_maintain.py`
 
-- Entry point: `main()` via `uv run python auto_maintain.py`
+- Entry point: `main()` via root compatibility script `auto_maintain.py`
 - Public interface: `--watch-config`, environment-variable overrides, and `--once`
 - Responsibility: orchestration loop, upload/maintain concurrency, snapshotting, lock control, ZIP intake, retry/fail-fast policy
 - Test file: `tests/test_auto_maintain.py`
 
-### `smart_scheduler.py`
+### `cwma/scheduler/smart_scheduler.py`
 
-- Entry point: imported by `auto_maintain.py`
+- Entry point: imported by `cwma/apps/auto_maintain.py`
 - Public interface: `SmartSchedulerConfig`, `SmartSchedulerPolicy`
 - Responsibility: centralized scheduling policy decisions for adaptive upload batching and incremental maintain deferral rules
+
+### Compatibility Entrypoints (`repo root`)
+
+- `auto_maintain.py`
+- `cpa_warden.py`
+- `smart_scheduler.py`
+
+These root files forward to package implementations so existing user scripts and launcher paths continue to work.
 
 ### `auto_maintain.bat`
 
@@ -75,7 +83,9 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Command launch conditions are channel-local, so maintain can continue while upload is still running.
 - Upload channel supports serial batch slicing so one large snapshot does not block post-upload incremental maintain for early batches.
 - During active upload execution, watcher still performs lightweight JSON-count/ZIP-signature probes; detected changes trigger an immediate forced deep upload check right after current batch completion.
+- During active upload execution, watcher also performs periodic deep queue refresh scans so newly arrived files can enter pending upload queue before current batch ends.
 - Smart scheduler can adapt upload batch size under backlog pressure (`UPLOAD_HIGH_BACKLOG_THRESHOLD` / `UPLOAD_HIGH_BACKLOG_BATCH_SIZE`).
+- Smart scheduler can also adapt incremental-maintain batch size under contention/backlog (`INCREMENTAL_MAINTAIN_BATCH_SIZE` / `MAINTAIN_HIGH_BACKLOG_*`).
 - Runtime panel snapshots expose per-channel queue state in terminal output (`queue_files`, `queue_batches`, `queue_full`, `queue_incremental`) so operators can observe scheduler backlog behavior directly.
 - Fixed dashboard redraw can be toggled by `AUTO_MAINTAIN_FIXED_PANEL`; color can be toggled by `AUTO_MAINTAIN_PANEL_COLOR`.
 - Incremental maintain can be deferred by cooldown and full-maintain-guard rules (`INCREMENTAL_MAINTAIN_*`).

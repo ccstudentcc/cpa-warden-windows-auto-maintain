@@ -42,9 +42,15 @@ def _build_settings(base_dir: Path, auth_dir: Path) -> Settings:
         adaptive_upload_batching=True,
         upload_high_backlog_threshold=400,
         upload_high_backlog_batch_size=300,
+        adaptive_maintain_batching=True,
+        incremental_maintain_batch_size=120,
+        maintain_high_backlog_threshold=300,
+        maintain_high_backlog_batch_size=220,
         incremental_maintain_min_interval_seconds=20,
         incremental_maintain_full_guard_seconds=90,
         deep_scan_interval_loops=10,
+        active_probe_interval_seconds=2,
+        active_upload_deep_scan_interval_seconds=2,
         maintain_retry_count=0,
         upload_retry_count=0,
         command_retry_delay_seconds=1,
@@ -423,12 +429,19 @@ class AutoMaintainTests(unittest.TestCase):
 
             with mock.patch.object(maintainer, "get_json_count", return_value=12), mock.patch.object(
                 maintainer, "get_zip_signature", return_value=("new.zip|2|2",)
-            ):
-                maintainer.probe_changes_during_active_upload()
+            ), mock.patch.object(maintainer, "check_and_maybe_upload", return_value=0) as refresh:
+                result = maintainer.probe_changes_during_active_upload()
 
+            self.assertEqual(result, 0)
             self.assertTrue(maintainer.pending_source_changes_during_upload)
             self.assertEqual(maintainer.last_json_count, 12)
             self.assertEqual(maintainer.last_zip_signature, ("new.zip|2|2",))
+            refresh.assert_called_once_with(
+                force_deep_scan=True,
+                preserve_retry_state=True,
+                skip_stability_wait=True,
+                queue_reason="active-upload source changes",
+            )
 
     def test_poll_upload_process_runs_forced_check_after_active_upload_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -451,6 +464,30 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertFalse(maintainer.pending_source_changes_during_upload)
             follow_up.assert_called_once_with(force_deep_scan=True)
+
+    def test_maybe_start_maintain_slices_incremental_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            settings.incremental_maintain_batch_size = 2
+            settings.maintain_high_backlog_threshold = 4
+            settings.maintain_high_backlog_batch_size = 2
+            maintainer = AutoMaintainer(settings)
+
+            maintainer.pending_maintain = True
+            maintainer.pending_maintain_reason = "post-upload maintain"
+            maintainer.pending_maintain_names = {"a.json", "b.json", "c.json", "d.json"}
+
+            with mock.patch("auto_maintain.subprocess.Popen", return_value=_DoneProcess(0)):
+                result = maintainer.maybe_start_maintain()
+
+            self.assertEqual(result, 0)
+            self.assertIsNotNone(maintainer.maintain_process)
+            self.assertEqual(len(maintainer.inflight_maintain_names or set()), 2)
+            self.assertTrue(maintainer.pending_maintain)
+            self.assertEqual(len(maintainer.pending_maintain_names or set()), 2)
 
     def test_can_start_maintain_while_upload_channel_is_running(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

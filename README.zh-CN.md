@@ -44,6 +44,7 @@
    - 已上传批次可更早触发增量维护。
 3. 新增智能调度策略层（`smart_scheduler.py`），兼顾低频与高频场景：
    - 高积压时自适应放大上传批次；
+   - 根据积压和并行压力自适应调整增量维护批次大小；
    - 增量维护冷却间隔，避免高频下维护抖动；
    - 全量维护临近保护，避免全量前再启动一轮增量维护。
 4. 维护/上传运行状态彻底拆分：`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`，日志也拆分为 `MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`。
@@ -73,7 +74,7 @@
    - 上传通道按 `UPLOAD_BATCH_SIZE` 串行消费待上传队列。
    - 每批上传通过 `--upload-names-file` 约束命令侧上传范围。
 5. 独立轮询两个子进程退出状态：
-   - 上传进程运行期间，watcher 仍会做轻量 JSON 数量/ZIP 签名探测；
+   - 上传进程运行期间，watcher 会持续做轻量 JSON 数量/ZIP 签名探测，并按间隔执行深度队列刷新；
    - 上传成功会更新快照/基线，并按配置删除已上传源文件；
    - 维护成功会清理维护重试状态。
 6. 上传成功后可选排队“上传后维护”。
@@ -84,8 +85,10 @@
 
 ## 核心组件
 
-- `cpa_warden.py`：兼容上游的扫描/维护/上传 CLI
-- `auto_maintain.py`：面向 Windows 的调度与目录监听器
+- `cwma/apps/cpa_warden.py`：兼容上游的扫描/维护/上传 CLI 实现
+- `cwma/apps/auto_maintain.py`：面向 Windows 的调度与目录监听实现
+- `cwma/scheduler/smart_scheduler.py`：上传/维护批次决策的调度策略模型
+- `auto_maintain.py` / `cpa_warden.py` / `smart_scheduler.py`：根目录兼容入口（保持现有脚本/命令可用）
 - `auto_maintain.bat`：`uv -> python` 回退启动器
 - `start_auto_maintain_optimized.bat`：生产化参数模板
 - `auto_maintain.config.example.json`：watcher 配置模板
@@ -198,9 +201,15 @@ start_auto_maintain_optimized.bat
 | `adaptive_upload_batching` | `true` | 是否在高积压时自动扩批上传。 |
 | `upload_high_backlog_threshold` | `400` | 待上传数量达到该值时进入高积压上传策略。 |
 | `upload_high_backlog_batch_size` | `300` | 高积压策略下目标上传批次大小。 |
+| `adaptive_maintain_batching` | `true` | 是否启用增量维护批次的自适应调度。 |
+| `incremental_maintain_batch_size` | `120` | 单次增量维护的基础批次大小。 |
+| `maintain_high_backlog_threshold` | `300` | 增量维护积压达到该值时启用高积压批次策略。 |
+| `maintain_high_backlog_batch_size` | `220` | 增量维护高积压模式下的目标批次大小。 |
 | `incremental_maintain_min_interval_seconds` | `20` | 两次增量维护启动之间的最小间隔（秒）。 |
 | `incremental_maintain_full_guard_seconds` | `90` | 若全量维护将在该窗口内到期，则延后增量维护。 |
 | `deep_scan_interval_loops` | `120` | 无明显变化时，每 N 轮强制做一次深度扫描。 |
+| `active_probe_interval_seconds` | `2` | 上传/维护运行中使用的快速探测间隔（秒）。 |
+| `active_upload_deep_scan_interval_seconds` | `2` | 上传运行期间两次深度队列刷新之间的最小间隔（秒）。 |
 | `run_maintain_on_start` | `true` | 启动时是否先排队一次维护。 |
 | `run_upload_on_start` | `true` | 启动时是否先做一次上传变化检查。 |
 | `run_maintain_after_upload` | `true` | 上传后是否排队维护（增量范围）。 |
@@ -237,7 +246,10 @@ start_auto_maintain_optimized.bat
 - `UPLOAD_STABLE_WAIT_SECONDS`、`UPLOAD_BATCH_SIZE`、`DEEP_SCAN_INTERVAL_LOOPS`
 - `SMART_SCHEDULE_ENABLED`、`ADAPTIVE_UPLOAD_BATCHING`
 - `UPLOAD_HIGH_BACKLOG_THRESHOLD`、`UPLOAD_HIGH_BACKLOG_BATCH_SIZE`
+- `ADAPTIVE_MAINTAIN_BATCHING`
+- `INCREMENTAL_MAINTAIN_BATCH_SIZE`、`MAINTAIN_HIGH_BACKLOG_THRESHOLD`、`MAINTAIN_HIGH_BACKLOG_BATCH_SIZE`
 - `INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS`、`INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS`
+- `ACTIVE_PROBE_INTERVAL_SECONDS`、`ACTIVE_UPLOAD_DEEP_SCAN_INTERVAL_SECONDS`
 - `RUN_MAINTAIN_ON_START`、`RUN_UPLOAD_ON_START`、`RUN_MAINTAIN_AFTER_UPLOAD`
 - `MAINTAIN_ASSUME_YES`
 - `MAINTAIN_RETRY_COUNT`、`UPLOAD_RETRY_COUNT`、`COMMAND_RETRY_DELAY_SECONDS`

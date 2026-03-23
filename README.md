@@ -44,6 +44,7 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
    - Incremental maintain can start earlier for already uploaded batches.
 3. Smart scheduling policy layer (`smart_scheduler.py`) now adapts runtime behavior across low/high-frequency workloads:
    - adaptive upload batch size under high backlog pressure;
+   - adaptive incremental-maintain batch sizing under runtime contention/backlog;
    - incremental maintain cooldown to avoid over-frequent maintain churn;
    - full-maintain proximity guard to avoid starting incremental maintain right before scheduled full maintain.
 4. Split runtime persistence paths for maintain/upload (`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`) and split logs (`MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`).
@@ -73,7 +74,7 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
    - Upload channel consumes pending files in serial batches (`UPLOAD_BATCH_SIZE`).
    - Each upload batch uses `--upload-names-file` to scope command-side upload candidates.
 5. Poll command exits independently:
-   - while upload process is active, watcher still runs lightweight JSON-count/ZIP-signature probes;
+   - while upload process is active, watcher runs lightweight JSON-count/ZIP-signature probes and periodic deep queue refresh;
    - upload success updates snapshots/baseline and optionally deletes uploaded source files;
    - maintain success clears maintain retry state.
 6. On upload completion, optionally queue post-upload maintain.
@@ -84,8 +85,10 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
 
 ## Key Components
 
-- `cpa_warden.py`: upstream-compatible CPA scanner / maintainer / uploader CLI
-- `auto_maintain.py`: Windows-oriented scheduler and watcher
+- `cwma/apps/cpa_warden.py`: upstream-compatible CPA scanner / maintainer / uploader CLI implementation
+- `cwma/apps/auto_maintain.py`: Windows-oriented scheduler and watcher implementation
+- `cwma/scheduler/smart_scheduler.py`: scheduling policy model for upload/maintain batch decisions
+- `auto_maintain.py` / `cpa_warden.py` / `smart_scheduler.py`: root-level compatibility entrypoints (existing scripts/commands keep working)
 - `auto_maintain.bat`: launcher with `uv -> python` fallback
 - `start_auto_maintain_optimized.bat`: tuned profile for production-like unattended runs
 - `auto_maintain.config.example.json`: watcher profile template
@@ -198,9 +201,15 @@ It also keeps env override capability for all watcher settings.
 | `adaptive_upload_batching` | `true` | Allow upload batch size to expand under high backlog pressure. |
 | `upload_high_backlog_threshold` | `400` | Pending-upload threshold that activates high-backlog upload batching rules. |
 | `upload_high_backlog_batch_size` | `300` | Target upload batch size when high-backlog batching is active. |
+| `adaptive_maintain_batching` | `true` | Enable adaptive incremental-maintain batch sizing. |
+| `incremental_maintain_batch_size` | `120` | Base batch size for each incremental maintain run. |
+| `maintain_high_backlog_threshold` | `300` | Incremental-maintain backlog threshold for high-backlog slicing rules. |
+| `maintain_high_backlog_batch_size` | `220` | Target incremental-maintain batch size in high-backlog mode. |
 | `incremental_maintain_min_interval_seconds` | `20` | Minimum interval between starting incremental maintain runs. |
 | `incremental_maintain_full_guard_seconds` | `90` | Defer incremental maintain when scheduled full maintain is due within this window. |
 | `deep_scan_interval_loops` | `120` | Force deep re-scan every N loops even without obvious change. |
+| `active_probe_interval_seconds` | `2` | Probe interval while upload/maintain is running (faster than idle watch interval). |
+| `active_upload_deep_scan_interval_seconds` | `2` | Minimum interval between active-upload deep queue refresh scans. |
 | `run_maintain_on_start` | `true` | Whether to queue a maintain run on startup. |
 | `run_upload_on_start` | `true` | Whether to evaluate upload changes on startup. |
 | `run_maintain_after_upload` | `true` | Whether to queue post-upload maintain (incremental scope). |
@@ -237,7 +246,10 @@ Main variables consumed by `auto_maintain.py`:
 - `UPLOAD_STABLE_WAIT_SECONDS`, `UPLOAD_BATCH_SIZE`, `DEEP_SCAN_INTERVAL_LOOPS`
 - `SMART_SCHEDULE_ENABLED`, `ADAPTIVE_UPLOAD_BATCHING`
 - `UPLOAD_HIGH_BACKLOG_THRESHOLD`, `UPLOAD_HIGH_BACKLOG_BATCH_SIZE`
+- `ADAPTIVE_MAINTAIN_BATCHING`
+- `INCREMENTAL_MAINTAIN_BATCH_SIZE`, `MAINTAIN_HIGH_BACKLOG_THRESHOLD`, `MAINTAIN_HIGH_BACKLOG_BATCH_SIZE`
 - `INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS`, `INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS`
+- `ACTIVE_PROBE_INTERVAL_SECONDS`, `ACTIVE_UPLOAD_DEEP_SCAN_INTERVAL_SECONDS`
 - `RUN_MAINTAIN_ON_START`, `RUN_UPLOAD_ON_START`, `RUN_MAINTAIN_AFTER_UPLOAD`
 - `MAINTAIN_ASSUME_YES`
 - `MAINTAIN_RETRY_COUNT`, `UPLOAD_RETRY_COUNT`, `COMMAND_RETRY_DELAY_SECONDS`

@@ -44,6 +44,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added fixed dashboard redraw and optional color/channel separators for clearer upload/maintain panel readability (`AUTO_MAINTAIN_FIXED_PANEL`, `AUTO_MAINTAIN_PANEL_COLOR`)
 - Child output decoding now uses UTF-8-first fallback chain (including GB18030/CP936) to reduce mojibake in Chinese logs
 - While upload is running, watcher now performs lightweight JSON/ZIP change probing and triggers immediate deep upload-check after current batch completes
+- While upload is running, watcher now also performs periodic deep queue refresh (`ACTIVE_UPLOAD_DEEP_SCAN_INTERVAL_SECONDS`) so newly arrived JSON/ZIP changes are queued earlier, not only at batch end
+- Main loop now uses faster active probe cadence (`ACTIVE_PROBE_INTERVAL_SECONDS`) while upload/maintain processes are running
+- Smart scheduler now supports adaptive incremental-maintain batch slicing (`ADAPTIVE_MAINTAIN_BATCHING`, `INCREMENTAL_MAINTAIN_BATCH_SIZE`, `MAINTAIN_HIGH_BACKLOG_*`) to improve upload/maintain interleaving under backlog pressure
+- Refactored repository layout into package-first structure:
+  - implementations moved to `cwma/apps/*` and `cwma/scheduler/*`;
+  - root scripts (`auto_maintain.py`, `cpa_warden.py`, `smart_scheduler.py`) now act as compatibility entrypoints
 - Upload baseline merge now preserves previous successful batches when current run only processes part of the queue
 - Hardened snapshot generation against transient file-system races (missing/replaced files during scans)
 - Upload cleanup now also prunes empty subdirectories under `auth_dir` after file deletion
