@@ -33,13 +33,13 @@ if not exist "%CONFIG_PATH%" (
 rem Maintain every 40 minutes to reduce API and local load.
 set "MAINTAIN_INTERVAL_SECONDS=2400"
 
-rem Poll every 30 seconds (lower CPU vs 5~10s polling).
-set "WATCH_INTERVAL_SECONDS=30"
+rem Poll every 15 seconds (lower CPU vs 5~10s polling).
+set "WATCH_INTERVAL_SECONDS=15"
 
-rem Wait 10 seconds after change detection to avoid repeated uploads during batch copy.
-set "UPLOAD_STABLE_WAIT_SECONDS=10"
+rem Wait 5 seconds after change detection to avoid repeated uploads during batch copy.
+set "UPLOAD_STABLE_WAIT_SECONDS=5"
 
-rem When file count is unchanged, perform deep snapshot every 120 loops (about 40 minutes with 30s polling).
+rem When file count is unchanged, perform deep snapshot every 120 loops (about 40 minutes with 15s polling).
 set "DEEP_SCAN_INTERVAL_LOOPS=120"
 
 set "RUN_MAINTAIN_ON_START=1"

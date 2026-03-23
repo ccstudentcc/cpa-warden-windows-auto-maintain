@@ -218,7 +218,7 @@ wheels = [
 ]
 
 [[package]]
-name = "cpa-warden"
+name = "cpa-warden-windows-auto-maintain"
 version = "0.2.0"
 source = { virtual = "." }
 dependencies = [
