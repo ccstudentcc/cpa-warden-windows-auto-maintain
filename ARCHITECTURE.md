@@ -49,6 +49,8 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Each channel has independent pending flags, retry counters, and retry due times.
 - Command launch conditions are channel-local, so maintain can continue while upload is still running.
 - Post-upload maintain is queued as an additional maintain reason, not as an upload blocking step.
+- Scheduled maintain (`MAINTAIN_INTERVAL_SECONDS`) is full-scope.
+- Post-upload maintain is incremental-scope, constrained to uploaded auth names through `--maintain-names-file`.
 
 ## Snapshot Model
 
@@ -81,6 +83,7 @@ Default state directory: `.auto_maintain_state`
 - `cpa_warden_upload.sqlite3`
 - `cpa_warden_maintain.log`
 - `cpa_warden_upload.log`
+- `maintain_names_scope.txt`
 - `last_uploaded_snapshot.txt`
 - `current_snapshot.txt`
 - `stable_snapshot.txt`

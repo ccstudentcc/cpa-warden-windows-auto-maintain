@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - CI now validates `auto_maintain.py` compilation/help and runs `tests/test_auto_maintain.py`
 - Expanded `ARCHITECTURE.md` with explicit concurrency, snapshot, ZIP intake, and cleanup models
 - `auto_maintain.py` now schedules `upload` and `maintain` commands in parallel channels so maintenance no longer blocks behind long upload batches
+- Scheduled maintain keeps full scope, while post-upload maintain now runs incremental scope based on uploaded auth names
+- Added CLI option `--maintain-names-file` (maintain mode) to constrain scan/actions to a provided name set
 - Added split runtime paths for watcher-managed command state: `MAINTAIN_DB_PATH` / `UPLOAD_DB_PATH` and `MAINTAIN_LOG_FILE` / `UPLOAD_LOG_FILE`
 - Updated `start_auto_maintain_optimized.bat` profile defaults to use dedicated maintain/upload SQLite files and log files under `.auto_maintain_state`
 - Fixed upload snapshot baseline handling in watcher flow to avoid marking mid-upload new files as already uploaded

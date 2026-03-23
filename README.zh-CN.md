@@ -35,6 +35,8 @@
 相对衍生基线提交（`f3778f4`），当前 watcher 的关键增强包括：
 
 1. `upload` 与 `maintain` 并发调度，维护不再被长上传批次阻塞。
+   - 定时维护（`MAINTAIN_INTERVAL_SECONDS`）是全量维护。
+   - 上传后维护改为按本次上传名称集合执行增量维护。
 2. 维护/上传运行状态彻底拆分：`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`，日志也拆分为 `MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`。
 3. 上传基线一致性修复：上传进行中新出现的文件，不会被误判为“已上传”。
 4. 快照扫描增强：对扫描期间文件瞬时消失/替换等文件系统竞态更稳健。
@@ -57,6 +59,7 @@
    - 上传成功会更新快照/基线，并按配置删除已上传源文件；
    - 维护成功会清理维护重试状态。
 6. 上传成功后可选排队“上传后维护”。
+   - 上传后维护通过 `--maintain-names-file` 仅处理本次上传账号名称集合。
 7. 上传与维护失败分别进入各自重试窗口，互不干扰。
 8. `--once` 模式下，只有运行中和排队任务都完成才退出；失败返回非零码。
 
@@ -114,6 +117,7 @@ start_auto_maintain_optimized.bat
 - `.auto_maintain_state/cpa_warden_upload.sqlite3`
 - `.auto_maintain_state/cpa_warden_maintain.log`
 - `.auto_maintain_state/cpa_warden_upload.log`
+- `.auto_maintain_state/maintain_names_scope.txt`
 - `.auto_maintain_state/last_uploaded_snapshot.txt`
 - `.auto_maintain_state/current_snapshot.txt`
 - `.auto_maintain_state/stable_snapshot.txt`

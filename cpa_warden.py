@@ -547,6 +547,11 @@ def build_settings(args: argparse.Namespace, conf: dict[str, Any]) -> dict[str, 
             )
         ),
         "reenable_scope": reenable_scope,
+        "maintain_names_file": str(
+            args.maintain_names_file
+            if args.maintain_names_file is not None
+            else config_lookup(conf, "maintain_names_file", default="")
+        ).strip(),
         "db_path": str(
             args.db_path
             or config_lookup(conf, "db_path", default=DEFAULT_DB_PATH)
@@ -944,6 +949,31 @@ def matches_filters(record: dict[str, Any], target_type: str, provider: str) -> 
     if provider and str(record.get("provider") or "").lower() != provider.lower():
         return False
     return True
+
+
+def load_name_scope_file(path_text: str) -> set[str]:
+    path = Path(path_text).expanduser()
+    if not path.exists():
+        raise RuntimeError(f"maintain_names_file 不存在: {path}")
+    if not path.is_file():
+        raise RuntimeError(f"maintain_names_file 不是文件: {path}")
+
+    names: set[str] = set()
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        names.add(line)
+    return names
+
+
+def resolve_maintain_name_scope(settings: dict[str, Any]) -> set[str] | None:
+    if str(settings.get("mode") or "").strip().lower() != "maintain":
+        return None
+    path_text = str(settings.get("maintain_names_file") or "").strip()
+    if not path_text:
+        return None
+    return load_name_scope_file(path_text)
 
 
 def fetch_auth_files(base_url: str, token: str, timeout: int) -> list[dict[str, Any]]:
@@ -2445,7 +2475,11 @@ def export_current_results(
     LOGGER.info("已导出限额列表: %s", quota_output)
 
 
-async def run_scan_async(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
+async def run_scan_async(
+    conn: sqlite3.Connection,
+    settings: dict[str, Any],
+    maintain_name_scope: set[str] | None = None,
+) -> dict[str, Any]:
     run_id = start_scan_run(conn, settings)
     LOGGER.info(
         "开始扫描: mode=%s db=%s log=%s quota_disable_threshold=%s",
@@ -2473,6 +2507,12 @@ async def run_scan_async(conn: sqlite3.Connection, settings: dict[str, Any]) -> 
             for record in inventory_records
             if matches_filters(record, settings["target_type"], settings["provider"])
         ]
+        if maintain_name_scope is not None:
+            candidate_records = [
+                record
+                for record in candidate_records
+                if str(record.get("name") or "") in maintain_name_scope
+            ]
         probed_records = await probe_accounts_async(
             candidate_records,
             base_url=settings["base_url"],
@@ -2548,6 +2588,7 @@ async def run_scan_async(conn: sqlite3.Connection, settings: dict[str, Any]) -> 
 
 
 async def run_maintain_async(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
+    maintain_name_scope = resolve_maintain_name_scope(settings)
     LOGGER.info(
         "开始维护: delete_401=%s quota_action=%s quota_disable_threshold=%s auto_reenable=%s reenable_scope=%s delete_retries=%s",
         settings["delete_401"],
@@ -2557,7 +2598,11 @@ async def run_maintain_async(conn: sqlite3.Connection, settings: dict[str, Any])
         settings["reenable_scope"],
         settings["delete_retries"],
     )
-    scan_result = await run_scan_async(conn, settings)
+    if maintain_name_scope is None:
+        LOGGER.info("维护范围: full")
+    else:
+        LOGGER.info("维护范围: incremental names=%s", len(maintain_name_scope))
+    scan_result = await run_scan_async(conn, settings, maintain_name_scope=maintain_name_scope)
 
     records_by_name = {
         row["name"]: row
@@ -3026,6 +3071,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user-agent", help="wham/usage 探测使用的 User-Agent")
     parser.add_argument("--quota-action", choices=["disable", "delete"], help="限额账号处理动作")
     parser.add_argument("--quota-disable-threshold", type=float, help="剩余额度比例触发禁用阈值（0~1，默认 0 表示仅耗尽）")
+    parser.add_argument("--maintain-names-file", help="维护范围名称文件（每行一个 auth 名称，仅 maintain 模式生效）")
     parser.add_argument("--db-path", help="SQLite 状态库路径")
     parser.add_argument("--invalid-output", help="401 导出文件路径")
     parser.add_argument("--quota-output", help="限额导出文件路径")
@@ -3118,7 +3164,7 @@ def main() -> int:
 
     ensure_credentials(settings, interactive)
     LOGGER.debug(
-        "运行参数: mode=%s target_type=%s provider=%s probe_workers=%s action_workers=%s timeout=%s retries=%s delete_retries=%s quota_action=%s quota_disable_threshold=%s delete_401=%s auto_reenable=%s reenable_scope=%s upload_dir=%s upload_workers=%s upload_retries=%s upload_method=%s upload_recursive=%s upload_force=%s min_valid_accounts=%s refill_strategy=%s auto_register=%s register_timeout=%s register_workdir=%s db_path=%s",
+        "运行参数: mode=%s target_type=%s provider=%s probe_workers=%s action_workers=%s timeout=%s retries=%s delete_retries=%s quota_action=%s quota_disable_threshold=%s delete_401=%s auto_reenable=%s reenable_scope=%s maintain_names_file=%s upload_dir=%s upload_workers=%s upload_retries=%s upload_method=%s upload_recursive=%s upload_force=%s min_valid_accounts=%s refill_strategy=%s auto_register=%s register_timeout=%s register_workdir=%s db_path=%s",
         settings["mode"],
         settings["target_type"],
         settings["provider"] or "",
@@ -3132,6 +3178,7 @@ def main() -> int:
         settings["delete_401"],
         settings["auto_reenable"],
         settings["reenable_scope"],
+        settings["maintain_names_file"],
         settings["upload_dir"],
         settings["upload_workers"],
         settings["upload_retries"],

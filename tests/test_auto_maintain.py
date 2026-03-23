@@ -130,6 +130,10 @@ class AutoMaintainTests(unittest.TestCase):
             with_yes = maintainer.build_maintain_command()
             self.assertIn("--yes", with_yes)
 
+            scoped = maintainer.build_maintain_command(base / "scope.txt")
+            self.assertIn("--maintain-names-file", scoped)
+            self.assertIn(str(base / "scope.txt"), scoped)
+
     def test_delete_uploaded_files_prunes_empty_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -155,6 +159,57 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertFalse((auth_dir / "x").exists())
             self.assertTrue(keep_dir.exists())
             self.assertTrue(auth_dir.exists())
+
+    def test_queue_maintain_merges_incremental_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+
+            maintainer.queue_maintain("post-upload maintain", names={"a.json", "b.json"})
+            maintainer.queue_maintain("post-upload maintain", names={"b.json", "c.json"})
+
+            self.assertTrue(maintainer.pending_maintain)
+            self.assertEqual(maintainer.pending_maintain_names, {"a.json", "b.json", "c.json"})
+
+    def test_queue_full_maintain_overrides_incremental_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+
+            maintainer.queue_maintain("post-upload maintain", names={"a.json"})
+            maintainer.queue_maintain("scheduled maintain")
+
+            self.assertTrue(maintainer.pending_maintain)
+            self.assertIsNone(maintainer.pending_maintain_names)
+
+    def test_poll_upload_process_queues_incremental_maintain_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            (auth_dir / "a.json").write_text("{}", encoding="utf-8")
+            (auth_dir / "b.json").write_text("{}", encoding="utf-8")
+
+            settings = _build_settings(base, auth_dir)
+            settings.run_maintain_after_upload = True
+            maintainer = AutoMaintainer(settings)
+            settings.state_dir.mkdir(parents=True, exist_ok=True)
+
+            uploaded_snapshot = maintainer.snapshot_lines()
+            maintainer.upload_process = _DoneProcess(0)
+            maintainer.inflight_upload_snapshot = uploaded_snapshot
+
+            result = maintainer.poll_upload_process()
+
+            self.assertEqual(result, 0)
+            self.assertTrue(maintainer.pending_maintain)
+            self.assertEqual(maintainer.pending_maintain_names, {"a.json", "b.json"})
 
 
 if __name__ == "__main__":

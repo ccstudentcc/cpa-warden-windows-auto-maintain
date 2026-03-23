@@ -35,6 +35,8 @@ The core value of this project is not replacing `cpa_warden.py`, but orchestrati
 Compared with the baseline derivative commit (`f3778f4`), current watcher behavior includes:
 
 1. Parallel scheduler channels for `upload` and `maintain` so maintenance is no longer blocked by long upload batches.
+   - Scheduled maintenance (`MAINTAIN_INTERVAL_SECONDS`) is full-scope.
+   - Post-upload maintenance is incremental-scope based on uploaded auth names.
 2. Split runtime persistence paths for maintain/upload (`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`) and split logs (`MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`).
 3. Upload baseline correctness fix: files created during an in-flight upload are not incorrectly marked as already uploaded.
 4. Snapshot robustness improvements for transient file-system races (disappearing/replaced files while scanning).
@@ -57,6 +59,7 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
    - upload success updates snapshots/baseline and optionally deletes uploaded source files;
    - maintain success clears maintain retry state.
 6. On upload completion, optionally queue post-upload maintain.
+   - The queued post-upload maintain uses `--maintain-names-file` to scope actions to uploaded names.
 7. Apply independent retry windows for maintain/upload failures.
 8. In `--once` mode, exit only after all running/pending work finishes; exit non-zero on failures.
 
@@ -114,6 +117,7 @@ start_auto_maintain_optimized.bat
 - `.auto_maintain_state/cpa_warden_upload.sqlite3`
 - `.auto_maintain_state/cpa_warden_maintain.log`
 - `.auto_maintain_state/cpa_warden_upload.log`
+- `.auto_maintain_state/maintain_names_scope.txt`
 - `.auto_maintain_state/last_uploaded_snapshot.txt`
 - `.auto_maintain_state/current_snapshot.txt`
 - `.auto_maintain_state/stable_snapshot.txt`

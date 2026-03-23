@@ -122,6 +122,9 @@ class AutoMaintainer:
         self.maintain_retry_due_at = 0.0
         self.pending_maintain = False
         self.pending_maintain_reason: str | None = None
+        self.pending_maintain_names: set[str] | None = None
+        self.inflight_maintain_names: set[str] | None = None
+        self.maintain_names_file = self.settings.state_dir / "maintain_names_scope.txt"
 
     def ensure_paths(self) -> None:
         if not self.cpa_script.exists():
@@ -244,6 +247,7 @@ class AutoMaintainer:
         log(f"UPLOAD_DB_PATH={self.settings.upload_db_path}")
         log(f"MAINTAIN_LOG_FILE={self.settings.maintain_log_file}")
         log(f"UPLOAD_LOG_FILE={self.settings.upload_log_file}")
+        log(f"MAINTAIN_NAMES_SCOPE_FILE={self.maintain_names_file}")
         log(f"MAINTAIN_INTERVAL_SECONDS={self.settings.maintain_interval_seconds}")
         log(f"WATCH_INTERVAL_SECONDS={self.settings.watch_interval_seconds}")
         log(f"UPLOAD_STABLE_WAIT_SECONDS={self.settings.upload_stable_wait_seconds}")
@@ -712,6 +716,22 @@ class AutoMaintainer:
         current_set = set(current_snapshot)
         return sorted(uploaded_set.intersection(current_set))
 
+    def extract_names_from_snapshot(self, snapshot_lines: list[str]) -> set[str]:
+        names: set[str] = set()
+        for row in snapshot_lines:
+            parts = row.rsplit("|", 2)
+            if len(parts) != 3:
+                continue
+            file_name = Path(parts[0]).name.strip()
+            if file_name:
+                names.add(file_name)
+        return names
+
+    def write_maintain_names_scope(self, names: set[str]) -> Path:
+        sorted_names = sorted(name for name in names if name.strip())
+        self.maintain_names_file.write_text("\n".join(sorted_names), encoding="utf-8")
+        return self.maintain_names_file
+
     def delete_uploaded_files_from_snapshot(self, snapshot_lines: list[str]) -> None:
         deleted = 0
         skipped_changed = 0
@@ -798,7 +818,7 @@ class AutoMaintainer:
             cmd.extend(["--config", str(self.settings.config_path)])
         return cmd
 
-    def build_maintain_command(self) -> list[str]:
+    def build_maintain_command(self, maintain_names_file: Path | None = None) -> list[str]:
         cmd = self.command_base() + [
             "--mode",
             "maintain",
@@ -807,6 +827,8 @@ class AutoMaintainer:
             "--log-file",
             str(self.settings.maintain_log_file),
         ]
+        if maintain_names_file is not None:
+            cmd.extend(["--maintain-names-file", str(maintain_names_file)])
         if self.settings.maintain_assume_yes:
             cmd.append("--yes")
         return cmd
@@ -824,9 +846,26 @@ class AutoMaintainer:
             str(self.settings.upload_log_file),
         ]
 
-    def queue_maintain(self, reason: str) -> None:
+    def queue_maintain(self, reason: str, names: set[str] | None = None) -> None:
+        if names is None:
+            self.pending_maintain = True
+            self.pending_maintain_reason = reason
+            self.pending_maintain_names = None
+            return
+
+        clean_names = {name.strip() for name in names if name and name.strip()}
+        if not clean_names:
+            return
+
+        if self.pending_maintain and self.pending_maintain_names is None:
+            return
+
         self.pending_maintain = True
         self.pending_maintain_reason = reason
+        if self.pending_maintain_names is None:
+            self.pending_maintain_names = set(clean_names)
+        else:
+            self.pending_maintain_names.update(clean_names)
 
     def maybe_start_maintain(self) -> int:
         if self.maintain_process is not None:
@@ -839,13 +878,33 @@ class AutoMaintainer:
         self.maintain_attempt += 1
         max_attempts = self.settings.maintain_retry_count + 1
         reason = self.pending_maintain_reason or "unspecified"
-        cmd = self.build_maintain_command()
+        maintain_scope_file: Path | None = None
+        maintain_scope_names: set[str] | None = None
+        if self.pending_maintain_names is not None:
+            maintain_scope_names = set(self.pending_maintain_names)
+            if not maintain_scope_names:
+                self.pending_maintain = False
+                self.pending_maintain_reason = None
+                self.pending_maintain_names = None
+                self.maintain_attempt = 0
+                self.maintain_retry_due_at = 0.0
+                log("Skipped maintain start: incremental scope is empty.")
+                return 0
+            maintain_scope_file = self.write_maintain_names_scope(maintain_scope_names)
+        cmd = self.build_maintain_command(maintain_scope_file)
+        scope_label = (
+            f"incremental names={len(maintain_scope_names or set())}"
+            if maintain_scope_names is not None
+            else "full"
+        )
         log(
             f"Starting maintain command attempt {self.maintain_attempt} of {max_attempts} "
-            f"(reason={reason})."
+            f"(reason={reason}, scope={scope_label})."
         )
+        self.inflight_maintain_names = maintain_scope_names
         self.pending_maintain = False
         self.pending_maintain_reason = None
+        self.pending_maintain_names = None
         try:
             self.maintain_process = subprocess.Popen(cmd, cwd=str(self.settings.base_dir))
         except Exception as exc:
@@ -882,11 +941,18 @@ class AutoMaintainer:
             if self.maintain_attempt < max_attempts:
                 self.pending_maintain = True
                 self.pending_maintain_reason = "maintain retry"
+                self.pending_maintain_names = (
+                    None
+                    if self.inflight_maintain_names is None
+                    else set(self.inflight_maintain_names)
+                )
                 self.maintain_retry_due_at = time.monotonic() + self.settings.command_retry_delay_seconds
                 log(f"Will retry maintain in {self.settings.command_retry_delay_seconds}s.")
                 return 0
             self.pending_maintain = False
             self.pending_maintain_reason = None
+            self.pending_maintain_names = None
+            self.inflight_maintain_names = None
             self.maintain_attempt = 0
             return 1
 
@@ -915,6 +981,7 @@ class AutoMaintainer:
             log("Maintain command completed.")
             self.maintain_attempt = 0
             self.maintain_retry_due_at = 0.0
+            self.inflight_maintain_names = None
             return 0
 
         if self.shutdown_requested:
@@ -924,6 +991,11 @@ class AutoMaintainer:
         if self.maintain_attempt < max_attempts:
             self.pending_maintain = True
             self.pending_maintain_reason = "maintain retry"
+            self.pending_maintain_names = (
+                None
+                if self.inflight_maintain_names is None
+                else set(self.inflight_maintain_names)
+            )
             self.maintain_retry_due_at = time.monotonic() + self.settings.command_retry_delay_seconds
             log(
                 f"Maintain command failed with exit {code}. "
@@ -934,6 +1006,8 @@ class AutoMaintainer:
         log(f"Maintain command failed after retries. Exit code {code}.")
         self.pending_maintain = False
         self.pending_maintain_reason = None
+        self.pending_maintain_names = None
+        self.inflight_maintain_names = None
         self.maintain_attempt = 0
         return code
 
@@ -977,7 +1051,11 @@ class AutoMaintainer:
                 self.pending_upload_reason = None
 
             if self.settings.run_maintain_after_upload:
-                self.queue_maintain("post-upload maintain")
+                uploaded_names = self.extract_names_from_snapshot(uploaded_snapshot)
+                if uploaded_names:
+                    self.queue_maintain("post-upload maintain", names=uploaded_names)
+                else:
+                    log("Skipped post-upload maintain: no uploaded names detected.")
             return 0
 
         if self.shutdown_requested:
