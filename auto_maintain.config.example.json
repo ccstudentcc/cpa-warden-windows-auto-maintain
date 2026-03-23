@@ -9,6 +9,7 @@
   "maintain_interval_seconds": 2400,
   "watch_interval_seconds": 15,
   "upload_stable_wait_seconds": 5,
+  "upload_batch_size": 100,
   "deep_scan_interval_loops": 120,
   "run_maintain_on_start": true,
   "run_upload_on_start": true,

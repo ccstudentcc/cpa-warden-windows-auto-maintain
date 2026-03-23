@@ -552,6 +552,11 @@ def build_settings(args: argparse.Namespace, conf: dict[str, Any]) -> dict[str, 
             if args.maintain_names_file is not None
             else config_lookup(conf, "maintain_names_file", default="")
         ).strip(),
+        "upload_names_file": str(
+            args.upload_names_file
+            if args.upload_names_file is not None
+            else config_lookup(conf, "upload_names_file", default="")
+        ).strip(),
         "db_path": str(
             args.db_path
             or config_lookup(conf, "db_path", default=DEFAULT_DB_PATH)
@@ -951,12 +956,12 @@ def matches_filters(record: dict[str, Any], target_type: str, provider: str) -> 
     return True
 
 
-def load_name_scope_file(path_text: str) -> set[str]:
+def load_name_scope_file(path_text: str, *, option_label: str) -> set[str]:
     path = Path(path_text).expanduser()
     if not path.exists():
-        raise RuntimeError(f"maintain_names_file 不存在: {path}")
+        raise RuntimeError(f"{option_label} 不存在: {path}")
     if not path.is_file():
-        raise RuntimeError(f"maintain_names_file 不是文件: {path}")
+        raise RuntimeError(f"{option_label} 不是文件: {path}")
 
     names: set[str] = set()
     for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
@@ -973,7 +978,16 @@ def resolve_maintain_name_scope(settings: dict[str, Any]) -> set[str] | None:
     path_text = str(settings.get("maintain_names_file") or "").strip()
     if not path_text:
         return None
-    return load_name_scope_file(path_text)
+    return load_name_scope_file(path_text, option_label="maintain_names_file")
+
+
+def resolve_upload_name_scope(settings: dict[str, Any]) -> set[str] | None:
+    if str(settings.get("mode") or "").strip().lower() != "upload":
+        return None
+    path_text = str(settings.get("upload_names_file") or "").strip()
+    if not path_text:
+        return None
+    return load_name_scope_file(path_text, option_label="upload_names_file")
 
 
 def fetch_auth_files(base_url: str, token: str, timeout: int) -> list[dict[str, Any]]:
@@ -1560,6 +1574,7 @@ async def run_upload_async(
     *,
     limit: int | None = None,
 ) -> dict[str, Any]:
+    upload_name_scope = resolve_upload_name_scope(settings)
     LOGGER.info(
         "开始上传认证文件: dir=%s recursive=%s workers=%s retries=%s method=%s force=%s limit=%s",
         settings["upload_dir"],
@@ -1570,6 +1585,10 @@ async def run_upload_async(
         settings["upload_force"],
         limit if limit is not None else "all",
     )
+    if upload_name_scope is None:
+        LOGGER.info("上传范围: full")
+    else:
+        LOGGER.info("上传范围: incremental names=%s", len(upload_name_scope))
     discovered_paths = discover_upload_files(settings["upload_dir"], settings["upload_recursive"])
     if not discovered_paths:
         LOGGER.info("未发现可上传的 .json 文件")
@@ -1595,6 +1614,17 @@ async def run_upload_async(
 
     selected_candidates, skipped_local_duplicates, conflicting_names = select_upload_candidates(validated_files)
     pre_results.extend(skipped_local_duplicates)
+    if upload_name_scope is not None:
+        selected_candidates = [
+            candidate
+            for candidate in selected_candidates
+            if candidate["file_name"] in upload_name_scope
+        ]
+        conflicting_names = {
+            name: rows
+            for name, rows in conflicting_names.items()
+            if name in upload_name_scope
+        }
     if conflicting_names:
         samples: list[str] = []
         for name, rows in list(sorted(conflicting_names.items(), key=lambda item: item[0]))[:10]:
@@ -3072,6 +3102,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quota-action", choices=["disable", "delete"], help="限额账号处理动作")
     parser.add_argument("--quota-disable-threshold", type=float, help="剩余额度比例触发禁用阈值（0~1，默认 0 表示仅耗尽）")
     parser.add_argument("--maintain-names-file", help="维护范围名称文件（每行一个 auth 名称，仅 maintain 模式生效）")
+    parser.add_argument("--upload-names-file", help="上传范围名称文件（每行一个 auth 名称，仅 upload 模式生效）")
     parser.add_argument("--db-path", help="SQLite 状态库路径")
     parser.add_argument("--invalid-output", help="401 导出文件路径")
     parser.add_argument("--quota-output", help="限额导出文件路径")
@@ -3164,7 +3195,7 @@ def main() -> int:
 
     ensure_credentials(settings, interactive)
     LOGGER.debug(
-        "运行参数: mode=%s target_type=%s provider=%s probe_workers=%s action_workers=%s timeout=%s retries=%s delete_retries=%s quota_action=%s quota_disable_threshold=%s delete_401=%s auto_reenable=%s reenable_scope=%s maintain_names_file=%s upload_dir=%s upload_workers=%s upload_retries=%s upload_method=%s upload_recursive=%s upload_force=%s min_valid_accounts=%s refill_strategy=%s auto_register=%s register_timeout=%s register_workdir=%s db_path=%s",
+        "运行参数: mode=%s target_type=%s provider=%s probe_workers=%s action_workers=%s timeout=%s retries=%s delete_retries=%s quota_action=%s quota_disable_threshold=%s delete_401=%s auto_reenable=%s reenable_scope=%s maintain_names_file=%s upload_names_file=%s upload_dir=%s upload_workers=%s upload_retries=%s upload_method=%s upload_recursive=%s upload_force=%s min_valid_accounts=%s refill_strategy=%s auto_register=%s register_timeout=%s register_workdir=%s db_path=%s",
         settings["mode"],
         settings["target_type"],
         settings["provider"] or "",
@@ -3179,6 +3210,7 @@ def main() -> int:
         settings["auto_reenable"],
         settings["reenable_scope"],
         settings["maintain_names_file"],
+        settings["upload_names_file"],
         settings["upload_dir"],
         settings["upload_workers"],
         settings["upload_retries"],

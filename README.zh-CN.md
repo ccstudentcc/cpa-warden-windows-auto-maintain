@@ -37,15 +37,18 @@
 1. `upload` 与 `maintain` 并发调度，维护不再被长上传批次阻塞。
    - 定时维护（`MAINTAIN_INTERVAL_SECONDS`）是全量维护。
    - 上传后维护改为按本次上传名称集合执行增量维护。
-2. 维护/上传运行状态彻底拆分：`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`，日志也拆分为 `MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`。
-3. 上传基线一致性修复：上传进行中新出现的文件，不会被误判为“已上传”。
-4. 快照扫描增强：对扫描期间文件瞬时消失/替换等文件系统竞态更稳健。
-5. 上传完成后，若检测到基线外文件，会自动排队下一批上传。
-6. ZIP 变更检测升级为签名比对（路径/大小/mtime），不再只看 ZIP 数量。
-7. 上传清理后会继续清理 `auth_dir` 下空目录。
-8. 默认失败即停（fail-fast），并保留上传/维护独立重试策略；`--once` 语义更严格。
-9. 新增 `MAINTAIN_ASSUME_YES`，便于无人值守维护。
-10. 单实例锁由 Python 侧统一仲裁，降低重复 watcher 并发风险。
+2. 上传队列支持按批次切分（`UPLOAD_BATCH_SIZE`），并通过 `--upload-names-file` 做每批精准上传。
+   - 单批上传更快结束。
+   - 已上传批次可更早触发增量维护。
+3. 维护/上传运行状态彻底拆分：`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`，日志也拆分为 `MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`。
+4. 上传基线一致性修复：部分批次成功时，会与历史已上传基线合并，而不是覆盖。
+5. 快照扫描增强：对扫描期间文件瞬时消失/替换等文件系统竞态更稳健。
+6. 上传完成后，若检测到基线外文件，会自动排队下一批上传。
+7. ZIP 变更检测升级为签名比对（路径/大小/mtime），不再只看 ZIP 数量。
+8. 上传清理后会继续清理 `auth_dir` 下空目录。
+9. 默认失败即停（fail-fast），并保留上传/维护独立重试策略；`--once` 语义更严格。
+10. 新增 `MAINTAIN_ASSUME_YES`，便于无人值守维护。
+11. 单实例锁由 Python 侧统一仲裁，降低重复 watcher 并发风险。
 
 ## 执行逻辑（Watcher）
 
@@ -55,11 +58,13 @@
 2. 可选执行 ZIP 巡检；若解压产生 JSON 变化，会立即进入上传检查。
 3. 按启动参数决定是否排队首轮维护/上传。
 4. 当各自通道空闲时，维护与上传独立启动，互不阻塞。
+   - 上传通道按 `UPLOAD_BATCH_SIZE` 串行消费待上传队列。
+   - 每批上传通过 `--upload-names-file` 约束命令侧上传范围。
 5. 独立轮询两个子进程退出状态：
    - 上传成功会更新快照/基线，并按配置删除已上传源文件；
    - 维护成功会清理维护重试状态。
 6. 上传成功后可选排队“上传后维护”。
-   - 上传后维护通过 `--maintain-names-file` 仅处理本次上传账号名称集合。
+   - 上传后维护通过 `--maintain-names-file` 仅处理“刚完成这一批上传”的账号名称集合。
 7. 上传与维护失败分别进入各自重试窗口，互不干扰。
 8. `--once` 模式下，只有运行中和排队任务都完成才退出；失败返回非零码。
 
@@ -126,6 +131,7 @@ start_auto_maintain_optimized.bat
 - `.auto_maintain_state/cpa_warden_maintain.log`
 - `.auto_maintain_state/cpa_warden_upload.log`
 - `.auto_maintain_state/maintain_names_scope.txt`
+- `.auto_maintain_state/upload_names_scope.txt`
 - `.auto_maintain_state/last_uploaded_snapshot.txt`
 - `.auto_maintain_state/current_snapshot.txt`
 - `.auto_maintain_state/stable_snapshot.txt`
@@ -139,6 +145,7 @@ start_auto_maintain_optimized.bat
 - 维护周期：`2400s`
 - 监听周期：`15s`
 - 上传稳定等待：`5s`
+- 上传批次大小：`100`
 - 深度扫描间隔：`120` 次循环
 - 上传完成后触发维护：开启
 - 上传成功后删除源 JSON：开启
@@ -164,6 +171,7 @@ start_auto_maintain_optimized.bat
 | `maintain_interval_seconds` | `2400` | 定时全量维护周期（秒）。 |
 | `watch_interval_seconds` | `15` | watcher 主循环轮询间隔（秒）。 |
 | `upload_stable_wait_seconds` | `5` | 检测到变化后，上传前稳定等待时长（秒）。 |
+| `upload_batch_size` | `100` | 单次 upload 命令最多处理的 JSON 数量；剩余文件进入下一批串行上传。 |
 | `deep_scan_interval_loops` | `120` | 无明显变化时，每 N 轮强制做一次深度扫描。 |
 | `run_maintain_on_start` | `true` | 启动时是否先排队一次维护。 |
 | `run_upload_on_start` | `true` | 启动时是否先做一次上传变化检查。 |
@@ -185,7 +193,7 @@ start_auto_maintain_optimized.bat
 说明：
 
 - `maintain_interval_seconds` 只控制定时全量维护。
-- 上传后维护是按本次上传名称集合执行的增量维护。
+- 上传后维护按“每个已完成上传批次”的名称集合执行增量维护。
 - 路径参数支持相对路径（相对仓库根目录解析）。
 
 ## 常用环境变量
@@ -197,7 +205,7 @@ start_auto_maintain_optimized.bat
 - `MAINTAIN_DB_PATH`、`UPLOAD_DB_PATH`
 - `MAINTAIN_LOG_FILE`、`UPLOAD_LOG_FILE`
 - `MAINTAIN_INTERVAL_SECONDS`、`WATCH_INTERVAL_SECONDS`
-- `UPLOAD_STABLE_WAIT_SECONDS`、`DEEP_SCAN_INTERVAL_LOOPS`
+- `UPLOAD_STABLE_WAIT_SECONDS`、`UPLOAD_BATCH_SIZE`、`DEEP_SCAN_INTERVAL_LOOPS`
 - `RUN_MAINTAIN_ON_START`、`RUN_UPLOAD_ON_START`、`RUN_MAINTAIN_AFTER_UPLOAD`
 - `MAINTAIN_ASSUME_YES`
 - `MAINTAIN_RETRY_COUNT`、`UPLOAD_RETRY_COUNT`、`COMMAND_RETRY_DELAY_SECONDS`

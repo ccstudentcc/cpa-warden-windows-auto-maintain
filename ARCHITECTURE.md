@@ -43,9 +43,11 @@ This repository provides a Windows-first automation layer on top of the CPA main
 1. Watcher scans `auth_files` and computes snapshots.
 2. When stable changes are detected, upload batch is queued.
 3. Upload and maintain commands are scheduled as separate channels.
-4. Upload completion updates baseline snapshot and optionally deletes uploaded files.
-5. Optional post-upload maintain is queued.
-6. Runtime state persists under `.auto_maintain_state`.
+4. Upload channel executes serial batches (size controlled by `UPLOAD_BATCH_SIZE`).
+5. Each upload batch is scope-limited by `--upload-names-file`.
+6. Upload completion updates baseline snapshot and optionally deletes uploaded files.
+7. Optional post-upload maintain is queued using names from that completed upload batch.
+8. Runtime state persists under `.auto_maintain_state`.
 
 ## Settings Resolution Model
 
@@ -65,6 +67,7 @@ This repository provides a Windows-first automation layer on top of the CPA main
   - maintain channel (`self.maintain_process`)
 - Each channel has independent pending flags, retry counters, and retry due times.
 - Command launch conditions are channel-local, so maintain can continue while upload is still running.
+- Upload channel supports serial batch slicing so one large snapshot does not block post-upload incremental maintain for early batches.
 - Post-upload maintain is queued as an additional maintain reason, not as an upload blocking step.
 - Scheduled maintain (`MAINTAIN_INTERVAL_SECONDS`) is full-scope.
 - Post-upload maintain is incremental-scope, constrained to uploaded auth names through `--maintain-names-file`.
@@ -77,13 +80,15 @@ Watcher consistency is built around three snapshot files:
 - `stable_snapshot.txt`: stable snapshot after wait-window confirmation
 - `last_uploaded_snapshot.txt`: uploaded baseline used for change detection
 
-Key rule:
+Key rules:
 
-- On upload success, baseline is computed as the intersection of
-  - uploaded in-flight snapshot, and
-  - files that still exist in the current snapshot
+- On upload success, baseline is merged from:
+  - previous uploaded baseline,
+  - current batch uploaded snapshot,
+  - and files that still exist in current snapshot.
+- Pending upload queue is derived from `current_snapshot - uploaded_baseline` after each successful upload batch.
 
-This avoids incorrectly marking files created during upload as already uploaded.
+This keeps partial-batch progress while avoiding incorrect "already uploaded" marking for files created during upload.
 
 ## ZIP Intake Model
 
@@ -101,6 +106,7 @@ Default state directory: `.auto_maintain_state`
 - `cpa_warden_maintain.log`
 - `cpa_warden_upload.log`
 - `maintain_names_scope.txt`
+- `upload_names_scope.txt`
 - `last_uploaded_snapshot.txt`
 - `current_snapshot.txt`
 - `stable_snapshot.txt`

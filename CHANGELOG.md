@@ -25,10 +25,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `auto_maintain.py` now schedules `upload` and `maintain` commands in parallel channels so maintenance no longer blocks behind long upload batches
 - Scheduled maintain keeps full scope, while post-upload maintain now runs incremental scope based on uploaded auth names
 - Added CLI option `--maintain-names-file` (maintain mode) to constrain scan/actions to a provided name set
+- Added CLI option `--upload-names-file` (upload mode) to constrain upload candidates to a provided name set
 - Added split runtime paths for watcher-managed command state: `MAINTAIN_DB_PATH` / `UPLOAD_DB_PATH` and `MAINTAIN_LOG_FILE` / `UPLOAD_LOG_FILE`
 - Updated `start_auto_maintain_optimized.bat` profile defaults to use dedicated maintain/upload SQLite files and log files under `.auto_maintain_state`
 - Fixed upload snapshot baseline handling in watcher flow to avoid marking mid-upload new files as already uploaded
 - Watcher now queues a follow-up upload batch when files are detected outside the completed upload baseline
+- Watcher upload scheduling now supports `UPLOAD_BATCH_SIZE` and executes serial scoped batches so post-upload incremental maintain can start earlier
+- Upload baseline merge now preserves previous successful batches when current run only processes part of the queue
 - Hardened snapshot generation against transient file-system races (missing/replaced files during scans)
 - Upload cleanup now also prunes empty subdirectories under `auth_dir` after file deletion
 - ZIP change triggering now checks signature deltas (path/size/mtime) instead of only count changes

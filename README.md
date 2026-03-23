@@ -37,15 +37,18 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
 1. Parallel scheduler channels for `upload` and `maintain` so maintenance is no longer blocked by long upload batches.
    - Scheduled maintenance (`MAINTAIN_INTERVAL_SECONDS`) is full-scope.
    - Post-upload maintenance is incremental-scope based on uploaded auth names.
-2. Split runtime persistence paths for maintain/upload (`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`) and split logs (`MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`).
-3. Upload baseline correctness fix: files created during an in-flight upload are not incorrectly marked as already uploaded.
-4. Snapshot robustness improvements for transient file-system races (disappearing/replaced files while scanning).
-5. Post-upload follow-up batch queueing when files are outside the completed upload baseline.
-6. ZIP change detection by signature delta (path/size/mtime), not only ZIP file count.
-7. Upload cleanup now prunes empty directories under `auth_dir`.
-8. Fail-fast default policy for command failures, with explicit retry controls and stricter `--once` semantics.
-9. `MAINTAIN_ASSUME_YES` support for unattended maintain executions.
-10. Python-side single-instance lock arbitration to reduce duplicate watcher runs.
+2. Upload queue now supports batch slicing (`UPLOAD_BATCH_SIZE`) and per-batch scoped upload via `--upload-names-file`.
+   - Each upload batch completes faster.
+   - Incremental maintain can start earlier for already uploaded batches.
+3. Split runtime persistence paths for maintain/upload (`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`) and split logs (`MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`).
+4. Upload baseline correctness fix: partial-batch success merges with existing uploaded baseline instead of overwriting it.
+5. Snapshot robustness improvements for transient file-system races (disappearing/replaced files while scanning).
+6. Post-upload follow-up batch queueing when files are outside the completed upload baseline.
+7. ZIP change detection by signature delta (path/size/mtime), not only ZIP file count.
+8. Upload cleanup now prunes empty directories under `auth_dir`.
+9. Fail-fast default policy for command failures, with explicit retry controls and stricter `--once` semantics.
+10. `MAINTAIN_ASSUME_YES` support for unattended maintain executions.
+11. Python-side single-instance lock arbitration to reduce duplicate watcher runs.
 
 ## Execution Logic (Watcher)
 
@@ -55,11 +58,13 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
 2. Inspect ZIP files (optional) and enqueue upload-check if ZIP extraction produced JSON changes.
 3. Queue startup maintain/upload based on profile flags.
 4. Start maintain and upload commands independently when each channel is idle.
+   - Upload channel consumes pending files in serial batches (`UPLOAD_BATCH_SIZE`).
+   - Each upload batch uses `--upload-names-file` to scope command-side upload candidates.
 5. Poll command exits independently:
    - upload success updates snapshots/baseline and optionally deletes uploaded source files;
    - maintain success clears maintain retry state.
 6. On upload completion, optionally queue post-upload maintain.
-   - The queued post-upload maintain uses `--maintain-names-file` to scope actions to uploaded names.
+   - The queued post-upload maintain uses `--maintain-names-file` to scope actions to names from the completed upload batch.
 7. Apply independent retry windows for maintain/upload failures.
 8. In `--once` mode, exit only after all running/pending work finishes; exit non-zero on failures.
 
@@ -126,6 +131,7 @@ start_auto_maintain_optimized.bat
 - `.auto_maintain_state/cpa_warden_maintain.log`
 - `.auto_maintain_state/cpa_warden_upload.log`
 - `.auto_maintain_state/maintain_names_scope.txt`
+- `.auto_maintain_state/upload_names_scope.txt`
 - `.auto_maintain_state/last_uploaded_snapshot.txt`
 - `.auto_maintain_state/current_snapshot.txt`
 - `.auto_maintain_state/stable_snapshot.txt`
@@ -139,6 +145,7 @@ Current template defaults (`auto_maintain.config.example.json`):
 - maintain interval: `2400s`
 - watch interval: `15s`
 - upload stable wait: `5s`
+- upload batch size: `100`
 - deep scan interval: `120` loops
 - maintain after upload: enabled
 - delete uploaded source JSON: enabled
@@ -164,6 +171,7 @@ It also keeps env override capability for all watcher settings.
 | `maintain_interval_seconds` | `2400` | Full maintain schedule interval. |
 | `watch_interval_seconds` | `15` | Main loop poll interval for watcher scheduling. |
 | `upload_stable_wait_seconds` | `5` | Stability wait before enqueuing an upload batch. |
+| `upload_batch_size` | `100` | Max JSON files per upload command batch; pending files continue in next serial upload batch. |
 | `deep_scan_interval_loops` | `120` | Force deep re-scan every N loops even without obvious change. |
 | `run_maintain_on_start` | `true` | Whether to queue a maintain run on startup. |
 | `run_upload_on_start` | `true` | Whether to evaluate upload changes on startup. |
@@ -185,7 +193,7 @@ It also keeps env override capability for all watcher settings.
 Notes:
 
 - `maintain_interval_seconds` controls full maintain only.
-- Post-upload maintain is incremental by uploaded name scope.
+- Post-upload maintain is incremental by uploaded names from each completed upload batch.
 - File/path settings can use relative paths (resolved from repo root).
 
 ## Useful Environment Variables
@@ -197,7 +205,7 @@ Main variables consumed by `auto_maintain.py`:
 - `MAINTAIN_DB_PATH`, `UPLOAD_DB_PATH`
 - `MAINTAIN_LOG_FILE`, `UPLOAD_LOG_FILE`
 - `MAINTAIN_INTERVAL_SECONDS`, `WATCH_INTERVAL_SECONDS`
-- `UPLOAD_STABLE_WAIT_SECONDS`, `DEEP_SCAN_INTERVAL_LOOPS`
+- `UPLOAD_STABLE_WAIT_SECONDS`, `UPLOAD_BATCH_SIZE`, `DEEP_SCAN_INTERVAL_LOOPS`
 - `RUN_MAINTAIN_ON_START`, `RUN_UPLOAD_ON_START`, `RUN_MAINTAIN_AFTER_UPLOAD`
 - `MAINTAIN_ASSUME_YES`
 - `MAINTAIN_RETRY_COUNT`, `UPLOAD_RETRY_COUNT`, `COMMAND_RETRY_DELAY_SECONDS`

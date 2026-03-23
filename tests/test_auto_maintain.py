@@ -35,6 +35,7 @@ def _build_settings(base_dir: Path, auth_dir: Path) -> Settings:
         maintain_interval_seconds=3600,
         watch_interval_seconds=5,
         upload_stable_wait_seconds=0,
+        upload_batch_size=100,
         deep_scan_interval_loops=10,
         maintain_retry_count=0,
         upload_retry_count=0,
@@ -58,14 +59,15 @@ def _build_settings(base_dir: Path, auth_dir: Path) -> Settings:
 
 class AutoMaintainTests(unittest.TestCase):
     def test_compute_uploaded_baseline_keeps_only_uploaded_and_still_existing(self) -> None:
+        existing_baseline = ["legacy|0|0", "a|1|1"]
         uploaded_snapshot = ["a|1|1", "b|2|2"]
-        current_snapshot = ["a|1|1", "c|3|3"]
+        current_snapshot = ["a|1|1", "c|3|3", "legacy|0|0"]
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             settings = _build_settings(base, base / "auth")
             maintainer = AutoMaintainer(settings)
-            baseline = maintainer.compute_uploaded_baseline(uploaded_snapshot, current_snapshot)
-        self.assertEqual(baseline, ["a|1|1"])
+            baseline = maintainer.compute_uploaded_baseline(existing_baseline, uploaded_snapshot, current_snapshot)
+        self.assertEqual(baseline, ["a|1|1", "legacy|0|0"])
 
     def test_poll_upload_process_queues_next_batch_for_new_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -99,6 +101,68 @@ class AutoMaintainTests(unittest.TestCase):
 
             uploaded_file_snapshot = maintainer.read_snapshot(maintainer.last_uploaded_snapshot_file)
             self.assertEqual(uploaded_file_snapshot, uploaded_snapshot)
+
+    def test_maybe_start_upload_uses_batch_size_and_scope_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            settings.upload_batch_size = 2
+            maintainer = AutoMaintainer(settings)
+
+            batch_snapshot = [
+                f"{auth_dir / 'a.json'}|1|1",
+                f"{auth_dir / 'b.json'}|1|1",
+                f"{auth_dir / 'c.json'}|1|1",
+            ]
+            maintainer.pending_upload_snapshot = list(batch_snapshot)
+            maintainer.pending_upload_reason = "detected JSON changes"
+
+            with mock.patch("auto_maintain.subprocess.Popen", return_value=_DoneProcess(0)) as popen:
+                result = maintainer.maybe_start_upload()
+
+            self.assertEqual(result, 0)
+            self.assertIsNotNone(maintainer.upload_process)
+            self.assertEqual(maintainer.inflight_upload_snapshot, batch_snapshot[:2])
+            cmd = popen.call_args.args[0]
+            self.assertIn("--upload-names-file", cmd)
+            scope_path = Path(cmd[cmd.index("--upload-names-file") + 1])
+            self.assertTrue(scope_path.exists())
+            scoped_names = set(scope_path.read_text(encoding="utf-8").splitlines())
+            self.assertEqual(scoped_names, {"a.json", "b.json"})
+
+    def test_poll_upload_process_keeps_existing_uploaded_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+
+            file_a = auth_dir / "a.json"
+            file_b = auth_dir / "b.json"
+            file_c = auth_dir / "c.json"
+            file_a.write_text("{}", encoding="utf-8")
+            file_b.write_text("{}", encoding="utf-8")
+            file_c.write_text("{}", encoding="utf-8")
+
+            settings = _build_settings(base, auth_dir)
+            settings.upload_batch_size = 2
+            maintainer = AutoMaintainer(settings)
+            settings.state_dir.mkdir(parents=True, exist_ok=True)
+
+            snapshot = maintainer.snapshot_lines()
+            baseline_before = [snapshot[0]]
+            maintainer.write_snapshot(maintainer.last_uploaded_snapshot_file, baseline_before)
+
+            maintainer.pending_upload_snapshot = list(snapshot)
+            maintainer.upload_process = _DoneProcess(0)
+            maintainer.inflight_upload_snapshot = snapshot[1:]
+
+            result = maintainer.poll_upload_process()
+
+            self.assertEqual(result, 0)
+            baseline_after = maintainer.read_snapshot(maintainer.last_uploaded_snapshot_file)
+            self.assertEqual(baseline_after, snapshot)
 
     def test_snapshot_lines_tolerates_transient_missing_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -266,6 +330,7 @@ class AutoMaintainTests(unittest.TestCase):
                     {
                         "watch_interval_seconds": 21,
                         "upload_stable_wait_seconds": 3,
+                        "upload_batch_size": 7,
                         "run_upload_on_start": False,
                     }
                 ),
@@ -276,6 +341,7 @@ class AutoMaintainTests(unittest.TestCase):
                 settings = load_settings(args)
             self.assertEqual(settings.watch_interval_seconds, 21)
             self.assertEqual(settings.upload_stable_wait_seconds, 3)
+            self.assertEqual(settings.upload_batch_size, 7)
             self.assertFalse(settings.run_upload_on_start)
             self.assertEqual(settings.watch_config_path, watch_cfg)
 
@@ -286,6 +352,7 @@ class AutoMaintainTests(unittest.TestCase):
                 json.dumps(
                     {
                         "watch_interval_seconds": 30,
+                        "upload_batch_size": 5,
                         "run_upload_on_start": False,
                     }
                 ),
@@ -294,11 +361,12 @@ class AutoMaintainTests(unittest.TestCase):
             args = argparse.Namespace(once=False, watch_config=str(watch_cfg))
             with mock.patch.dict(
                 os.environ,
-                {"WATCH_INTERVAL_SECONDS": "11", "RUN_UPLOAD_ON_START": "1"},
+                {"WATCH_INTERVAL_SECONDS": "11", "UPLOAD_BATCH_SIZE": "13", "RUN_UPLOAD_ON_START": "1"},
                 clear=True,
             ):
                 settings = load_settings(args)
             self.assertEqual(settings.watch_interval_seconds, 11)
+            self.assertEqual(settings.upload_batch_size, 13)
             self.assertTrue(settings.run_upload_on_start)
 
 

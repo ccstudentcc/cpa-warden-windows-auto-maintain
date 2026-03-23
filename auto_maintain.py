@@ -101,6 +101,7 @@ class Settings:
     maintain_interval_seconds: int
     watch_interval_seconds: int
     upload_stable_wait_seconds: int
+    upload_batch_size: int
     deep_scan_interval_loops: int
     maintain_retry_count: int
     upload_retry_count: int
@@ -152,6 +153,7 @@ class AutoMaintainer:
         self.pending_maintain_names: set[str] | None = None
         self.inflight_maintain_names: set[str] | None = None
         self.maintain_names_file = self.settings.state_dir / "maintain_names_scope.txt"
+        self.upload_names_file = self.settings.state_dir / "upload_names_scope.txt"
 
     def ensure_paths(self) -> None:
         if not self.cpa_script.exists():
@@ -276,9 +278,11 @@ class AutoMaintainer:
         log(f"MAINTAIN_LOG_FILE={self.settings.maintain_log_file}")
         log(f"UPLOAD_LOG_FILE={self.settings.upload_log_file}")
         log(f"MAINTAIN_NAMES_SCOPE_FILE={self.maintain_names_file}")
+        log(f"UPLOAD_NAMES_SCOPE_FILE={self.upload_names_file}")
         log(f"MAINTAIN_INTERVAL_SECONDS={self.settings.maintain_interval_seconds}")
         log(f"WATCH_INTERVAL_SECONDS={self.settings.watch_interval_seconds}")
         log(f"UPLOAD_STABLE_WAIT_SECONDS={self.settings.upload_stable_wait_seconds}")
+        log(f"UPLOAD_BATCH_SIZE={self.settings.upload_batch_size}")
         log(f"RUN_MAINTAIN_ON_START={int(self.settings.run_maintain_on_start)}")
         log(f"RUN_UPLOAD_ON_START={int(self.settings.run_upload_on_start)}")
         log(f"RUN_MAINTAIN_AFTER_UPLOAD={int(self.settings.run_maintain_after_upload)}")
@@ -735,14 +739,28 @@ class AutoMaintainer:
 
     def compute_uploaded_baseline(
         self,
+        existing_baseline: list[str],
         uploaded_snapshot: list[str],
         current_snapshot: list[str],
     ) -> list[str]:
-        uploaded_set = set(uploaded_snapshot)
-        if not uploaded_set:
-            return []
         current_set = set(current_snapshot)
-        return sorted(uploaded_set.intersection(current_set))
+        if not current_set:
+            return []
+
+        merged = set(existing_baseline).intersection(current_set)
+        if uploaded_snapshot:
+            merged.update(set(uploaded_snapshot).intersection(current_set))
+        return sorted(merged)
+
+    def compute_pending_upload_snapshot(
+        self,
+        current_snapshot: list[str],
+        uploaded_baseline: list[str],
+    ) -> list[str]:
+        if not current_snapshot:
+            return []
+        uploaded_set = set(uploaded_baseline)
+        return [row for row in current_snapshot if row not in uploaded_set]
 
     def extract_names_from_snapshot(self, snapshot_lines: list[str]) -> set[str]:
         names: set[str] = set()
@@ -757,8 +775,15 @@ class AutoMaintainer:
 
     def write_maintain_names_scope(self, names: set[str]) -> Path:
         sorted_names = sorted(name for name in names if name.strip())
+        self.maintain_names_file.parent.mkdir(parents=True, exist_ok=True)
         self.maintain_names_file.write_text("\n".join(sorted_names), encoding="utf-8")
         return self.maintain_names_file
+
+    def write_upload_names_scope(self, names: set[str]) -> Path:
+        sorted_names = sorted(name for name in names if name.strip())
+        self.upload_names_file.parent.mkdir(parents=True, exist_ok=True)
+        self.upload_names_file.write_text("\n".join(sorted_names), encoding="utf-8")
+        return self.upload_names_file
 
     def delete_uploaded_files_from_snapshot(self, snapshot_lines: list[str]) -> None:
         deleted = 0
@@ -861,8 +886,8 @@ class AutoMaintainer:
             cmd.append("--yes")
         return cmd
 
-    def build_upload_command(self) -> list[str]:
-        return self.command_base() + [
+    def build_upload_command(self, upload_names_file: Path | None = None) -> list[str]:
+        cmd = self.command_base() + [
             "--mode",
             "upload",
             "--upload-dir",
@@ -873,6 +898,9 @@ class AutoMaintainer:
             "--log-file",
             str(self.settings.upload_log_file),
         ]
+        if upload_names_file is not None:
+            cmd.extend(["--upload-names-file", str(upload_names_file)])
+        return cmd
 
     def queue_maintain(self, reason: str, names: set[str] | None = None) -> None:
         if names is None:
@@ -944,18 +972,48 @@ class AutoMaintainer:
             return 0
         if self.pending_upload_snapshot is None:
             return 0
+        if not self.pending_upload_snapshot:
+            self.pending_upload_snapshot = None
+            self.pending_upload_reason = None
+            self.pending_upload_retry = False
+            self.inflight_upload_snapshot = None
+            self.upload_attempt = 0
+            self.upload_retry_due_at = 0.0
+            return 0
         now = time.monotonic()
         if now < self.upload_retry_due_at:
             return 0
+
+        upload_batch: list[str]
+        if self.pending_upload_retry and self.inflight_upload_snapshot is not None:
+            upload_batch = list(self.inflight_upload_snapshot)
+        else:
+            upload_batch = list(self.pending_upload_snapshot[: self.settings.upload_batch_size])
+            self.inflight_upload_snapshot = list(upload_batch)
+
+        if not upload_batch:
+            self.pending_upload_snapshot = None
+            self.pending_upload_reason = None
+            self.pending_upload_retry = False
+            self.inflight_upload_snapshot = None
+            self.upload_attempt = 0
+            self.upload_retry_due_at = 0.0
+            return 0
+
+        upload_scope_names = self.extract_names_from_snapshot(upload_batch)
+        upload_scope_file: Path | None = None
+        if upload_scope_names:
+            upload_scope_file = self.write_upload_names_scope(upload_scope_names)
+
         self.upload_attempt += 1
         max_attempts = self.settings.upload_retry_count + 1
         reason = self.pending_upload_reason or "detected changes"
-        cmd = self.build_upload_command()
+        cmd = self.build_upload_command(upload_scope_file)
         log(
             f"Starting upload command attempt {self.upload_attempt} of {max_attempts} "
-            f"(reason={reason})."
+            f"(reason={reason}, batch_size={len(upload_batch)})."
         )
-        self.inflight_upload_snapshot = list(self.pending_upload_snapshot)
+        self.inflight_upload_snapshot = list(upload_batch)
         try:
             self.upload_process = subprocess.Popen(cmd, cwd=str(self.settings.base_dir))
         except Exception as exc:
@@ -1051,6 +1109,7 @@ class AutoMaintainer:
         if code == 0:
             log("Upload command completed.")
             uploaded_snapshot = self.inflight_upload_snapshot or []
+            previous_uploaded_baseline = self.read_snapshot(self.last_uploaded_snapshot_file)
             self.pending_upload_retry = False
             self.inflight_upload_snapshot = None
             self.upload_attempt = 0
@@ -1061,18 +1120,23 @@ class AutoMaintainer:
 
             current_snapshot = self.build_snapshot(self.current_snapshot_file)
             self.write_snapshot(self.stable_snapshot_file, current_snapshot)
-            uploaded_baseline = self.compute_uploaded_baseline(uploaded_snapshot, current_snapshot)
+            uploaded_baseline = self.compute_uploaded_baseline(
+                previous_uploaded_baseline,
+                uploaded_snapshot,
+                current_snapshot,
+            )
             self.write_snapshot(self.last_uploaded_snapshot_file, uploaded_baseline)
             self.last_json_count = len(current_snapshot)
             if self.settings.inspect_zip_files:
                 self.last_zip_signature = self.get_zip_signature()
 
-            if current_snapshot != uploaded_baseline:
-                self.pending_upload_snapshot = list(current_snapshot)
+            pending_snapshot = self.compute_pending_upload_snapshot(current_snapshot, uploaded_baseline)
+            if pending_snapshot:
+                self.pending_upload_snapshot = pending_snapshot
                 self.pending_upload_reason = "post-upload pending files"
                 log(
                     "Detected files outside uploaded baseline after upload. "
-                    "Queued next upload batch."
+                    f"Queued next upload batch ({len(pending_snapshot)} pending)."
                 )
             else:
                 self.pending_upload_snapshot = None
@@ -1161,12 +1225,25 @@ class AutoMaintainer:
         if stable_snapshot is None:
             return 130
 
-        self.pending_upload_snapshot = list(stable_snapshot)
+        pending_snapshot = self.compute_pending_upload_snapshot(stable_snapshot, last_uploaded_snapshot)
+        if not pending_snapshot:
+            self.pending_upload_snapshot = None
+            self.pending_upload_reason = None
+            self.pending_upload_retry = False
+            self.upload_attempt = 0
+            self.upload_retry_due_at = 0.0
+            self.last_json_count = len(stable_snapshot)
+            if self.settings.inspect_zip_files:
+                self.last_zip_signature = current_zip_signature
+            self.write_snapshot(self.stable_snapshot_file, stable_snapshot)
+            return 0
+
+        self.pending_upload_snapshot = pending_snapshot
         self.pending_upload_reason = "detected JSON changes"
         if not self.pending_upload_retry:
             self.upload_attempt = 0
             self.upload_retry_due_at = 0.0
-        log("Upload batch queued.")
+        log(f"Upload batch queued. pending={len(pending_snapshot)}")
 
         return 0
 
@@ -1291,6 +1368,11 @@ def load_settings(args: argparse.Namespace) -> Settings:
             "UPLOAD_STABLE_WAIT_SECONDS",
             pick_setting("UPLOAD_STABLE_WAIT_SECONDS", watch_config_data, "upload_stable_wait_seconds", 20),
             0,
+        ),
+        upload_batch_size=parse_int_value(
+            "UPLOAD_BATCH_SIZE",
+            pick_setting("UPLOAD_BATCH_SIZE", watch_config_data, "upload_batch_size", 100),
+            1,
         ),
         deep_scan_interval_loops=parse_int_value(
             "DEEP_SCAN_INTERVAL_LOOPS",
