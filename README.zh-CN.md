@@ -148,6 +148,46 @@ start_auto_maintain_optimized.bat
 
 并且所有 watcher 配置都支持环境变量覆盖。
 
+## Watcher 配置参数说明
+
+`auto_maintain.config.json` 的参数含义如下：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `auth_dir` | `./auth_files` | 上传监听目录，JSON/ZIP 输入都从这里读取。 |
+| `config_path` | `./config.json` | `cpa_warden.py` 使用的配置文件路径。 |
+| `state_dir` | `./.auto_maintain_state` | 运行状态目录（锁、快照、日志、数据库）。 |
+| `maintain_db_path` | `./.auto_maintain_state/cpa_warden_maintain.sqlite3` | 维护通道 SQLite 路径。 |
+| `upload_db_path` | `./.auto_maintain_state/cpa_warden_upload.sqlite3` | 上传通道 SQLite 路径。 |
+| `maintain_log_file` | `./.auto_maintain_state/cpa_warden_maintain.log` | 维护通道日志路径。 |
+| `upload_log_file` | `./.auto_maintain_state/cpa_warden_upload.log` | 上传通道日志路径。 |
+| `maintain_interval_seconds` | `2400` | 定时全量维护周期（秒）。 |
+| `watch_interval_seconds` | `15` | watcher 主循环轮询间隔（秒）。 |
+| `upload_stable_wait_seconds` | `5` | 检测到变化后，上传前稳定等待时长（秒）。 |
+| `deep_scan_interval_loops` | `120` | 无明显变化时，每 N 轮强制做一次深度扫描。 |
+| `run_maintain_on_start` | `true` | 启动时是否先排队一次维护。 |
+| `run_upload_on_start` | `true` | 启动时是否先做一次上传变化检查。 |
+| `run_maintain_after_upload` | `true` | 上传后是否排队维护（增量范围）。 |
+| `maintain_assume_yes` | `true` | 维护命令是否自动带 `--yes`（无人值守）。 |
+| `delete_uploaded_files_after_upload` | `true` | 上传成功后是否删除源 JSON 文件。 |
+| `maintain_retry_count` | `1` | 维护命令失败重试次数。 |
+| `upload_retry_count` | `1` | 上传命令失败重试次数。 |
+| `command_retry_delay_seconds` | `20` | 命令失败后重试等待时长（秒）。 |
+| `continue_on_command_failure` | `false` | `true` 时命令失败后继续循环；`false` 为失败即停。 |
+| `allow_multi_instance` | `false` | `true` 允许同一状态目录多实例运行；`false` 启用单实例保护。 |
+| `inspect_zip_files` | `true` | 是否启用 ZIP 检测。 |
+| `auto_extract_zip_json` | `true` | 是否自动解压 ZIP 中 JSON。 |
+| `delete_zip_after_extract` | `true` | 解压成功后是否删除 ZIP 原文件。 |
+| `bandizip_path` | `D:\\Bandizp\\Bandizip.exe` | Bandizip 可执行文件路径。 |
+| `bandizip_timeout_seconds` | `120` | 单次 Bandizip 解压超时（秒）。 |
+| `use_windows_zip_fallback` | `true` | Bandizip 不可用/失败时是否使用 Windows 内置解压回退。 |
+
+说明：
+
+- `maintain_interval_seconds` 只控制定时全量维护。
+- 上传后维护是按本次上传名称集合执行的增量维护。
+- 路径参数支持相对路径（相对仓库根目录解析）。
+
 ## 常用环境变量
 
 `auto_maintain.py` 主要读取：

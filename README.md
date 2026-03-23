@@ -148,6 +148,46 @@ Current template defaults (`auto_maintain.config.example.json`):
 
 It also keeps env override capability for all watcher settings.
 
+## Watcher Config Parameters
+
+`auto_maintain.config.json` keys and meanings:
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `auth_dir` | `./auth_files` | Upload watch directory. JSON/ZIP intake happens here. |
+| `config_path` | `./config.json` | `cpa_warden.py` config file path. |
+| `state_dir` | `./.auto_maintain_state` | Runtime state directory for lock/snapshots/log/db. |
+| `maintain_db_path` | `./.auto_maintain_state/cpa_warden_maintain.sqlite3` | SQLite path for maintain channel. |
+| `upload_db_path` | `./.auto_maintain_state/cpa_warden_upload.sqlite3` | SQLite path for upload channel. |
+| `maintain_log_file` | `./.auto_maintain_state/cpa_warden_maintain.log` | Log file for maintain channel. |
+| `upload_log_file` | `./.auto_maintain_state/cpa_warden_upload.log` | Log file for upload channel. |
+| `maintain_interval_seconds` | `2400` | Full maintain schedule interval. |
+| `watch_interval_seconds` | `15` | Main loop poll interval for watcher scheduling. |
+| `upload_stable_wait_seconds` | `5` | Stability wait before enqueuing an upload batch. |
+| `deep_scan_interval_loops` | `120` | Force deep re-scan every N loops even without obvious change. |
+| `run_maintain_on_start` | `true` | Whether to queue a maintain run on startup. |
+| `run_upload_on_start` | `true` | Whether to evaluate upload changes on startup. |
+| `run_maintain_after_upload` | `true` | Whether to queue post-upload maintain (incremental scope). |
+| `maintain_assume_yes` | `true` | Whether maintain command adds `--yes` for unattended execution. |
+| `delete_uploaded_files_after_upload` | `true` | Whether uploaded source JSON files are deleted afterward. |
+| `maintain_retry_count` | `1` | Retry count for maintain command failures. |
+| `upload_retry_count` | `1` | Retry count for upload command failures. |
+| `command_retry_delay_seconds` | `20` | Delay between retry attempts. |
+| `continue_on_command_failure` | `false` | Keep watcher alive on command failure when true; otherwise fail-fast. |
+| `allow_multi_instance` | `false` | Allow multiple watcher instances on same state dir when true. |
+| `inspect_zip_files` | `true` | Enable ZIP detection in watch directory. |
+| `auto_extract_zip_json` | `true` | Auto-extract ZIP archives containing JSON. |
+| `delete_zip_after_extract` | `true` | Delete ZIP source after successful extraction. |
+| `bandizip_path` | `D:\\Bandizp\\Bandizip.exe` | Bandizip executable path for extraction. |
+| `bandizip_timeout_seconds` | `120` | Timeout for each Bandizip extraction call. |
+| `use_windows_zip_fallback` | `true` | Use Windows built-in extraction if Bandizip fails/unavailable. |
+
+Notes:
+
+- `maintain_interval_seconds` controls full maintain only.
+- Post-upload maintain is incremental by uploaded name scope.
+- File/path settings can use relative paths (resolved from repo root).
+
 ## Useful Environment Variables
 
 Main variables consumed by `auto_maintain.py`:
