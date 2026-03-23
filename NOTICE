@@ -1,0 +1,22 @@
+# NOTICE
+
+This repository is a derivative work based on the upstream project:
+
+- Project: `cpa-warden`
+- Upstream repository: https://github.com/fantasticjoe/cpa-warden
+- Upstream license: MIT
+
+Derivative baseline in this repository:
+
+- Commit: `f3778f4334f443fd822c25935c1d2a1ee26c144b`
+
+Scope of derivative work after the baseline commit includes:
+
+- Windows-first automation orchestration (`auto_maintain.py`)
+- optimized batch launch profile (`start_auto_maintain_optimized.bat`)
+- concurrent scheduling for upload and maintain channels
+- split runtime DB/log paths for maintain and upload
+- watcher robustness and cleanup behavior
+- runtime state isolation under `.auto_maintain_state`
+
+This file is provided to make upstream attribution explicit for open-source distribution.

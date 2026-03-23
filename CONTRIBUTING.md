@@ -1,73 +1,58 @@
 # Contributing
 
-## Scope Of Contributions
+## Scope
 
-Contributions are welcome for documentation, bug fixes, stability improvements, and CLI usability improvements. Keep changes focused on the current purpose of the project: safe and understandable [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) account scanning, upload, maintenance, and refill orchestration for known environments.
+Contributions are welcome for:
+
+- Windows automation reliability
+- watcher/scheduler correctness
+- operational safety and observability
+- documentation and onboarding quality
+
+This repository is a derivative project based on `cpa-warden`. Please keep upstream attribution intact and do not remove [NOTICE](NOTICE).
 
 ## Local Setup
 
-Install dependencies:
-
 ```bash
 uv sync
-```
-
-Check the CLI entrypoint:
-
-```bash
+uv run python -m py_compile cpa_warden.py auto_maintain.py clean_codex_accounts.py
 uv run python cpa_warden.py --help
-```
-
-Run the minimum syntax validation:
-
-```bash
-uv run python -m py_compile cpa_warden.py
+uv run python auto_maintain.py --help
+uv run python -m unittest -v tests/test_auto_maintain.py
 ```
 
 ## Development Guidelines
 
-- Do not put secrets in code, documentation examples, issue reports, or pull requests.
-- If you change configuration keys, defaults, CLI behavior, or output files, update the relevant README sections, `config.example.json`, and `CHANGELOG.md` in the same change.
-- Keep production terminal output concise. Put detailed troubleshooting information behind debug logging and the log file.
-- If behavior changes, update the command examples and explanatory text that describe that behavior.
-- If you change recovered-account or re-enable logic, document whether it relies on local state (for example `managed_reason`) or only on live scan signals.
-- If you add new config keys, keep `config.example.json` complete and copy-ready, and update README explanations in the same change.
-- External register hooks must stay as integration points only; do not add in-repo account registration logic.
-- Avoid broad refactors unless they are necessary for the change being proposed.
+- Keep changes small and incremental.
+- Do not hardcode secrets. Use environment variables and local ignored config files.
+- If behavior changes, update `README.md`, `README.zh-CN.md`, and `CHANGELOG.md` in the same PR.
+- Keep production output concise and keep deep detail in log files.
+- Prefer explicit error handling. Avoid silent exception swallowing.
+- Avoid broad refactors unless required for the concrete change.
 
-## Documentation Expectations
+## Runtime Artifact Policy
 
-- `README.md` and `README.zh-CN.md` should stay aligned in structure and meaning.
-- CLI flags, default values, and output artifact names documented in Markdown must match the current source code.
+Do not commit runtime artifacts:
 
-## Validation Before PR
+- `config.json`
+- `.auto_maintain_state/*`
+- `auth_files/*` (except `auth_files/.gitkeep`)
+- local SQLite/log/export files
 
-Before opening a pull request, run at least:
-
-```bash
-uv sync
-uv run python -m py_compile cpa_warden.py
-uv run python cpa_warden.py --help
-```
-
-If your change affects runtime behavior, validate it against your own CLIProxyAPI environment and sanitize all logs, exports, and screenshots before sharing them.
-
-## Security And Sensitive Data Handling
-
-Never commit:
-
-- real `token` values
-- real account identifiers unless explicitly required and fully sanitized
-- local runtime artifacts such as `config.json`, SQLite databases, log files, or exported account JSON
-
-If you need to share output for debugging, remove secrets and operational identifiers first.
-
-For vulnerability reports, do not open a public issue. Follow [SECURITY.md](SECURITY.md) instead.
+If you share logs for debugging, sanitize tokens, account identifiers, and sensitive operational details.
 
 ## Pull Request Expectations
 
-- Describe the problem being solved.
-- Summarize the behavior change clearly.
-- Mention any config, logging, or export impact.
-- Include the validation commands you ran.
-- Keep example output sanitized.
+- Describe why the change is needed.
+- Summarize behavior impact and risk.
+- List validation commands that were run.
+- Update docs and changelog when user-facing behavior changes.
+- Keep examples and screenshots sanitized.
+
+## Documentation Consistency
+
+`README.md` and `README.zh-CN.md` should remain aligned in meaning.
+
+## Security
+
+For vulnerabilities, do not open a public issue first. Follow [SECURITY.md](SECURITY.md).

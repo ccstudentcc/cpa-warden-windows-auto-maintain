@@ -36,7 +36,13 @@ jobs:
         run: uv sync --locked
 
       - name: Compile script
-        run: uv run python -m py_compile cpa_warden.py clean_codex_accounts.py
+        run: uv run python -m py_compile cpa_warden.py auto_maintain.py clean_codex_accounts.py
 
-      - name: Check CLI help
+      - name: Check CLI help (core)
         run: uv run python cpa_warden.py --help
+
+      - name: Check CLI help (auto maintain)
+        run: uv run python auto_maintain.py --help
+
+      - name: Run auto maintain tests
+        run: uv run python -m unittest -v tests/test_auto_maintain.py

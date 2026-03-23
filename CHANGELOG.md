@@ -6,8 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added `NOTICE` with explicit upstream attribution to `fantasticjoe/cpa-warden` and derivative baseline commit `f3778f4`
+- Added `ARCHITECTURE.md` describing module responsibilities, runtime flow, and state files for the Windows automation stack
+
 ### Changed
 
+- Repositioned project documentation toward Windows-first automation orchestration while preserving `cpa_warden.py` compatibility
+- Updated English and Simplified Chinese README files to document watcher operation, runtime state model, and ignore policy for `auth_files/.gitkeep` + `.auto_maintain_state`
+- Updated `CONTRIBUTING.md` and `SECURITY.md` to align with derivative-project governance and runtime artifact handling rules
+- Updated package metadata name/description to reflect the derivative Windows automation project identity
+- CI now validates `auto_maintain.py` compilation/help and runs `tests/test_auto_maintain.py`
 - `auto_maintain.py` now schedules `upload` and `maintain` commands in parallel channels so maintenance no longer blocks behind long upload batches
 - Added split runtime paths for watcher-managed command state: `MAINTAIN_DB_PATH` / `UPLOAD_DB_PATH` and `MAINTAIN_LOG_FILE` / `UPLOAD_LOG_FILE`
 - Updated `start_auto_maintain_optimized.bat` profile defaults to use dedicated maintain/upload SQLite files and log files under `.auto_maintain_state`
