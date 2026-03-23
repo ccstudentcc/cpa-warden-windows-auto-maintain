@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- `auto_maintain.py` now schedules `upload` and `maintain` commands in parallel channels so maintenance no longer blocks behind long upload batches
+- Added split runtime paths for watcher-managed command state: `MAINTAIN_DB_PATH` / `UPLOAD_DB_PATH` and `MAINTAIN_LOG_FILE` / `UPLOAD_LOG_FILE`
+- Updated `start_auto_maintain_optimized.bat` profile defaults to use dedicated maintain/upload SQLite files and log files under `.auto_maintain_state`
+- Fixed upload snapshot baseline handling in watcher flow to avoid marking mid-upload new files as already uploaded
+- Watcher now queues a follow-up upload batch when files are detected outside the completed upload baseline
+- Hardened snapshot generation against transient file-system races (missing/replaced files during scans)
+- Upload cleanup now also prunes empty subdirectories under `auth_dir` after file deletion
+- ZIP change triggering now checks signature deltas (path/size/mtime) instead of only count changes
+- Added `MAINTAIN_ASSUME_YES` to control whether watcher adds `--yes` for maintain command
+- Watcher failure handling now fails fast by default (`CONTINUE_ON_COMMAND_FAILURE=false`) and forces fail-fast in `--once` mode
+- Replaced silent exception swallowing in critical runtime paths with warning logs
+- Launcher now relies on Python-side lock arbitration instead of pre-filtering by PID reuse in batch script
+- Corrected default Bandizip path spelling in optimized launcher profile
+
 ## [0.2.0] - 2026-03-09
 
 ### Added

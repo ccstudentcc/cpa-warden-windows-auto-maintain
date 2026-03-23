@@ -54,12 +54,23 @@ def resolve_path(base_dir: Path, raw: str) -> Path:
     return p
 
 
+def parse_path_env(base_dir: Path, name: str, default: str) -> Path:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        raw = default
+    return resolve_path(base_dir, raw)
+
+
 @dataclass
 class Settings:
     base_dir: Path
     auth_dir: Path
     state_dir: Path
     config_path: Path | None
+    maintain_db_path: Path
+    upload_db_path: Path
+    maintain_log_file: Path
+    upload_log_file: Path
     maintain_interval_seconds: int
     watch_interval_seconds: int
     upload_stable_wait_seconds: int
@@ -70,6 +81,7 @@ class Settings:
     run_maintain_on_start: bool
     run_upload_on_start: bool
     run_maintain_after_upload: bool
+    maintain_assume_yes: bool
     delete_uploaded_files_after_upload: bool
     inspect_zip_files: bool
     auto_extract_zip_json: bool
@@ -94,12 +106,22 @@ class AutoMaintainer:
         self.instance_started_at = datetime.now()
         self.shutdown_requested = False
         self.shutdown_reason: str | None = None
-        self.active_process: subprocess.Popen | None = None
+        self.upload_process: subprocess.Popen | None = None
+        self.maintain_process: subprocess.Popen | None = None
         self._windows_console_handler = None
         self.deep_scan_counter = 0
         self.pending_upload_retry = False
         self.last_json_count = 0
-        self.last_zip_count = 0
+        self.last_zip_signature: tuple[str, ...] = tuple()
+        self.pending_upload_snapshot: list[str] | None = None
+        self.pending_upload_reason: str | None = None
+        self.inflight_upload_snapshot: list[str] | None = None
+        self.upload_attempt = 0
+        self.maintain_attempt = 0
+        self.upload_retry_due_at = 0.0
+        self.maintain_retry_due_at = 0.0
+        self.pending_maintain = False
+        self.pending_maintain_reason: str | None = None
 
     def ensure_paths(self) -> None:
         if not self.cpa_script.exists():
@@ -112,6 +134,11 @@ class AutoMaintainer:
         self.settings.state_dir.mkdir(parents=True, exist_ok=True)
         if not self.settings.state_dir.is_dir():
             raise RuntimeError(f"STATE_DIR is not a directory: {self.settings.state_dir}")
+
+        self.settings.maintain_db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.settings.upload_db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.settings.maintain_log_file.parent.mkdir(parents=True, exist_ok=True)
+        self.settings.upload_log_file.parent.mkdir(parents=True, exist_ok=True)
 
     def run(self) -> int:
         self.ensure_paths()
@@ -127,14 +154,14 @@ class AutoMaintainer:
 
             self.last_json_count = self.get_json_count()
             if self.settings.inspect_zip_files:
-                self.last_zip_count = self.get_zip_count()
+                self.last_zip_signature = self.get_zip_signature()
 
             if self.settings.inspect_zip_files:
                 startup_zip_changed = self.inspect_zip_archives()
                 self.last_json_count = self.get_json_count()
-                self.last_zip_count = self.get_zip_count()
+                self.last_zip_signature = self.get_zip_signature()
                 if startup_zip_changed:
-                    log("Startup ZIP scan produced changes. Trigger immediate upload check.")
+                    log("Startup ZIP scan produced changes. Queue immediate upload check.")
                     startup_zip_upload_exit = self.check_and_maybe_upload(force_deep_scan=True)
                     if startup_zip_upload_exit != 0 and not self.handle_failure(
                         "startup zip-upload-check",
@@ -143,34 +170,69 @@ class AutoMaintainer:
                         return startup_zip_upload_exit
 
             if self.settings.run_maintain_on_start:
-                maintain_exit = self.run_maintain()
-                if maintain_exit != 0 and not self.handle_failure("startup maintain", maintain_exit):
-                    return maintain_exit
+                self.queue_maintain("startup maintain")
 
             if self.settings.run_upload_on_start:
                 upload_check_exit = self.check_and_maybe_upload()
                 if upload_check_exit != 0 and not self.handle_failure("startup upload-check", upload_check_exit):
                     return upload_check_exit
 
-            elapsed_seconds = 0
-            while True:
-                if elapsed_seconds >= self.settings.maintain_interval_seconds:
-                    maintain_exit = self.run_maintain()
-                    if maintain_exit != 0 and not self.handle_failure("scheduled maintain", maintain_exit):
-                        return maintain_exit
-                    elapsed_seconds = 0
+            now = time.monotonic()
+            next_maintain_due_at = now + self.settings.maintain_interval_seconds
 
-                upload_check_exit = self.check_and_maybe_upload()
-                if upload_check_exit != 0 and not self.handle_failure("watch upload-check", upload_check_exit):
-                    return upload_check_exit
+            start_maintain_exit = self.maybe_start_maintain()
+            if start_maintain_exit != 0 and not self.handle_failure("startup maintain command", start_maintain_exit):
+                return start_maintain_exit
+
+            start_upload_exit = self.maybe_start_upload()
+            if start_upload_exit != 0 and not self.handle_failure("startup upload command", start_upload_exit):
+                return start_upload_exit
+
+            while True:
+                now = time.monotonic()
+
+                while next_maintain_due_at <= now:
+                    self.queue_maintain("scheduled maintain")
+                    next_maintain_due_at += self.settings.maintain_interval_seconds
+
+                upload_done_exit = self.poll_upload_process()
+                if upload_done_exit != 0 and not self.handle_failure("upload command", upload_done_exit):
+                    return upload_done_exit
+
+                maintain_done_exit = self.poll_maintain_process()
+                if maintain_done_exit != 0 and not self.handle_failure("maintain command", maintain_done_exit):
+                    return maintain_done_exit
+
+                # Build new upload batch only when current batch is not running.
+                if self.upload_process is None and self.pending_upload_snapshot is None:
+                    upload_check_exit = self.check_and_maybe_upload()
+                    if upload_check_exit != 0 and not self.handle_failure("watch upload-check", upload_check_exit):
+                        return upload_check_exit
+
+                start_upload_exit = self.maybe_start_upload()
+                if start_upload_exit != 0 and not self.handle_failure("watch upload command", start_upload_exit):
+                    return start_upload_exit
+
+                start_maintain_exit = self.maybe_start_maintain()
+                if start_maintain_exit != 0 and not self.handle_failure("watch maintain command", start_maintain_exit):
+                    return start_maintain_exit
 
                 if self.settings.run_once:
+                    nothing_running = self.upload_process is None and self.maintain_process is None
+                    nothing_pending = (
+                        self.pending_upload_snapshot is None
+                        and not self.pending_maintain
+                        and (not self.pending_upload_retry)
+                    )
+                    if not (nothing_running and nothing_pending):
+                        if not self.sleep_with_shutdown(1):
+                            return 130
+                        continue
                     log("Run-once cycle finished.")
                     return 0
 
                 if not self.sleep_with_shutdown(self.settings.watch_interval_seconds):
                     return 130
-                elapsed_seconds += self.settings.watch_interval_seconds
         finally:
             self.release_instance_lock()
 
@@ -178,12 +240,17 @@ class AutoMaintainer:
         log("Started auto maintenance loop.")
         log(f"AUTH_DIR={self.settings.auth_dir}")
         log(f"STATE_DIR={self.settings.state_dir}")
+        log(f"MAINTAIN_DB_PATH={self.settings.maintain_db_path}")
+        log(f"UPLOAD_DB_PATH={self.settings.upload_db_path}")
+        log(f"MAINTAIN_LOG_FILE={self.settings.maintain_log_file}")
+        log(f"UPLOAD_LOG_FILE={self.settings.upload_log_file}")
         log(f"MAINTAIN_INTERVAL_SECONDS={self.settings.maintain_interval_seconds}")
         log(f"WATCH_INTERVAL_SECONDS={self.settings.watch_interval_seconds}")
         log(f"UPLOAD_STABLE_WAIT_SECONDS={self.settings.upload_stable_wait_seconds}")
         log(f"RUN_MAINTAIN_ON_START={int(self.settings.run_maintain_on_start)}")
         log(f"RUN_UPLOAD_ON_START={int(self.settings.run_upload_on_start)}")
         log(f"RUN_MAINTAIN_AFTER_UPLOAD={int(self.settings.run_maintain_after_upload)}")
+        log(f"MAINTAIN_ASSUME_YES={int(self.settings.maintain_assume_yes)}")
         log(f"DELETE_UPLOADED_FILES_AFTER_UPLOAD={int(self.settings.delete_uploaded_files_after_upload)}")
         log(f"INSPECT_ZIP_FILES={int(self.settings.inspect_zip_files)}")
         log(f"AUTO_EXTRACT_ZIP_JSON={int(self.settings.auto_extract_zip_json)}")
@@ -213,8 +280,8 @@ class AutoMaintainer:
             import ctypes
 
             ctypes.windll.kernel32.SetConsoleTitleW(self.instance_label())
-        except Exception:
-            pass
+        except Exception as exc:
+            log(f"[WARN] Failed to set console title: {exc}")
 
     def register_shutdown_handlers(self) -> None:
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -248,8 +315,8 @@ class AutoMaintainer:
 
                 self._windows_console_handler = handler_type(_handler)
                 ctypes.windll.kernel32.SetConsoleCtrlHandler(self._windows_console_handler, True)
-            except Exception:
-                pass
+            except Exception as exc:
+                log(f"[WARN] Failed to register Windows console handler: {exc}")
 
     def _signal_handler(self, signum: int, _frame: object) -> None:
         self.request_shutdown(f"SIGNAL_{signum}")
@@ -260,15 +327,15 @@ class AutoMaintainer:
         self.shutdown_requested = True
         self.shutdown_reason = reason
         log(f"Shutdown requested: {reason}")
-        self.terminate_active_process()
+        self.terminate_active_processes()
 
-    def terminate_active_process(self) -> None:
-        proc = self.active_process
+    def terminate_process(self, proc: subprocess.Popen | None, *, name: str) -> None:
         if proc is None:
             return
         if proc.poll() is not None:
             return
         try:
+            log(f"Terminating active {name} process (pid={proc.pid})...")
             proc.terminate()
             proc.wait(timeout=8)
         except subprocess.TimeoutExpired:
@@ -276,9 +343,13 @@ class AutoMaintainer:
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                pass
-        except Exception:
-            pass
+                log(f"[WARN] Force-killed {name} process but wait timed out (pid={proc.pid}).")
+        except Exception as exc:
+            log(f"[WARN] Failed to terminate {name} process (pid={proc.pid}): {exc}")
+
+    def terminate_active_processes(self) -> None:
+        self.terminate_process(self.upload_process, name="upload")
+        self.terminate_process(self.maintain_process, name="maintain")
 
     def sleep_with_shutdown(self, total_seconds: int) -> bool:
         if total_seconds <= 0:
@@ -360,8 +431,8 @@ class AutoMaintainer:
                 if pid is not None and not self.is_pid_running(pid):
                     try:
                         self.instance_lock_file.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        log(f"[WARN] Failed to remove stale lock file {self.instance_lock_file}: {exc}")
                     continue
                 detail = f"pid={pid}" if pid is not None else "unknown pid"
                 raise RuntimeError(f"Another auto_maintain instance is already running ({detail}).")
@@ -379,8 +450,8 @@ class AutoMaintainer:
             parts = raw.split("|")
             if len(parts) >= 2 and parts[1] == self.instance_lock_token:
                 self.instance_lock_file.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            log(f"[WARN] Failed to release lock file {self.instance_lock_file}: {exc}")
         finally:
             self.instance_lock_token = None
 
@@ -398,6 +469,21 @@ class AutoMaintainer:
             (p for p in self.settings.auth_dir.rglob("*.zip") if p.is_file()),
             key=lambda p: str(p).lower(),
         )
+
+    def get_zip_signature(self) -> tuple[str, ...]:
+        signature: list[str] = []
+        skipped = 0
+        for path in self.get_zip_paths():
+            try:
+                stat = path.stat()
+            except (FileNotFoundError, OSError):
+                skipped += 1
+                continue
+            signature.append(f"{path}|{stat.st_size}|{stat.st_mtime_ns}")
+        signature.sort()
+        if skipped > 0:
+            log(f"[WARN] ZIP signature skipped transient files: {skipped}")
+        return tuple(signature)
 
     def get_zip_count(self) -> int:
         return len(self.get_zip_paths())
@@ -586,10 +672,17 @@ class AutoMaintainer:
 
     def snapshot_lines(self) -> list[str]:
         lines: list[str] = []
+        skipped = 0
         for path in self.get_json_paths():
-            stat = path.stat()
+            try:
+                stat = path.stat()
+            except (FileNotFoundError, OSError):
+                skipped += 1
+                continue
             lines.append(f"{path}|{stat.st_size}|{stat.st_mtime_ns}")
         lines.sort()
+        if skipped > 0:
+            log(f"[WARN] Snapshot skipped transient files: {skipped}")
         return lines
 
     def write_snapshot(self, target: Path, lines: Iterable[str]) -> None:
@@ -607,6 +700,17 @@ class AutoMaintainer:
         lines = self.snapshot_lines()
         self.write_snapshot(target, lines)
         return lines
+
+    def compute_uploaded_baseline(
+        self,
+        uploaded_snapshot: list[str],
+        current_snapshot: list[str],
+    ) -> list[str]:
+        uploaded_set = set(uploaded_snapshot)
+        if not uploaded_set:
+            return []
+        current_set = set(current_snapshot)
+        return sorted(uploaded_set.intersection(current_set))
 
     def delete_uploaded_files_from_snapshot(self, snapshot_lines: list[str]) -> None:
         deleted = 0
@@ -651,6 +755,42 @@ class AutoMaintainer:
             f"deleted={deleted}, skipped_changed={skipped_changed}, "
             f"skipped_missing={skipped_missing}, failed={failed}"
         )
+        self.prune_empty_dirs_under_auth_dir()
+
+    def prune_empty_dirs_under_auth_dir(self) -> None:
+        removed = 0
+        skipped_non_empty = 0
+        skipped_missing = 0
+        failed = 0
+
+        dirs = sorted(
+            (p for p in self.settings.auth_dir.rglob("*") if p.is_dir()),
+            key=lambda p: len(p.parts),
+            reverse=True,
+        )
+        for path in dirs:
+            if path == self.settings.auth_dir:
+                continue
+            try:
+                path.rmdir()
+                removed += 1
+            except OSError:
+                if not path.exists():
+                    skipped_missing += 1
+                    continue
+                try:
+                    next(path.iterdir())
+                    skipped_non_empty += 1
+                except StopIteration:
+                    failed += 1
+                except OSError:
+                    failed += 1
+
+        log(
+            "Upload empty-dir cleanup summary: "
+            f"removed={removed}, skipped_non_empty={skipped_non_empty}, "
+            f"skipped_missing={skipped_missing}, failed={failed}"
+        )
 
     def command_base(self) -> list[str]:
         cmd = [sys.executable, str(self.cpa_script)]
@@ -658,56 +798,213 @@ class AutoMaintainer:
             cmd.extend(["--config", str(self.settings.config_path)])
         return cmd
 
-    def run_with_retry(self, name: str, cmd: list[str], retry_count: int) -> int:
-        max_attempts = retry_count + 1
-        for attempt in range(1, max_attempts + 1):
-            log(f"Running {name} command attempt {attempt} of {max_attempts}.")
-            self.active_process = subprocess.Popen(cmd, cwd=str(self.settings.base_dir))
-            try:
-                while True:
-                    code = self.active_process.poll()
-                    if code is not None:
-                        break
-                    if self.shutdown_requested:
-                        self.terminate_active_process()
-                        return 130
-                    time.sleep(0.2)
-            finally:
-                self.active_process = None
-
-            if code == 0:
-                log(f"{name.capitalize()} command completed.")
-                return 0
-            if self.shutdown_requested:
-                return 130
-            if attempt < max_attempts:
-                log(
-                    f"{name.capitalize()} command failed with exit {code}. "
-                    f"Retrying in {self.settings.command_retry_delay_seconds}s..."
-                )
-                if not self.sleep_with_shutdown(self.settings.command_retry_delay_seconds):
-                    return 130
-            else:
-                log(f"{name.capitalize()} command failed after retries. Exit code {code}.")
-                return code
-        return 1
-
-    def run_maintain(self) -> int:
-        cmd = self.command_base() + ["--mode", "maintain", "--yes"]
-        return self.run_with_retry("maintain", cmd, self.settings.maintain_retry_count)
-
-    def run_upload(self) -> int:
+    def build_maintain_command(self) -> list[str]:
         cmd = self.command_base() + [
+            "--mode",
+            "maintain",
+            "--db-path",
+            str(self.settings.maintain_db_path),
+            "--log-file",
+            str(self.settings.maintain_log_file),
+        ]
+        if self.settings.maintain_assume_yes:
+            cmd.append("--yes")
+        return cmd
+
+    def build_upload_command(self) -> list[str]:
+        return self.command_base() + [
             "--mode",
             "upload",
             "--upload-dir",
             str(self.settings.auth_dir),
             "--upload-recursive",
+            "--db-path",
+            str(self.settings.upload_db_path),
+            "--log-file",
+            str(self.settings.upload_log_file),
         ]
-        return self.run_with_retry("upload", cmd, self.settings.upload_retry_count)
+
+    def queue_maintain(self, reason: str) -> None:
+        self.pending_maintain = True
+        self.pending_maintain_reason = reason
+
+    def maybe_start_maintain(self) -> int:
+        if self.maintain_process is not None:
+            return 0
+        if not self.pending_maintain:
+            return 0
+        now = time.monotonic()
+        if now < self.maintain_retry_due_at:
+            return 0
+        self.maintain_attempt += 1
+        max_attempts = self.settings.maintain_retry_count + 1
+        reason = self.pending_maintain_reason or "unspecified"
+        cmd = self.build_maintain_command()
+        log(
+            f"Starting maintain command attempt {self.maintain_attempt} of {max_attempts} "
+            f"(reason={reason})."
+        )
+        self.pending_maintain = False
+        self.pending_maintain_reason = None
+        try:
+            self.maintain_process = subprocess.Popen(cmd, cwd=str(self.settings.base_dir))
+        except Exception as exc:
+            return self.handle_command_start_error("maintain", exc)
+        return 0
+
+    def maybe_start_upload(self) -> int:
+        if self.upload_process is not None:
+            return 0
+        if self.pending_upload_snapshot is None:
+            return 0
+        now = time.monotonic()
+        if now < self.upload_retry_due_at:
+            return 0
+        self.upload_attempt += 1
+        max_attempts = self.settings.upload_retry_count + 1
+        reason = self.pending_upload_reason or "detected changes"
+        cmd = self.build_upload_command()
+        log(
+            f"Starting upload command attempt {self.upload_attempt} of {max_attempts} "
+            f"(reason={reason})."
+        )
+        self.inflight_upload_snapshot = list(self.pending_upload_snapshot)
+        try:
+            self.upload_process = subprocess.Popen(cmd, cwd=str(self.settings.base_dir))
+        except Exception as exc:
+            return self.handle_command_start_error("upload", exc)
+        return 0
+
+    def handle_command_start_error(self, name: str, exc: Exception) -> int:
+        log(f"{name.capitalize()} command failed to start: {exc}")
+        if name == "maintain":
+            max_attempts = self.settings.maintain_retry_count + 1
+            if self.maintain_attempt < max_attempts:
+                self.pending_maintain = True
+                self.pending_maintain_reason = "maintain retry"
+                self.maintain_retry_due_at = time.monotonic() + self.settings.command_retry_delay_seconds
+                log(f"Will retry maintain in {self.settings.command_retry_delay_seconds}s.")
+                return 0
+            self.pending_maintain = False
+            self.pending_maintain_reason = None
+            self.maintain_attempt = 0
+            return 1
+
+        max_attempts = self.settings.upload_retry_count + 1
+        if self.upload_attempt < max_attempts:
+            self.upload_retry_due_at = time.monotonic() + self.settings.command_retry_delay_seconds
+            self.pending_upload_retry = True
+            log(f"Will retry upload in {self.settings.command_retry_delay_seconds}s.")
+            return 0
+        self.pending_upload_snapshot = None
+        self.pending_upload_reason = None
+        self.inflight_upload_snapshot = None
+        self.pending_upload_retry = False
+        self.upload_attempt = 0
+        return 1
+
+    def poll_maintain_process(self) -> int:
+        proc = self.maintain_process
+        if proc is None:
+            return 0
+        code = proc.poll()
+        if code is None:
+            return 0
+        self.maintain_process = None
+        if code == 0:
+            log("Maintain command completed.")
+            self.maintain_attempt = 0
+            self.maintain_retry_due_at = 0.0
+            return 0
+
+        if self.shutdown_requested:
+            return 130
+
+        max_attempts = self.settings.maintain_retry_count + 1
+        if self.maintain_attempt < max_attempts:
+            self.pending_maintain = True
+            self.pending_maintain_reason = "maintain retry"
+            self.maintain_retry_due_at = time.monotonic() + self.settings.command_retry_delay_seconds
+            log(
+                f"Maintain command failed with exit {code}. "
+                f"Retrying in {self.settings.command_retry_delay_seconds}s..."
+            )
+            return 0
+
+        log(f"Maintain command failed after retries. Exit code {code}.")
+        self.pending_maintain = False
+        self.pending_maintain_reason = None
+        self.maintain_attempt = 0
+        return code
+
+    def poll_upload_process(self) -> int:
+        proc = self.upload_process
+        if proc is None:
+            return 0
+        code = proc.poll()
+        if code is None:
+            return 0
+        self.upload_process = None
+
+        if code == 0:
+            log("Upload command completed.")
+            uploaded_snapshot = self.inflight_upload_snapshot or []
+            self.pending_upload_retry = False
+            self.inflight_upload_snapshot = None
+            self.upload_attempt = 0
+            self.upload_retry_due_at = 0.0
+
+            if self.settings.delete_uploaded_files_after_upload:
+                self.delete_uploaded_files_from_snapshot(uploaded_snapshot)
+
+            current_snapshot = self.build_snapshot(self.current_snapshot_file)
+            uploaded_baseline = self.compute_uploaded_baseline(uploaded_snapshot, current_snapshot)
+            self.write_snapshot(self.last_uploaded_snapshot_file, uploaded_baseline)
+            self.last_json_count = len(current_snapshot)
+            if self.settings.inspect_zip_files:
+                self.last_zip_signature = self.get_zip_signature()
+
+            if current_snapshot != uploaded_baseline:
+                self.pending_upload_snapshot = list(current_snapshot)
+                self.pending_upload_reason = "post-upload pending files"
+                log(
+                    "Detected files outside uploaded baseline after upload. "
+                    "Queued next upload batch."
+                )
+            else:
+                self.pending_upload_snapshot = None
+                self.pending_upload_reason = None
+
+            if self.settings.run_maintain_after_upload:
+                self.queue_maintain("post-upload maintain")
+            return 0
+
+        if self.shutdown_requested:
+            return 130
+
+        max_attempts = self.settings.upload_retry_count + 1
+        if self.upload_attempt < max_attempts:
+            self.pending_upload_retry = True
+            self.upload_retry_due_at = time.monotonic() + self.settings.command_retry_delay_seconds
+            log(
+                f"Upload command failed with exit {code}. "
+                f"Retrying in {self.settings.command_retry_delay_seconds}s..."
+            )
+            return 0
+
+        log(f"Upload command failed after retries. Exit code {code}.")
+        self.pending_upload_snapshot = None
+        self.pending_upload_reason = None
+        self.inflight_upload_snapshot = None
+        self.pending_upload_retry = False
+        self.upload_attempt = 0
+        return code
 
     def handle_failure(self, stage: str, code: int) -> bool:
         log(f"{stage} failed with exit {code}.")
+        if self.settings.run_once:
+            log("Run-once mode enabled. Exiting on failure.")
+            return False
         if self.settings.continue_on_command_failure:
             log("Continue mode enabled. Keep loop alive.")
             return True
@@ -715,7 +1012,7 @@ class AutoMaintainer:
 
     def check_and_maybe_upload(self, force_deep_scan: bool = False) -> int:
         current_json_count = self.get_json_count()
-        current_zip_count = self.get_zip_count() if self.settings.inspect_zip_files else 0
+        current_zip_signature = self.get_zip_signature() if self.settings.inspect_zip_files else tuple()
         need_deep_scan = False
 
         if force_deep_scan:
@@ -724,7 +1021,7 @@ class AutoMaintainer:
             need_deep_scan = True
         elif current_json_count != self.last_json_count:
             need_deep_scan = True
-        elif self.settings.inspect_zip_files and current_zip_count != self.last_zip_count:
+        elif self.settings.inspect_zip_files and current_zip_signature != self.last_zip_signature:
             need_deep_scan = True
         else:
             self.deep_scan_counter += 1
@@ -739,13 +1036,13 @@ class AutoMaintainer:
             zip_changed = self.inspect_zip_archives()
             if zip_changed:
                 current_json_count = self.get_json_count()
-                current_zip_count = self.get_zip_count()
+                current_zip_signature = self.get_zip_signature()
         current_snapshot = self.build_snapshot(self.current_snapshot_file)
         last_uploaded_snapshot = self.read_snapshot(self.last_uploaded_snapshot_file)
         if current_snapshot == last_uploaded_snapshot:
             self.last_json_count = current_json_count
             if self.settings.inspect_zip_files:
-                self.last_zip_count = current_zip_count
+                self.last_zip_signature = current_zip_signature
             self.pending_upload_retry = False
             return 0
 
@@ -756,32 +1053,12 @@ class AutoMaintainer:
         if stable_snapshot is None:
             return 130
 
-        upload_exit = self.run_upload()
-        if upload_exit != 0:
-            self.pending_upload_retry = True
-            if not self.handle_failure("upload command", upload_exit):
-                return upload_exit
-            return 0
-
-        self.write_snapshot(self.last_uploaded_snapshot_file, stable_snapshot)
-        self.last_json_count = self.get_json_count()
-        if self.settings.inspect_zip_files:
-            self.last_zip_count = self.get_zip_count()
-        self.pending_upload_retry = False
-
-        if self.settings.delete_uploaded_files_after_upload:
-            self.delete_uploaded_files_from_snapshot(stable_snapshot)
-            self.last_json_count = self.get_json_count()
-            if self.settings.inspect_zip_files:
-                self.last_zip_count = self.get_zip_count()
-            refreshed_snapshot = self.build_snapshot(self.last_uploaded_snapshot_file)
-            self.write_snapshot(self.current_snapshot_file, refreshed_snapshot)
-
-        if self.settings.run_maintain_after_upload:
-            log("Running maintain after successful upload...")
-            maintain_exit = self.run_maintain()
-            if maintain_exit != 0 and not self.handle_failure("post-upload maintain", maintain_exit):
-                return maintain_exit
+        self.pending_upload_snapshot = list(stable_snapshot)
+        self.pending_upload_reason = "detected JSON changes"
+        if not self.pending_upload_retry:
+            self.upload_attempt = 0
+            self.upload_retry_due_at = 0.0
+        log("Upload batch queued.")
 
         return 0
 
@@ -798,6 +1075,10 @@ def load_settings(args: argparse.Namespace) -> Settings:
     base_dir = Path(__file__).resolve().parent
     auth_dir = resolve_path(base_dir, os.getenv("AUTH_DIR", str(base_dir / "auth_files")))
     state_dir = resolve_path(base_dir, os.getenv("STATE_DIR", str(base_dir / ".auto_maintain_state")))
+    maintain_db_path = parse_path_env(base_dir, "MAINTAIN_DB_PATH", str(state_dir / "cpa_warden_maintain.sqlite3"))
+    upload_db_path = parse_path_env(base_dir, "UPLOAD_DB_PATH", str(state_dir / "cpa_warden_upload.sqlite3"))
+    maintain_log_file = parse_path_env(base_dir, "MAINTAIN_LOG_FILE", str(state_dir / "cpa_warden_maintain.log"))
+    upload_log_file = parse_path_env(base_dir, "UPLOAD_LOG_FILE", str(state_dir / "cpa_warden_upload.log"))
 
     config_raw = os.getenv("CONFIG_PATH", "").strip()
     config_path: Path | None = None
@@ -815,6 +1096,10 @@ def load_settings(args: argparse.Namespace) -> Settings:
         auth_dir=auth_dir,
         state_dir=state_dir,
         config_path=config_path,
+        maintain_db_path=maintain_db_path,
+        upload_db_path=upload_db_path,
+        maintain_log_file=maintain_log_file,
+        upload_log_file=upload_log_file,
         maintain_interval_seconds=parse_int_env("MAINTAIN_INTERVAL_SECONDS", 3600, 1),
         watch_interval_seconds=parse_int_env("WATCH_INTERVAL_SECONDS", 15, 1),
         upload_stable_wait_seconds=parse_int_env("UPLOAD_STABLE_WAIT_SECONDS", 20, 0),
@@ -825,6 +1110,7 @@ def load_settings(args: argparse.Namespace) -> Settings:
         run_maintain_on_start=parse_bool_env("RUN_MAINTAIN_ON_START", True),
         run_upload_on_start=parse_bool_env("RUN_UPLOAD_ON_START", True),
         run_maintain_after_upload=parse_bool_env("RUN_MAINTAIN_AFTER_UPLOAD", True),
+        maintain_assume_yes=parse_bool_env("MAINTAIN_ASSUME_YES", False),
         delete_uploaded_files_after_upload=parse_bool_env("DELETE_UPLOADED_FILES_AFTER_UPLOAD", True),
         inspect_zip_files=parse_bool_env("INSPECT_ZIP_FILES", True),
         auto_extract_zip_json=parse_bool_env("AUTO_EXTRACT_ZIP_JSON", True),
@@ -832,7 +1118,7 @@ def load_settings(args: argparse.Namespace) -> Settings:
         bandizip_path=os.getenv("BANDIZIP_PATH", r"C:\Program Files\Bandizip\Bandizip.exe"),
         bandizip_timeout_seconds=parse_int_env("BANDIZIP_TIMEOUT_SECONDS", 120, 1),
         use_windows_zip_fallback=parse_bool_env("USE_WINDOWS_ZIP_FALLBACK", True),
-        continue_on_command_failure=parse_bool_env("CONTINUE_ON_COMMAND_FAILURE", True),
+        continue_on_command_failure=parse_bool_env("CONTINUE_ON_COMMAND_FAILURE", False),
         allow_multi_instance=parse_bool_env("ALLOW_MULTI_INSTANCE", False),
         run_once=bool(args.once),
     )

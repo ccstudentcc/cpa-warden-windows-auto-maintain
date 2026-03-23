@@ -30,8 +30,8 @@ if not exist "%CONFIG_PATH%" (
     set "CONFIG_PATH="
 )
 
-rem Maintain every 1 hour to reduce API and local load.
-set "MAINTAIN_INTERVAL_SECONDS=3600"
+rem Maintain every 40 minutes to reduce API and local load.
+set "MAINTAIN_INTERVAL_SECONDS=2400"
 
 rem Poll every 30 seconds (lower CPU vs 5~10s polling).
 set "WATCH_INTERVAL_SECONDS=30"
@@ -39,12 +39,14 @@ set "WATCH_INTERVAL_SECONDS=30"
 rem Wait 10 seconds after change detection to avoid repeated uploads during batch copy.
 set "UPLOAD_STABLE_WAIT_SECONDS=10"
 
-rem When file count is unchanged, perform deep snapshot every 120 loops (about 60 minutes with 30s polling).
+rem When file count is unchanged, perform deep snapshot every 120 loops (about 40 minutes with 30s polling).
 set "DEEP_SCAN_INTERVAL_LOOPS=120"
 
 set "RUN_MAINTAIN_ON_START=1"
 set "RUN_UPLOAD_ON_START=1"
 set "RUN_MAINTAIN_AFTER_UPLOAD=1"
+rem Set to 1 for unattended mode. Set to 0 if you want maintain confirmations.
+set "MAINTAIN_ASSUME_YES=1"
 set "DELETE_UPLOADED_FILES_AFTER_UPLOAD=1"
 
 rem Retry failed maintain/upload once more with 20s delay.
@@ -52,8 +54,8 @@ set "MAINTAIN_RETRY_COUNT=1"
 set "UPLOAD_RETRY_COUNT=1"
 set "COMMAND_RETRY_DELAY_SECONDS=20"
 
-rem Keep watcher running even if a command fails.
-set "CONTINUE_ON_COMMAND_FAILURE=1"
+rem Fail fast by default if maintain/upload command fails.
+set "CONTINUE_ON_COMMAND_FAILURE=0"
 
 rem Prevent duplicate watcher instances on the same state directory.
 set "ALLOW_MULTI_INSTANCE=0"
@@ -62,56 +64,19 @@ rem ZIP handling: detect zip, auto-extract JSON archives with Bandizip, then del
 set "INSPECT_ZIP_FILES=1"
 set "AUTO_EXTRACT_ZIP_JSON=1"
 set "DELETE_ZIP_AFTER_EXTRACT=1"
-set "BANDIZIP_PATH=D:\Bandizp\Bandizip.exe"
+set "BANDIZIP_PATH=D:\Bandizip\Bandizip.exe"
 set "BANDIZIP_TIMEOUT_SECONDS=120"
 set "USE_WINDOWS_ZIP_FALLBACK=1"
 
 rem Store watcher state in a dedicated directory.
 set "STATE_DIR=%SCRIPT_DIR%.auto_maintain_state"
 if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>nul
+set "MAINTAIN_DB_PATH=%STATE_DIR%\cpa_warden_maintain.sqlite3"
+set "UPLOAD_DB_PATH=%STATE_DIR%\cpa_warden_upload.sqlite3"
+set "MAINTAIN_LOG_FILE=%STATE_DIR%\cpa_warden_maintain.log"
+set "UPLOAD_LOG_FILE=%STATE_DIR%\cpa_warden_upload.log"
 
-rem Duplicate-start guard: skip launch if an instance with same STATE_DIR is running.
 set "LOCK_FILE=%STATE_DIR%\auto_maintain.lock"
-if exist "%LOCK_FILE%" (
-    set "LOCK_PID="
-    set "LOCK_TOKEN="
-    set "LOCK_STARTED_UNIX="
-    set "LOCK_LINE="
-    set /p LOCK_LINE=<"%LOCK_FILE%"
-    for /f "tokens=1,2,3 delims=|" %%P in ("!LOCK_LINE!") do (
-        if not defined LOCK_PID set "LOCK_PID=%%P"
-        if not defined LOCK_TOKEN set "LOCK_TOKEN=%%Q"
-        if not defined LOCK_STARTED_UNIX set "LOCK_STARTED_UNIX=%%R"
-    )
-
-    set "PID_RUNNING=0"
-    if defined LOCK_PID (
-        echo(!LOCK_PID!| findstr /R "^[0-9][0-9]*$" >nul
-        if not errorlevel 1 (
-            set "TASK_LINE="
-            for /f "usebackq delims=" %%L in (`tasklist /FI "PID eq !LOCK_PID!" /FO CSV /NH 2^>nul`) do (
-                if not defined TASK_LINE set "TASK_LINE=%%L"
-            )
-            if defined TASK_LINE (
-                if /I "!TASK_LINE:~0,5!"=="INFO:" (
-                    set "PID_RUNNING=0"
-                ) else (
-                    set "PID_RUNNING=1"
-                )
-            )
-        )
-    )
-
-    if "!PID_RUNNING!"=="1" (
-        echo [INFO] auto_maintain is already running. Skip duplicate launch.
-        echo [INFO] lock: pid=!LOCK_PID! token=!LOCK_TOKEN! started_unix=!LOCK_STARTED_UNIX!
-        exit /b 0
-    )
-
-    echo [WARN] stale lock detected, removing: %LOCK_FILE%
-    echo [WARN] stale lock detail: pid=!LOCK_PID! token=!LOCK_TOKEN! started_unix=!LOCK_STARTED_UNIX!
-    del /q "%LOCK_FILE%" >nul 2>nul
-)
 
 echo Starting optimized auto-maintain profile...
 echo INSTANCE_LABEL=!INSTANCE_LABEL!
@@ -126,6 +91,11 @@ echo UPLOAD_RETRY_COUNT=%UPLOAD_RETRY_COUNT%
 echo COMMAND_RETRY_DELAY_SECONDS=%COMMAND_RETRY_DELAY_SECONDS%
 echo CONTINUE_ON_COMMAND_FAILURE=%CONTINUE_ON_COMMAND_FAILURE%
 echo ALLOW_MULTI_INSTANCE=%ALLOW_MULTI_INSTANCE%
+echo MAINTAIN_ASSUME_YES=%MAINTAIN_ASSUME_YES%
+echo MAINTAIN_DB_PATH=%MAINTAIN_DB_PATH%
+echo UPLOAD_DB_PATH=%UPLOAD_DB_PATH%
+echo MAINTAIN_LOG_FILE=%MAINTAIN_LOG_FILE%
+echo UPLOAD_LOG_FILE=%UPLOAD_LOG_FILE%
 echo DELETE_UPLOADED_FILES_AFTER_UPLOAD=%DELETE_UPLOADED_FILES_AFTER_UPLOAD%
 echo INSPECT_ZIP_FILES=%INSPECT_ZIP_FILES%
 echo AUTO_EXTRACT_ZIP_JSON=%AUTO_EXTRACT_ZIP_JSON%
