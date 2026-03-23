@@ -13,7 +13,9 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Responsibility: core CPA API interactions, account classification, actions, and exports
 - Internal note: CLI argument parsing is delegated to `cwma/warden/cli.py` while keeping app-layer compatibility wrapper `parse_args(...)`
 - Internal note: interactive prompt primitives are delegated to `cwma/warden/interactive.py` via app-layer wrappers
-- Test coverage status: currently validated through CLI checks, production usage, and module tests (`tests/test_warden_cli_module.py`, `tests/test_warden_interactive_module.py`)
+- Internal note: config loading + settings build are delegated to `cwma/warden/config.py` via app-layer compatibility wrappers
+- Internal note: maintain/upload scope and upload discovery helpers are delegated to `cwma/warden/services/*` via app-layer compatibility wrappers
+- Test coverage status: currently validated through CLI checks, production usage, and module tests (`tests/test_warden_cli_module.py`, `tests/test_warden_interactive_module.py`, `tests/test_warden_config_module.py`, `tests/test_warden_maintain_scope_module.py`, `tests/test_warden_upload_scope_module.py`)
 
 ### `cwma/warden/cli.py`
 
@@ -28,6 +30,27 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Public interface: `prompt_string`, `prompt_int`, `prompt_float`, `prompt_yes_no`, `prompt_choice`
 - Responsibility: reusable interactive prompt primitives for string/number/boolean/choice input handling
 - Test file: `tests/test_warden_interactive_module.py`
+
+### `cwma/warden/config.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `build_default_settings_values`, `config_lookup`, `parse_bool_config`, `load_config_json`, `build_settings`
+- Responsibility: centralized config parsing and settings build/validation for CPA warden modes
+- Test file: `tests/test_warden_config_module.py`
+
+### `cwma/warden/services/maintain_scope.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py` and `cwma/warden/services/upload_scope.py`
+- Public interface: `load_name_scope_file`, `resolve_maintain_name_scope`, `resolve_upload_name_scope`
+- Responsibility: scoped-name file loading and maintain/upload scope resolution helpers
+- Test file: `tests/test_warden_maintain_scope_module.py`
+
+### `cwma/warden/services/upload_scope.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `discover_upload_files`, `validate_and_digest_json_file`, `select_upload_candidates`
+- Responsibility: upload file discovery, JSON validation/digest, and local candidate conflict/duplicate selection
+- Test file: `tests/test_warden_upload_scope_module.py`
 
 ### `cwma/auto/app.py`
 

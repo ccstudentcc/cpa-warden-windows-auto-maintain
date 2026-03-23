@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import logging
 import math
@@ -19,8 +18,12 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from ..common import load_json_object as load_json_object_common
-from ..common import parse_bool_value as parse_bool_common
+from ..warden.config import (
+    build_settings as build_settings_warden,
+    config_lookup as config_lookup_warden,
+    load_config_json as load_config_json_warden,
+    parse_bool_config as parse_bool_config_warden,
+)
 from ..warden.cli import parse_cli_args
 from ..warden.interactive import (
     prompt_choice as prompt_choice_interactive,
@@ -28,6 +31,16 @@ from ..warden.interactive import (
     prompt_int as prompt_int_interactive,
     prompt_string as prompt_string_interactive,
     prompt_yes_no as prompt_yes_no_interactive,
+)
+from ..warden.services.maintain_scope import (
+    load_name_scope_file as load_name_scope_file_warden,
+    resolve_maintain_name_scope as resolve_maintain_name_scope_warden,
+    resolve_upload_name_scope as resolve_upload_name_scope_warden,
+)
+from ..warden.services.upload_scope import (
+    discover_upload_files as discover_upload_files_warden,
+    select_upload_candidates as select_upload_candidates_warden,
+    validate_and_digest_json_file as validate_and_digest_json_file_warden,
 )
 
 try:
@@ -441,247 +454,49 @@ def mgmt_headers(token: str, include_json: bool = False) -> dict[str, str]:
 
 
 def config_lookup(conf: dict[str, Any], *keys: str, default: Any = None) -> Any:
-    for key in keys:
-        if key in conf and conf.get(key) not in (None, ""):
-            return conf.get(key)
-    return default
+    return config_lookup_warden(conf, *keys, default=default)
 
 
 def parse_bool_config(value: Any, *, key: str) -> bool:
-    try:
-        return parse_bool_common(
-            key,
-            value,
-            true_values={"1", "true", "yes", "y", "on"},
-            false_values={"0", "false", "no", "n", "off"},
-        )
-    except ValueError:
-        if isinstance(value, (bool, int, str)):
-            raise RuntimeError(f"{key} 必须是布尔值（true/false 或 1/0），当前={value!r}") from None
-        raise RuntimeError(f"{key} 必须是布尔值（true/false 或 1/0），当前类型={type(value).__name__}") from None
+    return parse_bool_config_warden(value, key=key)
 
 
 def load_config_json(path: str, required: bool = False) -> dict[str, Any]:
-    p = Path(path)
-    if not p.exists():
-        if required:
-            raise RuntimeError(f"配置文件不存在: {path}")
-        return {}
-
-    try:
-        data = load_json_object_common(p, encoding="utf-8")
-    except ValueError as exc:
-        raise RuntimeError(f"读取配置文件失败: {exc}") from exc
-
-    return data
+    return load_config_json_warden(path, required=required)
 
 
 def build_settings(args: argparse.Namespace, conf: dict[str, Any]) -> dict[str, Any]:
-    quota_action = str(
-        args.quota_action
-        or config_lookup(conf, "quota_action", default=DEFAULT_QUOTA_ACTION)
-    ).strip().lower()
-    if quota_action not in {"disable", "delete"}:
-        raise RuntimeError("quota_action 只能是 disable 或 delete")
-
-    upload_method = str(
-        args.upload_method
-        or config_lookup(conf, "upload_method", default=DEFAULT_UPLOAD_METHOD)
-    ).strip().lower()
-    if upload_method not in {"json", "multipart"}:
-        raise RuntimeError("upload_method 只能是 json 或 multipart")
-
-    refill_strategy = str(
-        args.refill_strategy
-        or config_lookup(conf, "refill_strategy", default=DEFAULT_REFILL_STRATEGY)
-    ).strip().lower()
-    if refill_strategy not in {"to-threshold", "fixed"}:
-        raise RuntimeError("refill_strategy 只能是 to-threshold 或 fixed")
-
-    reenable_scope = str(
-        args.reenable_scope
-        or config_lookup(conf, "reenable_scope", default=DEFAULT_REENABLE_SCOPE)
-    ).strip().lower()
-    if reenable_scope not in {"signal", "managed"}:
-        raise RuntimeError("reenable_scope 只能是 signal 或 managed")
-
-    settings = {
-        "config_path": args.config,
-        "base_url": str(config_lookup(conf, "base_url", default="")).strip(),
-        "token": str(config_lookup(conf, "token", default="")).strip(),
-        "mode": args.mode,
-        "target_type": str(
-            args.target_type
-            or config_lookup(conf, "target_type", default=DEFAULT_TARGET_TYPE)
-        ).strip(),
-        "provider": str(
-            args.provider if args.provider is not None else config_lookup(conf, "provider", default="")
-        ).strip(),
-        "probe_workers": int(
-            args.probe_workers
-            if args.probe_workers is not None
-            else config_lookup(conf, "probe_workers", "workers", default=DEFAULT_PROBE_WORKERS)
-        ),
-        "action_workers": int(
-            args.action_workers
-            if args.action_workers is not None
-            else config_lookup(conf, "action_workers", "delete_workers", default=DEFAULT_ACTION_WORKERS)
-        ),
-        "timeout": int(
-            args.timeout if args.timeout is not None else config_lookup(conf, "timeout", default=DEFAULT_TIMEOUT)
-        ),
-        "retries": int(
-            args.retries if args.retries is not None else config_lookup(conf, "retries", default=DEFAULT_RETRIES)
-        ),
-        "delete_retries": int(
-            args.delete_retries
-            if args.delete_retries is not None
-            else config_lookup(conf, "delete_retries", "action_retries", default=DEFAULT_DELETE_RETRIES)
-        ),
-        "quota_action": quota_action,
-        "quota_disable_threshold": float(
-            args.quota_disable_threshold
-            if args.quota_disable_threshold is not None
-            else config_lookup(conf, "quota_disable_threshold", default=DEFAULT_QUOTA_DISABLE_THRESHOLD)
-        ),
-        "delete_401": (
-            args.delete_401
-            if args.delete_401 is not None
-            else parse_bool_config(config_lookup(conf, "delete_401", default=DEFAULT_DELETE_401), key="delete_401")
-        ),
-        "auto_reenable": (
-            args.auto_reenable
-            if args.auto_reenable is not None
-            else parse_bool_config(
-                config_lookup(conf, "auto_reenable", default=DEFAULT_AUTO_REENABLE),
-                key="auto_reenable",
-            )
-        ),
-        "reenable_scope": reenable_scope,
-        "maintain_names_file": str(
-            args.maintain_names_file
-            if args.maintain_names_file is not None
-            else config_lookup(conf, "maintain_names_file", default="")
-        ).strip(),
-        "upload_names_file": str(
-            args.upload_names_file
-            if args.upload_names_file is not None
-            else config_lookup(conf, "upload_names_file", default="")
-        ).strip(),
-        "db_path": str(
-            args.db_path
-            or config_lookup(conf, "db_path", default=DEFAULT_DB_PATH)
-        ).strip(),
-        "invalid_output": str(
-            args.invalid_output
-            or config_lookup(conf, "invalid_output", "output", default=DEFAULT_INVALID_OUTPUT)
-        ).strip(),
-        "quota_output": str(
-            args.quota_output
-            or config_lookup(conf, "quota_output", default=DEFAULT_QUOTA_OUTPUT)
-        ).strip(),
-        "log_file": str(
-            args.log_file
-            or config_lookup(conf, "log_file", default=DEFAULT_LOG_FILE)
-        ).strip(),
-        "user_agent": str(
-            args.user_agent
-            or config_lookup(conf, "user_agent", default=DEFAULT_USER_AGENT)
-        ).strip(),
-        "debug": bool(
-            args.debug
-            if args.debug is not None
-            else parse_bool_config(config_lookup(conf, "debug", default=False), key="debug")
-        ),
-        "assume_yes": bool(args.yes),
-        "upload_dir": str(
-            args.upload_dir
-            if args.upload_dir is not None
-            else config_lookup(conf, "upload_dir", default="")
-        ).strip(),
-        "upload_workers": int(
-            args.upload_workers
-            if args.upload_workers is not None
-            else config_lookup(conf, "upload_workers", default=DEFAULT_UPLOAD_WORKERS)
-        ),
-        "upload_retries": int(
-            args.upload_retries
-            if args.upload_retries is not None
-            else config_lookup(conf, "upload_retries", default=DEFAULT_UPLOAD_RETRIES)
-        ),
-        "upload_method": upload_method,
-        "upload_recursive": (
-            args.upload_recursive
-            if args.upload_recursive is not None
-            else parse_bool_config(
-                config_lookup(conf, "upload_recursive", default=DEFAULT_UPLOAD_RECURSIVE),
-                key="upload_recursive",
-            )
-        ),
-        "upload_force": (
-            args.upload_force
-            if args.upload_force is not None
-            else parse_bool_config(config_lookup(conf, "upload_force", default=DEFAULT_UPLOAD_FORCE), key="upload_force")
-        ),
-        "min_valid_accounts": int(
-            args.min_valid_accounts
-            if args.min_valid_accounts is not None
-            else config_lookup(conf, "min_valid_accounts", default=0)
-        ),
-        "refill_strategy": refill_strategy,
-        "auto_register": (
-            args.auto_register
-            if args.auto_register is not None
-            else parse_bool_config(config_lookup(conf, "auto_register", default=DEFAULT_AUTO_REGISTER), key="auto_register")
-        ),
-        "register_command": str(
-            args.register_command
-            if args.register_command is not None
-            else config_lookup(conf, "register_command", default="")
-        ).strip(),
-        "register_timeout": int(
-            args.register_timeout
-            if args.register_timeout is not None
-            else config_lookup(conf, "register_timeout", default=DEFAULT_REGISTER_TIMEOUT)
-        ),
-        "register_workdir": str(
-            args.register_workdir
-            if args.register_workdir is not None
-            else config_lookup(conf, "register_workdir", default="")
-        ).strip(),
-    }
-
-    if settings["probe_workers"] < 1:
-        raise RuntimeError("probe_workers 必须 >= 1")
-    if settings["action_workers"] < 1:
-        raise RuntimeError("action_workers 必须 >= 1")
-    if settings["timeout"] < 1:
-        raise RuntimeError("timeout 必须 >= 1")
-    if settings["retries"] < 0:
-        raise RuntimeError("retries 不能小于 0")
-    if settings["delete_retries"] < 0:
-        raise RuntimeError("delete_retries 不能小于 0")
-    if settings["quota_disable_threshold"] < 0 or settings["quota_disable_threshold"] > 1:
-        raise RuntimeError("quota_disable_threshold 必须在 0 到 1 之间")
-    if settings["upload_workers"] < 1:
-        raise RuntimeError("upload_workers 必须 >= 1")
-    if settings["upload_retries"] < 0:
-        raise RuntimeError("upload_retries 不能小于 0")
-    if settings["register_timeout"] < 1:
-        raise RuntimeError("register_timeout 必须 >= 1")
-    if not settings["target_type"]:
-        raise RuntimeError("target_type 不能为空")
-    if not settings["log_file"]:
-        raise RuntimeError("log_file 不能为空")
-    if settings["mode"] in {"upload", "maintain-refill"} and not settings["upload_dir"]:
-        raise RuntimeError("upload/maintain-refill 模式下必须提供 upload_dir")
-    if settings["mode"] == "maintain-refill":
-        if settings["min_valid_accounts"] < 1:
-            raise RuntimeError("maintain-refill 模式下 min_valid_accounts 必须 >= 1")
-        if settings["auto_register"] and not settings["register_command"]:
-            raise RuntimeError("auto_register=true 时必须提供 register_command")
-
-    return settings
+    return build_settings_warden(
+        args,
+        conf,
+        defaults={
+            "config_path": DEFAULT_CONFIG_PATH,
+            "target_type": DEFAULT_TARGET_TYPE,
+            "user_agent": DEFAULT_USER_AGENT,
+            "probe_workers": DEFAULT_PROBE_WORKERS,
+            "action_workers": DEFAULT_ACTION_WORKERS,
+            "timeout": DEFAULT_TIMEOUT,
+            "retries": DEFAULT_RETRIES,
+            "delete_retries": DEFAULT_DELETE_RETRIES,
+            "quota_action": DEFAULT_QUOTA_ACTION,
+            "delete_401": DEFAULT_DELETE_401,
+            "auto_reenable": DEFAULT_AUTO_REENABLE,
+            "reenable_scope": DEFAULT_REENABLE_SCOPE,
+            "db_path": DEFAULT_DB_PATH,
+            "invalid_output": DEFAULT_INVALID_OUTPUT,
+            "quota_output": DEFAULT_QUOTA_OUTPUT,
+            "log_file": DEFAULT_LOG_FILE,
+            "upload_workers": DEFAULT_UPLOAD_WORKERS,
+            "upload_retries": DEFAULT_UPLOAD_RETRIES,
+            "upload_method": DEFAULT_UPLOAD_METHOD,
+            "upload_recursive": DEFAULT_UPLOAD_RECURSIVE,
+            "upload_force": DEFAULT_UPLOAD_FORCE,
+            "refill_strategy": DEFAULT_REFILL_STRATEGY,
+            "auto_register": DEFAULT_AUTO_REGISTER,
+            "register_timeout": DEFAULT_REGISTER_TIMEOUT,
+            "quota_disable_threshold": DEFAULT_QUOTA_DISABLE_THRESHOLD,
+        },
+    )
 
 
 def connect_db(db_path: str) -> sqlite3.Connection:
@@ -968,37 +783,15 @@ def matches_filters(record: dict[str, Any], target_type: str, provider: str) -> 
 
 
 def load_name_scope_file(path_text: str, *, option_label: str) -> set[str]:
-    path = Path(path_text).expanduser()
-    if not path.exists():
-        raise RuntimeError(f"{option_label} 不存在: {path}")
-    if not path.is_file():
-        raise RuntimeError(f"{option_label} 不是文件: {path}")
-
-    names: set[str] = set()
-    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        names.add(line)
-    return names
+    return load_name_scope_file_warden(path_text, option_label=option_label)
 
 
 def resolve_maintain_name_scope(settings: dict[str, Any]) -> set[str] | None:
-    if str(settings.get("mode") or "").strip().lower() != "maintain":
-        return None
-    path_text = str(settings.get("maintain_names_file") or "").strip()
-    if not path_text:
-        return None
-    return load_name_scope_file(path_text, option_label="maintain_names_file")
+    return resolve_maintain_name_scope_warden(settings)
 
 
 def resolve_upload_name_scope(settings: dict[str, Any]) -> set[str] | None:
-    if str(settings.get("mode") or "").strip().lower() != "upload":
-        return None
-    path_text = str(settings.get("upload_names_file") or "").strip()
-    if not path_text:
-        return None
-    return load_name_scope_file(path_text, option_label="upload_names_file")
+    return resolve_upload_name_scope_warden(settings)
 
 
 def fetch_auth_files(base_url: str, token: str, timeout: int) -> list[dict[str, Any]]:
@@ -1017,71 +810,17 @@ def fetch_auth_files(base_url: str, token: str, timeout: int) -> list[dict[str, 
 
 
 def discover_upload_files(upload_dir: str, recursive: bool) -> list[Path]:
-    root = Path(upload_dir).expanduser()
-    if not root.exists():
-        raise RuntimeError(f"upload_dir 不存在: {upload_dir}")
-    if not root.is_dir():
-        raise RuntimeError(f"upload_dir 不是目录: {upload_dir}")
-
-    iterator = root.rglob("*.json") if recursive else root.glob("*.json")
-    files = [path for path in iterator if path.is_file() and path.name.endswith(".json")]
-    return sorted(files, key=lambda p: str(p))
+    return discover_upload_files_warden(upload_dir, recursive)
 
 
 def validate_and_digest_json_file(path: Path) -> dict[str, Any]:
-    raw = path.read_bytes()
-    try:
-        text = raw.decode("utf-8-sig")
-    except Exception as exc:
-        raise RuntimeError(f"文件不是 UTF-8 编码: {path}") from exc
-
-    try:
-        json.loads(text)
-    except Exception as exc:
-        raise RuntimeError(f"JSON 格式无效: {path}") from exc
-
-    return {
-        "file_name": path.name,
-        "file_path": str(path),
-        "content_text": text,
-        "content_bytes": raw,
-        "content_sha256": hashlib.sha256(raw).hexdigest(),
-        "file_size": len(raw),
-    }
+    return validate_and_digest_json_file_warden(path)
 
 
 def select_upload_candidates(
     validated_files: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for item in validated_files:
-        grouped[str(item["file_name"])].append(item)
-
-    selected: list[dict[str, Any]] = []
-    skipped_local_duplicates: list[dict[str, Any]] = []
-    conflicting_names: dict[str, list[dict[str, Any]]] = {}
-
-    for file_name in sorted(grouped.keys()):
-        items = sorted(grouped[file_name], key=lambda row: str(row["file_path"]))
-        hashes = {str(row["content_sha256"]) for row in items}
-        if len(hashes) > 1:
-            conflicting_names[file_name] = items
-            continue
-        selected.append(items[0])
-        for duplicated in items[1:]:
-            skipped_local_duplicates.append(
-                {
-                    "file_name": duplicated["file_name"],
-                    "file_path": duplicated["file_path"],
-                    "status_code": None,
-                    "ok": True,
-                    "outcome": "skipped_local_duplicate",
-                    "error": "local duplicate with same file name and content",
-                    "error_kind": None,
-                }
-            )
-
-    return selected, skipped_local_duplicates, conflicting_names
+    return select_upload_candidates_warden(validated_files)
 
 
 def fetch_remote_auth_file_names(base_url: str, token: str, timeout: int) -> set[str]:
