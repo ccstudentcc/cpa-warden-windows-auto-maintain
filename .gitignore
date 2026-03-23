@@ -11,3 +11,5 @@ cpa_warden_401_accounts.json
 cpa_warden_quota_accounts.json
 *.log
 .auto_maintain_state/
+auth_files/*
+!auth_files/.gitkeep
