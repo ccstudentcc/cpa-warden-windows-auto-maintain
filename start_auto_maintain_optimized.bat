@@ -64,7 +64,7 @@ rem ZIP handling: detect zip, auto-extract JSON archives with Bandizip, then del
 set "INSPECT_ZIP_FILES=1"
 set "AUTO_EXTRACT_ZIP_JSON=1"
 set "DELETE_ZIP_AFTER_EXTRACT=1"
-set "BANDIZIP_PATH=D:\Bandizip\Bandizip.exe"
+if "%BANDIZIP_PATH%"=="" set "BANDIZIP_PATH=D:\Bandizp\Bandizip.exe"
 set "BANDIZIP_TIMEOUT_SECONDS=120"
 set "USE_WINDOWS_ZIP_FALLBACK=1"
 

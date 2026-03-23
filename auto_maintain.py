@@ -958,6 +958,7 @@ class AutoMaintainer:
                 self.delete_uploaded_files_from_snapshot(uploaded_snapshot)
 
             current_snapshot = self.build_snapshot(self.current_snapshot_file)
+            self.write_snapshot(self.stable_snapshot_file, current_snapshot)
             uploaded_baseline = self.compute_uploaded_baseline(uploaded_snapshot, current_snapshot)
             self.write_snapshot(self.last_uploaded_snapshot_file, uploaded_baseline)
             self.last_json_count = len(current_snapshot)
@@ -1040,6 +1041,7 @@ class AutoMaintainer:
         current_snapshot = self.build_snapshot(self.current_snapshot_file)
         last_uploaded_snapshot = self.read_snapshot(self.last_uploaded_snapshot_file)
         if current_snapshot == last_uploaded_snapshot:
+            self.write_snapshot(self.stable_snapshot_file, current_snapshot)
             self.last_json_count = current_json_count
             if self.settings.inspect_zip_files:
                 self.last_zip_signature = current_zip_signature
