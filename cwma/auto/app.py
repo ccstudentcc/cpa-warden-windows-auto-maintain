@@ -3,113 +3,40 @@ from __future__ import annotations
 import argparse
 import atexit
 import os
-import signal
 import subprocess
 import sys
-import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterable, TextIO
+from typing import Callable, Iterable
 
 from .config import Settings, load_settings as load_auto_settings
 from .channel_status import (
-    CHANNEL_MAINTAIN,
     CHANNEL_UPLOAD,
-    STAGE_DEFERRED,
-    STAGE_FAILED,
-    STAGE_IDLE,
-    STAGE_PENDING,
-    STAGE_PENDING_FULL,
-    STAGE_PENDING_INCREMENTAL,
-    STAGE_RETRY_WAIT,
     STAGE_RUNNING,
-    STAGE_START_FAILED,
-    STATE_IDLE,
-    STATE_PENDING,
-    STATE_RUNNING,
-    STATUS_FAILED,
-    STATUS_RETRY,
-    STATUS_SHUTDOWN,
-    STATUS_SUCCESS,
 )
 from .channel_commands import (
     build_maintain_command as build_maintain_command_rows,
     build_upload_command as build_upload_command_rows,
-    format_maintain_start_message as format_maintain_start_message_rows,
-    format_upload_start_message as format_upload_start_message_rows,
-)
-from .channel_feedback import (
-    build_non_success_exit_feedback,
-    format_command_completed_message,
-    format_command_start_failed_message,
-    format_command_start_retry_message,
-    maintain_pending_progress_stage,
-)
-from .channel_lifecycle import (
-    decide_maintain_start_error,
-    decide_upload_start_error,
-)
-from .channel_start_prep import (
-    prepare_maintain_start,
-    prepare_upload_start,
-)
-from .process_supervisor import (
-    terminate_channel,
 )
 from .dashboard import (
     apply_panel_colors as apply_dashboard_panel_colors,
-    fit_panel_line as fit_dashboard_panel_line,
-    panel_border_line as dashboard_border_line,
-)
-from .locking import (
-    InstanceLockState,
-    acquire_instance_lock as acquire_lock_state,
-    release_instance_lock as release_lock_state,
 )
 from .maintain_queue import (
     MaintainRuntimeState,
     MaintainQueueState,
-    decide_maintain_start_scope,
-    merge_incremental_maintain_names,
-    queue_maintain_request,
 )
 from .output_pump import (
     append_child_output_line as append_output_line,
     start_output_pump_thread,
 )
-from .panel_render import (
-    PanelLinesContext,
-    build_plain_panel_lines,
-)
-from .panel_snapshot import PanelSnapshot, build_panel_snapshot
 from .process_output import (
     build_child_process_env,
     decode_child_output_line as decode_process_output_line,
     should_log_child_alert_line as should_log_process_alert_line,
 )
 from .progress_parser import parse_progress_line
-from .runtime_state import (
-    build_auto_runtime_state,
-    build_composed_maintain_runtime_state,
-    build_lifecycle_runtime_state,
-    build_maintain_queue_state,
-    build_maintain_runtime_state,
-    build_snapshot_runtime_state,
-    build_ui_runtime_state,
-    build_upload_runtime_state,
-    build_upload_queue_state,
-    unpack_maintain_queue_state,
-    unpack_maintain_runtime_state,
-    unpack_upload_queue_state,
-)
-from .runtime.shutdown_runtime import (
-    ShutdownRuntimeState,
-    current_loop_sleep_seconds as current_loop_sleep_seconds_runtime,
-    request_shutdown as request_shutdown_runtime,
-    sleep_with_shutdown as sleep_with_shutdown_runtime,
-    sleep_between_watch_cycles as sleep_between_watch_cycles_runtime,
-)
+from .runtime.shutdown_runtime import sleep_between_watch_cycles as sleep_between_watch_cycles_runtime
 from .runtime.channel_runtime import (
     poll_maintain_channel,
     poll_upload_channel,
@@ -119,8 +46,10 @@ from .runtime.channel_runtime import (
 from .runtime.channel_runtime_adapter import ChannelRuntimeAdapter
 from .runtime.cycle_runtime_adapter import CycleRuntimeAdapter
 from .runtime.host_init_adapter import initialize_host_state
+from .runtime.lifecycle_runtime_adapter import LifecycleRuntimeAdapter
 from .runtime.host_ops_adapter import HostOpsAdapter
 from .runtime.panel_runtime_adapter import PanelRuntimeAdapter, detect_panel_capability
+from .runtime.state_bridge_adapter import StateBridgeAdapter
 from .runtime.startup_runtime import (
     StartupRuntimeDeps,
     StartupRuntimeState,
@@ -137,32 +66,8 @@ from .runtime.watch_runtime import (
     run_watch_iteration,
 )
 from .ui_runtime import UiRuntime
-from .scope_files import write_scope_names
-from .snapshots import (
-    build_snapshot_file as build_snapshot_file_rows,
-    build_snapshot_lines as build_snapshot_lines_rows,
-    compute_pending_upload_snapshot as compute_pending_upload_snapshot_rows,
-    compute_uploaded_baseline as compute_uploaded_baseline_rows,
-    extract_names_from_snapshot as extract_names_from_snapshot_rows,
-    read_snapshot_lines as read_snapshot_lines_rows,
-    write_snapshot_lines as write_snapshot_lines_rows,
-)
-from .zip_intake import (
-    compute_zip_signature as compute_zip_signature_rows,
-    extract_zip_with_bandizip as extract_zip_with_bandizip_rows,
-    extract_zip_with_windows_builtin as extract_zip_with_windows_builtin_rows,
-    inspect_zip_archives as inspect_zip_archives_rows,
-)
-from .upload_queue import (
-    UploadQueueState,
-    decide_upload_start,
-)
-from .upload_postprocess import (
-    UploadSuccessPostProcessResult,
-    build_upload_success_postprocess,
-)
-from .upload_cleanup import cleanup_uploaded_files, prune_empty_dirs_under
-from ..scheduler.smart_scheduler import SmartSchedulerConfig, SmartSchedulerPolicy
+from .snapshots import compute_pending_upload_snapshot as compute_pending_upload_snapshot_rows
+from .upload_queue import UploadQueueState
 
 
 def log(message: str) -> None:
@@ -221,6 +126,8 @@ class AutoMaintainer:
             host=self,
             get_log=lambda: log,
         )
+        self.lifecycle_runtime_adapter = LifecycleRuntimeAdapter(host=self, log=log)
+        self.state_bridge_adapter = StateBridgeAdapter(host=self, log=log)
         self.cycle_runtime_adapter = CycleRuntimeAdapter(
             host=self,
             get_run_startup_cycle=lambda: run_startup_cycle,
@@ -332,121 +239,35 @@ class AutoMaintainer:
         return f"cpa-auto-maintain | {started} | {os.getpid()}"
 
     def set_console_title(self) -> None:
-        if os.name != "nt":
-            return
-        try:
-            import ctypes
-
-            ctypes.windll.kernel32.SetConsoleTitleW(self.instance_label())
-        except Exception as exc:
-            log(f"[WARN] Failed to set console title: {exc}")
+        self.lifecycle_runtime_adapter.set_console_title()
 
     def register_shutdown_handlers(self) -> None:
-        signal.signal(signal.SIGINT, self._signal_handler)
-        if hasattr(signal, "SIGTERM"):
-            signal.signal(signal.SIGTERM, self._signal_handler)
-
-        if os.name == "nt":
-            try:
-                import ctypes
-
-                CTRL_C_EVENT = 0
-                CTRL_BREAK_EVENT = 1
-                CTRL_CLOSE_EVENT = 2
-                CTRL_LOGOFF_EVENT = 5
-                CTRL_SHUTDOWN_EVENT = 6
-
-                event_names = {
-                    CTRL_C_EVENT: "CTRL_C_EVENT",
-                    CTRL_BREAK_EVENT: "CTRL_BREAK_EVENT",
-                    CTRL_CLOSE_EVENT: "CTRL_CLOSE_EVENT",
-                    CTRL_LOGOFF_EVENT: "CTRL_LOGOFF_EVENT",
-                    CTRL_SHUTDOWN_EVENT: "CTRL_SHUTDOWN_EVENT",
-                }
-
-                handler_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
-
-                def _handler(event_type: int) -> bool:
-                    reason = event_names.get(event_type, f"WIN_EVENT_{event_type}")
-                    self.request_shutdown(reason)
-                    return True
-
-                self._windows_console_handler = handler_type(_handler)
-                ctypes.windll.kernel32.SetConsoleCtrlHandler(self._windows_console_handler, True)
-            except Exception as exc:
-                log(f"[WARN] Failed to register Windows console handler: {exc}")
+        self.lifecycle_runtime_adapter.register_shutdown_handlers(self._signal_handler)
 
     def _signal_handler(self, signum: int, _frame: object) -> None:
         self.request_shutdown(f"SIGNAL_{signum}")
 
     def request_shutdown(self, reason: str) -> None:
-        state = request_shutdown_runtime(
-            state=ShutdownRuntimeState(
-                shutdown_requested=self.shutdown_requested,
-                shutdown_reason=self.shutdown_reason,
-            ),
-            reason=reason,
-            log=log,
-            terminate_active_processes=self.terminate_active_processes,
-        )
-        self.shutdown_requested = state.shutdown_requested
-        self.shutdown_reason = state.shutdown_reason
-        self.runtime.lifecycle.shutdown_requested = self.shutdown_requested
-        self.runtime.lifecycle.shutdown_reason = self.shutdown_reason
+        self.lifecycle_runtime_adapter.request_shutdown(reason)
 
     def terminate_process(self, proc: subprocess.Popen | None, *, name: str) -> None:
-        terminate_channel(
-            process=proc,
-            channel=name,
-            log=log,
-            terminate_timeout_seconds=8,
-            kill_wait_seconds=5,
-        )
+        self.lifecycle_runtime_adapter.terminate_process(proc, name=name)
 
     def terminate_active_processes(self) -> None:
-        self.terminate_process(self.upload_process, name=CHANNEL_UPLOAD)
-        self.terminate_process(self.maintain_process, name=CHANNEL_MAINTAIN)
+        self.lifecycle_runtime_adapter.terminate_active_processes()
 
     def sleep_with_shutdown(self, total_seconds: int) -> bool:
-        return sleep_with_shutdown_runtime(
-            shutdown_requested=self.shutdown_requested,
-            total_seconds=total_seconds,
-        )
+        return self.lifecycle_runtime_adapter.sleep_with_shutdown(total_seconds)
 
     def current_loop_sleep_seconds(self) -> int:
-        return current_loop_sleep_seconds_runtime(
-            upload_running=self.upload_process is not None,
-            maintain_running=self.maintain_process is not None,
-            watch_interval_seconds=self.settings.watch_interval_seconds,
-            active_probe_interval_seconds=self.settings.active_probe_interval_seconds,
-        )
+        return self.lifecycle_runtime_adapter.current_loop_sleep_seconds()
 
     def wait_for_stable_snapshot(self, baseline_snapshot: list[str]) -> tuple[int, list[str] | None]:
-        stable_seconds = self.settings.upload_stable_wait_seconds
-        if stable_seconds <= 0:
-            return 0, baseline_snapshot
-
-        poll_seconds = min(2.0, max(0.5, stable_seconds / 4.0))
-        last_change_at = time.time()
-        stable_snapshot = baseline_snapshot
-
-        while True:
-            elapsed = time.time() - last_change_at
-            remaining = stable_seconds - elapsed
-            if remaining <= 0:
-                return 0, stable_snapshot
-
-            if not self.sleep_with_shutdown(min(poll_seconds, remaining)):
-                return 130, None
-
-            latest_snapshot = self.build_snapshot(self.stable_snapshot_file)
-            if latest_snapshot != stable_snapshot:
-                stable_snapshot = latest_snapshot
-                last_change_at = time.time()
-                log(
-                    "Detected additional JSON changes during stability wait. "
-                    f"Reset timer to {stable_seconds}s."
-                )
+        return self.lifecycle_runtime_adapter.wait_for_stable_snapshot(
+            baseline_snapshot,
+            sleep_with_shutdown=self.sleep_with_shutdown,
+            build_stable_snapshot=lambda: self.build_snapshot(self.stable_snapshot_file),
+        )
 
     def acquire_instance_lock(self) -> None:
         self.host_ops_adapter.acquire_instance_lock(
@@ -615,114 +436,31 @@ class AutoMaintainer:
         )
 
     def _upload_queue_state(self) -> UploadQueueState:
-        return build_upload_queue_state(
-            pending_snapshot=self.pending_upload_snapshot,
-            pending_reason=self.pending_upload_reason,
-            pending_retry=self.pending_upload_retry,
-            inflight_snapshot=self.inflight_upload_snapshot,
-            attempt=self.upload_attempt,
-            retry_due_at=self.upload_retry_due_at,
-        )
+        return self.state_bridge_adapter.upload_queue_state()
 
     def _apply_upload_queue_state(self, state: UploadQueueState) -> None:
-        (
-            self.pending_upload_snapshot,
-            self.pending_upload_reason,
-            self.pending_upload_retry,
-            self.inflight_upload_snapshot,
-            self.upload_attempt,
-            self.upload_retry_due_at,
-        ) = unpack_upload_queue_state(state)
-        self.runtime.upload.queue = build_upload_queue_state(
-            pending_snapshot=self.pending_upload_snapshot,
-            pending_reason=self.pending_upload_reason,
-            pending_retry=self.pending_upload_retry,
-            inflight_snapshot=self.inflight_upload_snapshot,
-            attempt=self.upload_attempt,
-            retry_due_at=self.upload_retry_due_at,
-        )
+        self.state_bridge_adapter.apply_upload_queue_state(state)
 
     def _maintain_queue_state(self) -> MaintainQueueState:
-        return build_maintain_queue_state(
-            pending=self.pending_maintain,
-            reason=self.pending_maintain_reason,
-            names=self.pending_maintain_names,
-        )
+        return self.state_bridge_adapter.maintain_queue_state()
 
     def _apply_maintain_queue_state(self, state: MaintainQueueState) -> None:
-        (
-            self.pending_maintain,
-            self.pending_maintain_reason,
-            self.pending_maintain_names,
-        ) = unpack_maintain_queue_state(state)
-        self.runtime.maintain.queue = build_maintain_queue_state(
-            pending=self.pending_maintain,
-            reason=self.pending_maintain_reason,
-            names=self.pending_maintain_names,
-        )
+        self.state_bridge_adapter.apply_maintain_queue_state(state)
 
     def _maintain_runtime_state(self) -> MaintainRuntimeState:
-        return build_maintain_runtime_state(
-            queue=self._maintain_queue_state(),
-            inflight_names=self.inflight_maintain_names,
-            attempt=self.maintain_attempt,
-            retry_due_at=self.maintain_retry_due_at,
-        )
+        return self.state_bridge_adapter.maintain_runtime_state()
 
     def _apply_maintain_runtime_state(self, state: MaintainRuntimeState) -> None:
-        queue_state, inflight_names, attempt, retry_due_at = unpack_maintain_runtime_state(state)
-        self._apply_maintain_queue_state(queue_state)
-        self.inflight_maintain_names = inflight_names
-        self.maintain_attempt = attempt
-        self.maintain_retry_due_at = retry_due_at
-        self.runtime.maintain = build_composed_maintain_runtime_state(
-            queue=build_maintain_queue_state(
-                pending=self.pending_maintain,
-                reason=self.pending_maintain_reason,
-                names=self.pending_maintain_names,
-            ),
-            inflight_names=self.inflight_maintain_names,
-            attempt=self.maintain_attempt,
-            retry_due_at=self.maintain_retry_due_at,
-            last_incremental_started_at=self.last_incremental_maintain_started_at,
-            last_incremental_defer_reason=self.last_incremental_defer_reason,
-        )
+        self.state_bridge_adapter.apply_maintain_runtime_state(state)
 
     def queue_maintain(self, reason: str, names: set[str] | None = None) -> None:
-        result = queue_maintain_request(
-            state=self._maintain_queue_state(),
-            reason=reason,
-            names=names,
-        )
-        self._apply_maintain_queue_state(result.state)
-        if result.progress_stage:
-            self.update_channel_progress(CHANNEL_MAINTAIN, stage=result.progress_stage, force_render=True)
+        self.state_bridge_adapter.queue_maintain(reason, names)
 
     def merge_pending_incremental_maintain_names(self, names: set[str]) -> None:
-        state = merge_incremental_maintain_names(
-            state=self._maintain_queue_state(),
-            names=names,
-        )
-        self._apply_maintain_queue_state(state)
+        self.state_bridge_adapter.merge_pending_incremental_maintain_names(names)
 
     def _defer_incremental_maintain_if_needed(self, now: float) -> bool:
-        if self.pending_maintain_names is None:
-            return False
-        defer_incremental, defer_reason = self.scheduler_policy.should_defer_incremental_maintain(
-            now_monotonic=now,
-            last_incremental_started_at=self.last_incremental_maintain_started_at,
-            next_full_maintain_due_at=self.next_maintain_due_at,
-            has_pending_full_maintain=(
-                self.pending_maintain and self.pending_maintain_names is None
-            ),
-        )
-        if not defer_incremental:
-            return False
-        if defer_reason != self.last_incremental_defer_reason:
-            log(f"Deferred incremental maintain start: {defer_reason}.")
-            self.last_incremental_defer_reason = defer_reason
-            self.update_channel_progress(CHANNEL_MAINTAIN, stage=STAGE_DEFERRED, force_render=True)
-        return True
+        return self.state_bridge_adapter.defer_incremental_maintain_if_needed(now)
 
     def _set_maintain_process(self, process: subprocess.Popen | None) -> None:
         self.maintain_process = process

@@ -219,6 +219,8 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Internal note: top-level `run()` loop now delegates one watch-cycle step through `_run_watch_cycle_and_maybe_sleep(...)` to centralize watch-exit vs sleep-exit control flow
 - Internal note: startup/watch runtime invocation now shares `_run_runtime_cycle(...)` template for cycle execution, state apply, and exit-code propagation symmetry
 - Internal note: startup/watch runtime state+deps assembly and cycle execution template are now delegated to `cwma/auto/runtime/cycle_runtime_adapter.py`, with host methods preserved as compatibility-oriented thin forwarding seams
+- Internal note: lifecycle controls (console title/shutdown handlers/shutdown state apply/process terminate/sleep cadence/stability wait) are delegated to `cwma/auto/runtime/lifecycle_runtime_adapter.py`
+- Internal note: maintain/upload queue+runtime state pack/unpack and incremental-maintain defer policy are delegated to `cwma/auto/runtime/state_bridge_adapter.py`
 - Internal note: channel/upload runtime adapters (`channel_runtime_adapter`, `upload_runtime_adapter`) now carry most callback orchestration complexity, materially reducing host branch density in `app.py`
 - Internal note: host utility seams (path/bootstrap checks, lock lifecycle, snapshot/zip/cleanup IO, settings log rows) are now delegated to `cwma/auto/runtime/host_ops_adapter.py`, keeping host methods as compatibility-friendly forwarding entrypoints
 - Internal note: host field bootstrap + initial composed runtime assembly are delegated to `cwma/auto/runtime/host_init_adapter.py`, reducing `AutoMaintainer.__init__` host-state noise
@@ -387,6 +389,18 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Entry point: imported by `cwma/auto/app.py`
 - Public interface: `CycleRuntimeAdapter`
 - Responsibility: host adapter that assembles startup/watch runtime state+dependency payloads and reuses a common cycle execution template + stage-failure forwarding for thin-host orchestration
+
+### `cwma/auto/runtime/lifecycle_runtime_adapter.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `LifecycleRuntimeAdapter`
+- Responsibility: host lifecycle adapter for console title, signal/Windows shutdown handler registration, shutdown state sync, process termination, sleep cadence, and upload stability wait loop
+
+### `cwma/auto/runtime/state_bridge_adapter.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `StateBridgeAdapter`
+- Responsibility: host state bridge for upload/maintain queue-runtime packing/unpacking and incremental-maintain defer policy updates with UI feedback
 
 ### `cwma/auto/runtime/host_ops_adapter.py`
 
