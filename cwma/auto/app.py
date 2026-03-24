@@ -117,7 +117,9 @@ from .runtime.channel_runtime import (
     start_upload_channel,
 )
 from .runtime.channel_runtime_adapter import ChannelRuntimeAdapter
+from .runtime.host_init_adapter import initialize_host_state
 from .runtime.host_ops_adapter import HostOpsAdapter
+from .runtime.panel_runtime_adapter import PanelRuntimeAdapter, detect_panel_capability
 from .runtime.startup_runtime import (
     StartupRuntimeDeps,
     StartupRuntimeState,
@@ -169,148 +171,20 @@ def log(message: str) -> None:
 
 class AutoMaintainer:
     def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-        self.cpa_script = self.settings.base_dir / "cpa_warden.py"
-        self.last_uploaded_snapshot_file = self.settings.state_dir / "last_uploaded_snapshot.txt"
-        self.current_snapshot_file = self.settings.state_dir / "current_snapshot.txt"
-        self.stable_snapshot_file = self.settings.state_dir / "stable_snapshot.txt"
-        self.instance_lock_file = self.settings.state_dir / "auto_maintain.lock"
-        self.instance_lock_token: str | None = None
-        self.instance_lock_handle: TextIO | None = None
-        self.instance_started_at = datetime.now()
-        self.shutdown_requested = False
-        self.shutdown_reason: str | None = None
-        self.upload_process: subprocess.Popen | None = None
-        self.maintain_process: subprocess.Popen | None = None
-        self._windows_console_handler = None
-        self.deep_scan_counter = 0
-        self.pending_upload_retry = False
-        self.pending_source_changes_during_upload = False
-        self.last_active_upload_deep_scan_at = 0.0
-        self.last_json_count = 0
-        self.last_zip_signature: tuple[str, ...] = tuple()
-        self.pending_upload_snapshot: list[str] | None = None
-        self.pending_upload_reason: str | None = None
-        self.inflight_upload_snapshot: list[str] | None = None
-        self.upload_attempt = 0
-        self.maintain_attempt = 0
-        self.upload_retry_due_at = 0.0
-        self.maintain_retry_due_at = 0.0
-        self.pending_maintain = False
-        self.pending_maintain_reason: str | None = None
-        self.pending_maintain_names: set[str] | None = None
-        self.inflight_maintain_names: set[str] | None = None
-        self.maintain_names_file = self.settings.state_dir / "maintain_names_scope.txt"
-        self.upload_names_file = self.settings.state_dir / "upload_names_scope.txt"
-        self.maintain_cmd_output_file = self.settings.state_dir / "maintain_command_output.log"
-        self.upload_cmd_output_file = self.settings.state_dir / "upload_command_output.log"
-        self.output_lock = threading.Lock()
-        self.console_lock = threading.Lock()
-        self.upload_progress_state: dict[str, int | str] = {"stage": STAGE_IDLE, "done": 0, "total": 0}
-        self.maintain_progress_state: dict[str, int | str] = {"stage": STAGE_IDLE, "done": 0, "total": 0}
-        self.last_progress_render_at = 0.0
-        self.progress_render_interval_seconds = 0.4
-        self.progress_render_heartbeat_seconds = 8.0
-        self.last_progress_signature = ""
-        self.panel_height = 8
-        self.panel_title = "CPA Warden Auto Dashboard"
-        self.panel_enabled = self._detect_panel_capability()
-        self.panel_color_enabled = (
-            self.panel_enabled
-            and os.getenv("AUTO_MAINTAIN_PANEL_COLOR", "1").strip() not in {"0", "false", "False"}
+        initialize_host_state(
+            host=self,
+            settings=settings,
+            detect_panel_capability=detect_panel_capability,
         )
-        self.panel_initialized = False
-        self.upload_output_thread: threading.Thread | None = None
-        self.maintain_output_thread: threading.Thread | None = None
-        self.zip_extract_processed_signatures: dict[str, str] = {}
-        self.last_incremental_maintain_started_at = 0.0
-        self.last_incremental_defer_reason: str | None = None
-        self.next_maintain_due_at: float | None = None
-        self.scheduler_policy = SmartSchedulerPolicy(
-            SmartSchedulerConfig(
-                enabled=self.settings.smart_schedule_enabled,
-                adaptive_upload_batching=self.settings.adaptive_upload_batching,
-                base_upload_batch_size=self.settings.upload_batch_size,
-                upload_high_backlog_threshold=self.settings.upload_high_backlog_threshold,
-                upload_high_backlog_batch_size=self.settings.upload_high_backlog_batch_size,
-                adaptive_maintain_batching=self.settings.adaptive_maintain_batching,
-                base_incremental_maintain_batch_size=self.settings.incremental_maintain_batch_size,
-                maintain_high_backlog_threshold=self.settings.maintain_high_backlog_threshold,
-                maintain_high_backlog_batch_size=self.settings.maintain_high_backlog_batch_size,
-                incremental_maintain_min_interval_seconds=(
-                    self.settings.incremental_maintain_min_interval_seconds
-                ),
-                incremental_maintain_full_guard_seconds=(
-                    self.settings.incremental_maintain_full_guard_seconds
-                ),
-            )
-        )
-        self.runtime = build_auto_runtime_state(
-            upload=build_upload_runtime_state(
-                queue=build_upload_queue_state(
-                    pending_snapshot=self.pending_upload_snapshot,
-                    pending_reason=self.pending_upload_reason,
-                    pending_retry=self.pending_upload_retry,
-                    inflight_snapshot=self.inflight_upload_snapshot,
-                    attempt=self.upload_attempt,
-                    retry_due_at=self.upload_retry_due_at,
-                ),
-                deep_scan_counter=self.deep_scan_counter,
-                pending_source_changes_during_upload=self.pending_source_changes_during_upload,
-                last_active_upload_deep_scan_at=self.last_active_upload_deep_scan_at,
-            ),
-            maintain=build_composed_maintain_runtime_state(
-                queue=build_maintain_queue_state(
-                    pending=self.pending_maintain,
-                    reason=self.pending_maintain_reason,
-                    names=self.pending_maintain_names,
-                ),
-                inflight_names=self.inflight_maintain_names,
-                attempt=self.maintain_attempt,
-                retry_due_at=self.maintain_retry_due_at,
-                last_incremental_started_at=self.last_incremental_maintain_started_at,
-                last_incremental_defer_reason=self.last_incremental_defer_reason,
-            ),
-            snapshot=build_snapshot_runtime_state(
-                last_uploaded_snapshot_file=self.last_uploaded_snapshot_file,
-                current_snapshot_file=self.current_snapshot_file,
-                stable_snapshot_file=self.stable_snapshot_file,
-                last_json_count=self.last_json_count,
-                last_zip_signature=self.last_zip_signature,
-                zip_extract_processed_signatures=self.zip_extract_processed_signatures,
-            ),
-            ui=build_ui_runtime_state(
-                upload_progress_state=self.upload_progress_state,
-                maintain_progress_state=self.maintain_progress_state,
-                last_progress_render_at=self.last_progress_render_at,
-                progress_render_interval_seconds=self.progress_render_interval_seconds,
-                progress_render_heartbeat_seconds=self.progress_render_heartbeat_seconds,
-                last_progress_signature=self.last_progress_signature,
-                panel_height=self.panel_height,
-                panel_title=self.panel_title,
-                panel_enabled=self.panel_enabled,
-                panel_color_enabled=self.panel_color_enabled,
-                panel_initialized=self.panel_initialized,
-            ),
-            lifecycle=build_lifecycle_runtime_state(
-                instance_started_at=self.instance_started_at,
-                shutdown_requested=self.shutdown_requested,
-                shutdown_reason=self.shutdown_reason,
-                instance_lock_token=self.instance_lock_token,
-                instance_lock_handle=self.instance_lock_handle,
-                upload_process=self.upload_process,
-                maintain_process=self.maintain_process,
-                upload_output_thread=self.upload_output_thread,
-                maintain_output_thread=self.maintain_output_thread,
-                windows_console_handler=self._windows_console_handler,
-                next_maintain_due_at=self.next_maintain_due_at,
-            ),
+        self.panel_runtime_adapter = PanelRuntimeAdapter(
+            host=self,
+            log=lambda message: log(message),
         )
         self.ui_runtime = UiRuntime(
             state=self.runtime.ui,
             monotonic=lambda: time.monotonic(),
-            build_panel_snapshot=self._build_progress_panel_snapshot,
-            build_panel_lines=self._build_progress_panel_lines,
+            build_panel_snapshot=self.panel_runtime_adapter.build_progress_panel_snapshot,
+            build_panel_lines=self.panel_runtime_adapter.build_progress_panel_lines,
             apply_panel_colors=lambda lines, upload_state, maintain_state, upload_stage, maintain_stage: (
                 apply_dashboard_panel_colors(
                     lines,
@@ -321,7 +195,7 @@ class AutoMaintainer:
                     maintain_stage=maintain_stage,
                 )
             ),
-            render_panel=self.render_fixed_panel,
+            render_panel=self.panel_runtime_adapter.render_fixed_panel,
             output_lock_factory=lambda: self.output_lock,
         )
         self.upload_runtime_adapter = UploadRuntimeAdapter(
@@ -489,7 +363,7 @@ class AutoMaintainer:
         self.acquire_instance_lock()
         atexit.register(self.release_instance_lock)
         self.set_console_title()
-        self.init_fixed_panel_area()
+        self.panel_runtime_adapter.init_fixed_panel_area()
         self.log_settings()
         try:
             startup_exit = self._run_startup_phase()
@@ -706,83 +580,11 @@ class AutoMaintainer:
     def mark_channel_running(self, name: str) -> None:
         self.update_channel_progress(name, stage=STAGE_RUNNING, force_render=True)
 
-    def _format_bar(self, done: int, total: int, width: int = 18) -> str:
-        if total <= 0:
-            return "[" + ("-" * width) + "]"
-        ratio = min(1.0, max(0.0, float(done) / float(total)))
-        filled = int(round(ratio * width))
-        return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
-
-    def _compute_upload_queue_batches(self, pending_count: int) -> tuple[int, int]:
-        if pending_count <= 0:
-            return 0, 0
-        maintain_pressure = self.maintain_process is not None or self.pending_maintain
-        next_batch_size = self.scheduler_policy.choose_upload_batch_size(
-            pending_count=pending_count,
-            maintain_pressure=maintain_pressure,
-        )
-        if next_batch_size <= 0:
-            return 0, 0
-        queue_batches = (pending_count + next_batch_size - 1) // next_batch_size
-        return next_batch_size, queue_batches
-
-    def _short_reason(self, reason: str, limit: int = 36) -> str:
-        text = (reason or "-").strip()
-        if len(text) <= limit:
-            return text
-        return text[: max(1, limit - 3)] + "..."
-
     def decode_child_output_line(self, raw: bytes | str) -> str:
         return decode_process_output_line(raw)
 
     def should_log_child_alert_line(self, text: str) -> bool:
         return should_log_process_alert_line(text)
-
-    def _build_progress_panel_snapshot(self, *, now_monotonic: float) -> PanelSnapshot:
-        return build_panel_snapshot(
-            upload_progress_state=self.upload_progress_state,
-            maintain_progress_state=self.maintain_progress_state,
-            pending_upload_snapshot=self.pending_upload_snapshot,
-            inflight_upload_snapshot=self.inflight_upload_snapshot,
-            pending_upload_reason=self.pending_upload_reason,
-            upload_running=self.upload_process is not None,
-            upload_retry_due_at=self.upload_retry_due_at,
-            pending_maintain=self.pending_maintain,
-            pending_maintain_names=self.pending_maintain_names,
-            pending_maintain_reason=self.pending_maintain_reason,
-            inflight_maintain_names=self.inflight_maintain_names,
-            maintain_running=self.maintain_process is not None,
-            maintain_retry_due_at=self.maintain_retry_due_at,
-            next_maintain_due_at=self.next_maintain_due_at,
-            last_incremental_defer_reason=self.last_incremental_defer_reason,
-            now_monotonic=now_monotonic,
-            compute_upload_queue_batches=self._compute_upload_queue_batches,
-            choose_incremental_maintain_batch_size=(
-                lambda pending_count, upload_pressure: self.scheduler_policy.choose_incremental_maintain_batch_size(
-                    pending_count=pending_count,
-                    upload_pressure=upload_pressure,
-                )
-            ),
-        )
-
-    def _build_progress_panel_lines(self, *, panel_snapshot: PanelSnapshot) -> list[str]:
-        context = PanelLinesContext(
-            panel_title=self.panel_title,
-            now_text=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            panel_mode="fixed" if self.panel_enabled else "log",
-            watch_interval_seconds=self.settings.watch_interval_seconds,
-            upload_bar=self._format_bar(panel_snapshot.upload_done, panel_snapshot.upload_total),
-            maintain_bar=self._format_bar(panel_snapshot.maintain_done, panel_snapshot.maintain_total),
-            upload_reason_text=self._short_reason(panel_snapshot.upload_reason, limit=40),
-            maintain_reason_text=self._short_reason(panel_snapshot.maintain_reason, limit=40),
-            maintain_defer_text=self._short_reason(panel_snapshot.maintain_defer_reason, limit=28),
-        )
-        return build_plain_panel_lines(
-            snapshot=panel_snapshot,
-            context=context,
-            fit_line=fit_dashboard_panel_line,
-            border_line=dashboard_border_line,
-        )
 
     def render_progress_snapshot(self, *, force: bool = False) -> None:
         self._sync_ui_runtime_inputs()
@@ -849,65 +651,6 @@ class AutoMaintainer:
             self.upload_output_thread = thread
         else:
             self.maintain_output_thread = thread
-
-    def _detect_panel_capability(self) -> bool:
-        if not sys.stdout.isatty():
-            return False
-        if os.getenv("AUTO_MAINTAIN_FIXED_PANEL", "1").strip() in {"0", "false", "False"}:
-            return False
-        if os.name != "nt":
-            return True
-        try:
-            import ctypes
-
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-            if handle in (0, -1):
-                return False
-
-            mode = ctypes.c_uint()
-            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-                return False
-
-            enable_vt = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-            if mode.value & enable_vt:
-                return True
-            if not kernel32.SetConsoleMode(handle, mode.value | enable_vt):
-                return False
-            return True
-        except Exception:
-            return False
-
-    def init_fixed_panel_area(self) -> None:
-        if (not self.panel_enabled) or self.panel_initialized:
-            return
-        with self.console_lock:
-            if self.panel_initialized:
-                return
-            sys.stdout.write("\n" * self.panel_height)
-            sys.stdout.flush()
-            self.panel_initialized = True
-            self.runtime.ui.panel_initialized = self.panel_initialized
-
-    def render_fixed_panel(self, lines: list[str]) -> None:
-        if not self.panel_enabled:
-            for line in lines:
-                log(line)
-            return
-
-        self.init_fixed_panel_area()
-        with self.console_lock:
-            # Save cursor, jump to top-left, overwrite reserved panel rows, then restore cursor.
-            sys.stdout.write("\x1b[s")
-            sys.stdout.write("\x1b[H")
-            for idx in range(self.panel_height):
-                row_text = lines[idx] if idx < len(lines) else ""
-                sys.stdout.write("\x1b[2K")
-                sys.stdout.write(row_text)
-                if idx < self.panel_height - 1:
-                    sys.stdout.write("\n")
-            sys.stdout.write("\x1b[u")
-            sys.stdout.flush()
 
     def build_maintain_command(self, maintain_names_file: Path | None = None) -> list[str]:
         return build_maintain_command_rows(

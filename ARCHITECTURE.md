@@ -220,6 +220,8 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Internal note: startup/watch runtime invocation now shares `_run_runtime_cycle(...)` template for cycle execution, state apply, and exit-code propagation symmetry
 - Internal note: channel/upload runtime adapters (`channel_runtime_adapter`, `upload_runtime_adapter`) now carry most callback orchestration complexity, materially reducing host branch density in `app.py`
 - Internal note: host utility seams (path/bootstrap checks, lock lifecycle, snapshot/zip/cleanup IO, settings log rows) are now delegated to `cwma/auto/runtime/host_ops_adapter.py`, keeping host methods as compatibility-friendly forwarding entrypoints
+- Internal note: host field bootstrap + initial composed runtime assembly are delegated to `cwma/auto/runtime/host_init_adapter.py`, reducing `AutoMaintainer.__init__` host-state noise
+- Internal note: panel snapshot composition and fixed-panel rendering I/O are delegated to `cwma/auto/runtime/panel_runtime_adapter.py`, with `UiRuntime` wired to adapter callbacks instead of host-local panel helpers
 - Internal note: startup configuration log emission is centralized through `_settings_log_rows(...)` to reduce duplicated output wiring
 - Internal note: upload cleanup core logic is extracted to `cwma/auto/upload_cleanup.py`; app-layer methods now focus on orchestration + logging
 - Internal note: progress panel rendering now uses `cwma/auto/panel_render.py` pure helpers, with `render_progress_snapshot` split into snapshot build, line composition, and signature-gate steps
@@ -384,6 +386,18 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Entry point: imported by `cwma/auto/app.py`
 - Public interface: `HostOpsAdapter`
 - Responsibility: host adapter that encapsulates path/bootstrap validation, lock acquire/release wiring, snapshot/zip/cleanup IO seams, and settings-log row assembly
+
+### `cwma/auto/runtime/host_init_adapter.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `initialize_host_state`
+- Responsibility: host bootstrap adapter that initializes watcher field defaults, scheduler policy, and composed runtime root state in one place
+
+### `cwma/auto/runtime/panel_runtime_adapter.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `detect_panel_capability`, `PanelRuntimeAdapter`
+- Responsibility: panel snapshot/line composition and fixed-panel render I/O adapter consumed by `UiRuntime` callbacks
 
 ### `cwma/auto/runtime/shutdown_runtime.py`
 
