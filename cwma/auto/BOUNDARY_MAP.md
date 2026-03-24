@@ -121,6 +121,11 @@ Responsibilities:
 - `tests/test_auto_maintain_pipeline_runtime_module.py` is the primary suite for maintain step-engine runtime policy (`serial per-job + cross-job pipeline + account-lock conflict`) in the channel/runtime capability.
 - `tests/test_auto_maintain_pipeline_state_module.py` remains the primary suite for maintain pipeline queue state transitions in state capability.
 
+## Stage 4 Test Mapping Update
+
+- `tests/test_auto_upload_stability_module.py` is the primary suite for upload stability-wait freeze behavior (infra/runtime seam) and deferred-next-round intake contract.
+- `tests/test_auto_maintain.py::test_check_and_maybe_upload_queue_merge_replaces_same_path_with_latest_version` covers queue intake merge semantics at host runtime wiring level.
+
 ## Stage 2.6 Test Modules Map (Closeout Completed)
 
 1. `process/channel/infra` runtime and lifecycle seams are mapped to `tests/test_auto_modules_process_channel.py` as the active destination for new coverage in this capability group.

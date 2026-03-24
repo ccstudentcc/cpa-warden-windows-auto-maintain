@@ -37,6 +37,11 @@ Maintain pipeline Stage-3 runtime pieces are now in place:
 - in-process maintain pipeline cycle execution (`run_maintain_pipeline_cycle`) is provided by `cwma/auto/runtime/maintain_pipeline_runtime.py`
 - maintain service execution is now modeled as explicit ordered steps (`scan -> delete_401 -> quota -> reenable -> finalize`) in `cwma/warden/services/maintain.py`
 
+Upload intake Stage-4 stability/queue hardening is now in place:
+
+- stability wait freezes the current candidate batch and defers in-window new/updated rows to next-round intake
+- pending upload queue merge is path-coalesced (`last-writer-wins`) to prevent stale duplicate row versions for the same file path
+
 ## 3. Documentation Architecture
 
 To avoid drift and duplicated maintenance:
@@ -155,6 +160,7 @@ Snapshot consistency contracts:
 - `last_uploaded_snapshot`: uploaded baseline
 
 Pending upload queue is derived from snapshot delta relative to uploaded baseline.
+Stability wait may emit a deferred snapshot buffer; deferred rows are merged back into pending intake after the frozen batch is queued.
 
 ## 9. Configuration Resolution Model
 
@@ -179,6 +185,7 @@ Runtime-local copy:
   - maintain channel
 - Channel lifecycle and retry counters are isolated.
 - Upload runs in serial batches (`UPLOAD_BATCH_SIZE`) with scope files.
+- Upload stability wait uses a frozen-batch model: in-window new/updated rows do not reset the current wait timer; they are deferred to subsequent queue intake.
 - Scheduled maintain is full scope.
 - Post-upload maintain is incremental and derived from completed upload batch names.
 - Maintain queue state keeps a unified Job model for full/incremental and separate step queues (`scan/delete_401/quota/reenable/finalize`).

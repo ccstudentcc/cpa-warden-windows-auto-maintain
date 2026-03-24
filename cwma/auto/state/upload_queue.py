@@ -27,6 +27,45 @@ class UploadMergeResult:
     merged_pending_snapshot: list[str]
 
 
+def parse_upload_snapshot_row(row: str) -> tuple[str, int, int] | None:
+    parts = row.rsplit("|", 2)
+    if len(parts) != 3:
+        return None
+    path, size_text, mtime_text = parts
+    try:
+        size = int(size_text)
+        mtime_ns = int(mtime_text)
+    except ValueError:
+        return None
+    return path, size, mtime_ns
+
+
+def coalesce_upload_snapshot_rows(rows: list[str]) -> list[str]:
+    merged_rows: list[str] = []
+    path_to_index: dict[str, int] = {}
+    raw_row_to_index: dict[str, int] = {}
+    for row in rows:
+        parsed = parse_upload_snapshot_row(row)
+        if parsed is None:
+            existing = raw_row_to_index.get(row)
+            if existing is None:
+                raw_row_to_index[row] = len(merged_rows)
+                merged_rows.append(row)
+                continue
+            merged_rows[existing] = row
+            continue
+
+        path = parsed[0]
+        existing = path_to_index.get(path)
+        if existing is None:
+            path_to_index[path] = len(merged_rows)
+            merged_rows.append(row)
+            continue
+        # Last-writer-wins for the same path to avoid stale duplicate versions in pending queue.
+        merged_rows[existing] = row
+    return merged_rows
+
+
 def clear_upload_queue_state(state: UploadQueueState) -> UploadQueueState:
     return UploadQueueState(
         pending_snapshot=None,
@@ -122,7 +161,9 @@ def merge_pending_upload_snapshot(
     queue_reason: str,
     preserve_retry_state: bool,
 ) -> UploadMergeResult:
-    merged_pending = sorted(set(state.pending_snapshot or []).union(discovered_pending_snapshot))
+    merged_pending = coalesce_upload_snapshot_rows(
+        list(state.pending_snapshot or []) + list(discovered_pending_snapshot)
+    )
     attempt = state.attempt
     retry_due_at = state.retry_due_at
     if (not state.pending_retry) and (not preserve_retry_state):

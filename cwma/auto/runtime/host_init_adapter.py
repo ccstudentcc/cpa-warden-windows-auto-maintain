@@ -45,6 +45,7 @@ def initialize_host_state(
     host.deep_scan_counter = 0
     host.pending_upload_retry = False
     host.pending_source_changes_during_upload = False
+    host.deferred_upload_snapshot_after_stability_wait = []
     host.last_active_upload_deep_scan_at = 0.0
     host.last_json_count = 0
     host.last_zip_signature = tuple()

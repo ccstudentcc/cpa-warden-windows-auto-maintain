@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `results/stage0_baseline_report.md` as the baseline validation/readout record
 - Added maintain pipeline runtime module `cwma/auto/runtime/maintain_pipeline_runtime.py` for step-cycle orchestration (`1 action + 1 scan` pipeline claim policy per cycle).
 - Added maintain pipeline runtime test suite `tests/test_auto_maintain_pipeline_runtime_module.py` covering step-order progression, retry requeue, account-lock conflict handling, and full/incremental shared executor behavior.
+- Added upload stability suite `tests/test_auto_upload_stability_module.py` covering frozen-batch stability wait and deferred next-round intake behavior.
 
 ### Changed
 
@@ -54,6 +55,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Maintain queue state transitions now expose explicit step-level claim/advance/requeue operations in `cwma/auto/state/maintain_queue.py`, including account-lock-aware action-step conflict checks.
 - `cwma/warden/services/maintain.py` now provides an explicit maintain step engine (`scan -> delete_401 -> quota -> reenable -> finalize`) with ordered-step validation via `run_maintain_steps_async`; `run_maintain_async` remains the compatible full-flow entrypoint.
 - Extended `tests/test_warden_maintain_service_module.py` with maintain step-order validation and partial-step execution coverage.
+- Upload stability wait now freezes the current candidate batch and defers in-window new/updated rows to the next queue intake instead of resetting the timer indefinitely.
+- Upload pending queue merge is now path-coalesced (`last-writer-wins`) so active deep-scan intake replaces stale versions of the same file path.
 
 ## [cwma 0.1.0] - 2026-03-23
 

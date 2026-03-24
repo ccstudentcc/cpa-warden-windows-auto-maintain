@@ -10,6 +10,7 @@ from typing import Any, Callable, Protocol
 
 from ..channel.channel_status import CHANNEL_MAINTAIN, CHANNEL_UPLOAD
 from ..infra.process_supervisor import terminate_channel
+from ..state.upload_queue import coalesce_upload_snapshot_rows, parse_upload_snapshot_row
 from .shutdown_runtime import (
     ShutdownRuntimeState,
     current_loop_sleep_seconds as current_loop_sleep_seconds_runtime,
@@ -26,6 +27,7 @@ class LifecycleRuntimeHost(Protocol):
     upload_process: Any
     maintain_process: Any
     stable_snapshot_file: Path
+    deferred_upload_snapshot_after_stability_wait: list[str]
     _windows_console_handler: Any
 
     def instance_label(self) -> str: ...
@@ -128,6 +130,9 @@ class LifecycleRuntimeAdapter:
             active_probe_interval_seconds=self.host.settings.active_probe_interval_seconds,
         )
 
+    def _set_deferred_upload_snapshot_after_stability_wait(self, rows: list[str]) -> None:
+        setattr(self.host, "deferred_upload_snapshot_after_stability_wait", list(rows))
+
     def wait_for_stable_snapshot(
         self,
         baseline_snapshot: list[str],
@@ -136,27 +141,66 @@ class LifecycleRuntimeAdapter:
         build_stable_snapshot: Callable[[], list[str]],
     ) -> tuple[int, list[str] | None]:
         stable_seconds = self.host.settings.upload_stable_wait_seconds
+        self._set_deferred_upload_snapshot_after_stability_wait([])
         if stable_seconds <= 0:
             return 0, baseline_snapshot
 
         poll_seconds = min(2.0, max(0.5, stable_seconds / 4.0))
-        last_change_at = time.time()
-        stable_snapshot = baseline_snapshot
+        stable_started_at = time.time()
+        frozen_snapshot = coalesce_upload_snapshot_rows(list(baseline_snapshot))
+        frozen_by_path: dict[str, str] = {}
+        for row in frozen_snapshot:
+            parsed = parse_upload_snapshot_row(row)
+            if parsed is None:
+                continue
+            frozen_by_path[parsed[0]] = row
+        frozen_paths = set(frozen_by_path.keys())
+        deferred_by_path: dict[str, str] = {}
+        deferred_log_emitted = False
 
         while True:
-            elapsed = time.time() - last_change_at
+            elapsed = time.time() - stable_started_at
             remaining = stable_seconds - elapsed
             if remaining <= 0:
-                return 0, stable_snapshot
+                stable_rows: list[str] = []
+                for row in frozen_snapshot:
+                    parsed = parse_upload_snapshot_row(row)
+                    if parsed is None:
+                        stable_rows.append(row)
+                        continue
+                    if parsed[0] in frozen_by_path:
+                        stable_rows.append(frozen_by_path[parsed[0]])
+                self._set_deferred_upload_snapshot_after_stability_wait(list(deferred_by_path.values()))
+                return 0, stable_rows
 
             if not sleep_with_shutdown(min(poll_seconds, remaining)):
+                self._set_deferred_upload_snapshot_after_stability_wait([])
                 return 130, None
 
-            latest_snapshot = build_stable_snapshot()
-            if latest_snapshot != stable_snapshot:
-                stable_snapshot = latest_snapshot
-                last_change_at = time.time()
+            latest_snapshot = coalesce_upload_snapshot_rows(build_stable_snapshot())
+            latest_by_path: dict[str, str] = {}
+            for row in latest_snapshot:
+                parsed = parse_upload_snapshot_row(row)
+                if parsed is None:
+                    continue
+                latest_by_path[parsed[0]] = row
+
+            for path in list(frozen_by_path.keys()):
+                latest_row = latest_by_path.get(path)
+                if latest_row == frozen_by_path[path]:
+                    continue
+                frozen_by_path.pop(path, None)
+                if latest_row is not None:
+                    deferred_by_path[path] = latest_row
+
+            for path, latest_row in latest_by_path.items():
+                if path in frozen_paths:
+                    continue
+                deferred_by_path[path] = latest_row
+
+            if deferred_by_path and not deferred_log_emitted:
+                deferred_log_emitted = True
                 self.log(
                     "Detected additional JSON changes during stability wait. "
-                    f"Reset timer to {stable_seconds}s."
+                    "Frozen current batch; deferred new versions to next queue intake."
                 )

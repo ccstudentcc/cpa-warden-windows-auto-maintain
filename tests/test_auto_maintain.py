@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
@@ -744,6 +745,42 @@ class AutoMaintainTests(unittest.TestCase):
                 skip_stability_wait=True,
                 queue_reason="active-upload source changes",
             )
+
+    def test_check_and_maybe_upload_queue_merge_replaces_same_path_with_latest_version(self) -> None:
+        base = (Path.cwd() / ".tmp_unittest_temp" / f"stage4_queue_merge_{time.time_ns()}").resolve()
+        auth_dir = base / "auth"
+        try:
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+
+            row_old = f"{auth_dir / 'a.json'}|10|100"
+            row_new = f"{auth_dir / 'a.json'}|11|120"
+            row_b = f"{auth_dir / 'b.json'}|1|1"
+            maintainer.pending_upload_snapshot = [row_old]
+            maintainer.pending_upload_reason = "detected JSON changes"
+
+            with mock.patch.object(
+                maintainer,
+                "build_snapshot",
+                return_value=[row_new, row_b],
+            ), mock.patch.object(
+                maintainer,
+                "read_snapshot",
+                return_value=[],
+            ):
+                result = maintainer.check_and_maybe_upload(
+                    force_deep_scan=True,
+                    preserve_retry_state=True,
+                    skip_stability_wait=True,
+                    queue_reason="active-upload source changes",
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(maintainer.pending_upload_snapshot, [row_new, row_b])
+            self.assertEqual(maintainer.pending_upload_reason, "active-upload source changes")
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
 
     def test_poll_upload_process_runs_forced_check_after_active_upload_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

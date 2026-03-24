@@ -28,6 +28,7 @@ class UploadRuntimeHost(Protocol):
     pending_upload_retry: bool
     pending_upload_snapshot: UploadSnapshot | None
     pending_source_changes_during_upload: bool
+    deferred_upload_snapshot_after_stability_wait: UploadSnapshot
     pending_upload_reason: str | None
     deep_scan_counter: int
     last_json_count: int
@@ -77,6 +78,30 @@ class UploadRuntimeAdapter:
         self.get_run_active_upload_probe_cycle = get_run_active_upload_probe_cycle
         self.log = log
 
+    def _consume_deferred_upload_snapshot_after_stability_wait(self) -> UploadSnapshot:
+        deferred_rows = list(getattr(self.host, "deferred_upload_snapshot_after_stability_wait", []) or [])
+        self.host.deferred_upload_snapshot_after_stability_wait = []
+        return deferred_rows
+
+    def _merge_discovered_pending_upload_snapshot(
+        self,
+        *,
+        discovered_pending_snapshot: UploadSnapshot,
+        queue_reason: str,
+        preserve_retry_state: bool,
+    ) -> list[str]:
+        merge_result = merge_pending_upload_snapshot(
+            state=self.host._upload_queue_state(),
+            discovered_pending_snapshot=discovered_pending_snapshot,
+            queue_reason=queue_reason,
+            preserve_retry_state=preserve_retry_state,
+        )
+        self.host._apply_upload_queue_state(merge_result.state)
+        merged_pending = merge_result.merged_pending_snapshot
+        self.log(f"Upload batch queued. pending={len(merged_pending)}")
+        self.host.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_PENDING, force_render=True)
+        return merged_pending
+
     def _current_upload_scan_inputs(self) -> tuple[int, ZipSignature]:
         current_json_count = self.host.get_json_count()
         current_zip_signature = self.host.get_zip_signature() if self.host.settings.inspect_zip_files else tuple()
@@ -124,12 +149,15 @@ class UploadRuntimeAdapter:
         skip_stability_wait: bool,
     ) -> tuple[int, UploadSnapshot | None]:
         if skip_stability_wait:
+            self.host.deferred_upload_snapshot_after_stability_wait = []
             return 0, current_snapshot
         self.log(f"Detected JSON changes. Waiting {self.host.settings.upload_stable_wait_seconds}s for stability...")
         stable_wait_exit, stable_snapshot = self.host.wait_for_stable_snapshot(current_snapshot)
         if stable_wait_exit != 0:
+            self.host.deferred_upload_snapshot_after_stability_wait = []
             return stable_wait_exit, None
         if stable_snapshot is None:
+            self.host.deferred_upload_snapshot_after_stability_wait = []
             return 130, None
         return 0, stable_snapshot
 
@@ -184,6 +212,19 @@ class UploadRuntimeAdapter:
             json_count=len(stable_snapshot),
             zip_signature=current_zip_signature,
         )
+        deferred_snapshot = self._consume_deferred_upload_snapshot_after_stability_wait()
+        if deferred_snapshot:
+            self.log(
+                "Queued deferred changes observed during stability wait. "
+                f"pending_additions={len(deferred_snapshot)}"
+            )
+            self._merge_discovered_pending_upload_snapshot(
+                discovered_pending_snapshot=deferred_snapshot,
+                queue_reason="stability-wait deferred changes",
+                preserve_retry_state=preserve_retry_state,
+            )
+            return 0
+
         if self.host.pending_upload_snapshot is None:
             self.host.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_IDLE, done=0, total=0, force_render=True)
         return 0
@@ -195,16 +236,19 @@ class UploadRuntimeAdapter:
         queue_reason: str,
         preserve_retry_state: bool,
     ) -> int:
-        merge_result = merge_pending_upload_snapshot(
-            state=self.host._upload_queue_state(),
-            discovered_pending_snapshot=pending_snapshot,
+        deferred_snapshot = self._consume_deferred_upload_snapshot_after_stability_wait()
+        if deferred_snapshot:
+            self.log(
+                "Queued deferred changes observed during stability wait. "
+                f"pending_additions={len(deferred_snapshot)}"
+            )
+        discovered_snapshot = list(pending_snapshot)
+        discovered_snapshot.extend(deferred_snapshot)
+        self._merge_discovered_pending_upload_snapshot(
+            discovered_pending_snapshot=discovered_snapshot,
             queue_reason=queue_reason,
             preserve_retry_state=preserve_retry_state,
         )
-        self.host._apply_upload_queue_state(merge_result.state)
-        merged_pending = merge_result.merged_pending_snapshot
-        self.log(f"Upload batch queued. pending={len(merged_pending)}")
-        self.host.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_PENDING, force_render=True)
         return 0
 
     def check_and_maybe_upload(
