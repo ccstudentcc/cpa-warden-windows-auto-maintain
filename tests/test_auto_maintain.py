@@ -541,7 +541,8 @@ class AutoMaintainTests(unittest.TestCase):
 
             self.assertEqual(result, 0)
             self.assertIsNotNone(maintainer.maintain_process)
-            self.assertTrue(maintainer.pending_maintain)
+            # All incremental names were consumed into the started scope, so queue pending clears.
+            self.assertFalse(maintainer.pending_maintain)
             self.assertIsNone(maintainer.last_incremental_defer_reason)
             self.assertEqual(popen.call_count, 1)
 

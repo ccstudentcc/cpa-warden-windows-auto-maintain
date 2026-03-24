@@ -139,17 +139,23 @@ class AutoMaintainer:
                     **kwargs,
                     poll_channel_exit_impl=poll_inprocess_channel_exit,
                 )
+            get_start_maintain_channel = lambda: start_maintain
+            get_start_upload_channel = lambda: start_upload
+            get_poll_maintain_channel = lambda: poll_maintain
+            get_poll_upload_channel = lambda: poll_upload
         else:
-            start_maintain = start_maintain_channel
-            start_upload = start_upload_channel
-            poll_maintain = poll_maintain_channel
-            poll_upload = poll_upload_channel
+            # Resolve these callables lazily so unittest patching of module symbols
+            # (for example `auto_maintain.start_upload_channel`) keeps working.
+            get_start_maintain_channel = lambda: start_maintain_channel
+            get_start_upload_channel = lambda: start_upload_channel
+            get_poll_maintain_channel = lambda: poll_maintain_channel
+            get_poll_upload_channel = lambda: poll_upload_channel
         self.channel_runtime_adapter = ChannelRuntimeAdapter(
             host=self,
-            get_start_maintain_channel=lambda: start_maintain,
-            get_start_upload_channel=lambda: start_upload,
-            get_poll_maintain_channel=lambda: poll_maintain,
-            get_poll_upload_channel=lambda: poll_upload,
+            get_start_maintain_channel=get_start_maintain_channel,
+            get_start_upload_channel=get_start_upload_channel,
+            get_poll_maintain_channel=get_poll_maintain_channel,
+            get_poll_upload_channel=get_poll_upload_channel,
             get_build_child_process_env=lambda: build_child_process_env,
             get_monotonic=lambda: time.monotonic,
             get_popen_factory=lambda: subprocess.Popen,

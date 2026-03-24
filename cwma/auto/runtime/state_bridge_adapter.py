@@ -13,6 +13,7 @@ from ..state.maintain_queue import (
 )
 from ..state.runtime_state import (
     build_composed_maintain_runtime_state,
+    build_maintain_queue_state,
     build_maintain_runtime_state,
     build_upload_queue_state,
     unpack_maintain_runtime_state,
@@ -91,7 +92,24 @@ class StateBridgeAdapter:
         )
 
     def maintain_queue_state(self) -> MaintainQueueState:
-        return self.host.runtime.maintain.queue
+        runtime_queue = self.host.runtime.maintain.queue
+        has_pipeline_jobs = bool(runtime_queue.pipeline.jobs)
+        has_pipeline_queues = any(
+            (
+                runtime_queue.pipeline.maintain_scan_queue,
+                runtime_queue.pipeline.maintain_delete_401_queue,
+                runtime_queue.pipeline.maintain_quota_queue,
+                runtime_queue.pipeline.maintain_reenable_queue,
+                runtime_queue.pipeline.maintain_finalize_queue,
+            )
+        )
+        if has_pipeline_jobs or has_pipeline_queues:
+            return runtime_queue
+        return build_maintain_queue_state(
+            pending=self.host.pending_maintain,
+            reason=self.host.pending_maintain_reason,
+            names=None if self.host.pending_maintain_names is None else set(self.host.pending_maintain_names),
+        )
 
     def apply_maintain_queue_state(self, state: MaintainQueueState) -> None:
         self.host.pending_maintain = state.pending
