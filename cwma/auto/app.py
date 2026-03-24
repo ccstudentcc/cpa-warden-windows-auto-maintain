@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Callable, Iterable, TextIO
 
 from .config import Settings, load_settings as load_auto_settings
-from .active_probe import ActiveUploadProbeState, decide_active_upload_probe
 from .channel_status import (
     CHANNEL_MAINTAIN,
     CHANNEL_UPLOAD,
@@ -126,6 +125,7 @@ from .runtime.upload_scan_runtime import (
     run_active_upload_probe_cycle,
     run_upload_scan_cycle,
 )
+from .runtime.upload_runtime_adapter import UploadRuntimeAdapter
 from .runtime.watch_runtime import (
     WatchRuntimeDeps,
     WatchRuntimeState,
@@ -151,11 +151,7 @@ from .zip_intake import (
 from .upload_queue import (
     UploadQueueState,
     decide_upload_start,
-    mark_upload_no_changes,
-    mark_upload_no_pending_discovered,
-    merge_pending_upload_snapshot,
 )
-from .upload_scan_cadence import decide_upload_deep_scan
 from .upload_postprocess import (
     UploadSuccessPostProcessResult,
     build_upload_success_postprocess,
@@ -325,6 +321,13 @@ class AutoMaintainer:
             ),
             render_panel=self.render_fixed_panel,
             output_lock_factory=lambda: self.output_lock,
+        )
+        self.upload_runtime_adapter = UploadRuntimeAdapter(
+            host=self,
+            compute_pending_upload_snapshot=compute_pending_upload_snapshot_rows,
+            get_run_upload_scan_cycle=lambda: run_upload_scan_cycle,
+            get_run_active_upload_probe_cycle=lambda: run_active_upload_probe_cycle,
+            log=log,
         )
 
     def ensure_paths(self) -> None:
@@ -1584,70 +1587,7 @@ class AutoMaintainer:
         )
 
     def probe_changes_during_active_upload(self) -> int:
-        def _collect_inputs() -> tuple[int, tuple[str, ...] | None, float]:
-            current_json_count = self.get_json_count()
-            current_zip_signature: tuple[str, ...] | None = None
-            if self.settings.inspect_zip_files:
-                current_zip_signature = self.get_zip_signature()
-            return current_json_count, current_zip_signature, time.monotonic()
-
-        def _decide(
-            *,
-            current_json_count: int,
-            current_zip_signature: tuple[str, ...] | None,
-            now_monotonic: float,
-        ):
-            return decide_active_upload_probe(
-                state=ActiveUploadProbeState(
-                    pending_source_changes=self.pending_source_changes_during_upload,
-                    last_json_count=self.last_json_count,
-                    last_zip_signature=self.last_zip_signature,
-                    last_deep_scan_at=self.last_active_upload_deep_scan_at,
-                ),
-                upload_running=True,
-                current_json_count=current_json_count,
-                inspect_zip_files=self.settings.inspect_zip_files,
-                current_zip_signature=current_zip_signature,
-                now_monotonic=now_monotonic,
-                deep_scan_interval_seconds=self.settings.active_upload_deep_scan_interval_seconds,
-            )
-
-        def _apply_state(*, decision) -> None:
-            self.pending_source_changes_during_upload = decision.state.pending_source_changes
-            self.last_json_count = decision.state.last_json_count
-            self.last_zip_signature = decision.state.last_zip_signature
-            self.last_active_upload_deep_scan_at = decision.state.last_deep_scan_at
-            self.runtime.upload.pending_source_changes_during_upload = self.pending_source_changes_during_upload
-            self.runtime.upload.last_active_upload_deep_scan_at = self.last_active_upload_deep_scan_at
-            self.runtime.snapshot.last_json_count = self.last_json_count
-            self.runtime.snapshot.last_zip_signature = self.last_zip_signature
-
-        def _log_if_needed(*, decision) -> None:
-            if not decision.should_log_detection:
-                return
-            log(
-                "Detected source changes during active upload ("
-                + ",".join(decision.changed_reasons)
-                + "). Will trigger immediate deep upload check after batch completion."
-            )
-
-        def _refresh_queue() -> int:
-            log("Refreshing upload queue immediately during active upload.")
-            return self.check_and_maybe_upload(
-                force_deep_scan=True,
-                preserve_retry_state=True,
-                skip_stability_wait=True,
-                queue_reason="active-upload source changes",
-            )
-
-        return run_active_upload_probe_cycle(
-            upload_running=self.upload_process is not None,
-            collect_active_upload_probe_inputs=_collect_inputs,
-            decide_active_upload_probe=_decide,
-            apply_active_upload_probe_state=_apply_state,
-            log_active_upload_source_change_if_needed=_log_if_needed,
-            refresh_upload_queue_during_active_upload=_refresh_queue,
-        )
+        return self.upload_runtime_adapter.probe_changes_during_active_upload()
 
     def handle_failure(self, stage: str, code: int) -> bool:
         log(f"{stage} failed with exit {code}.")
@@ -1667,144 +1607,11 @@ class AutoMaintainer:
         skip_stability_wait: bool = False,
         queue_reason: str = "detected JSON changes",
     ) -> int:
-        def _current_upload_scan_inputs() -> tuple[int, tuple[str, ...]]:
-            current_json_count = self.get_json_count()
-            current_zip_signature = self.get_zip_signature() if self.settings.inspect_zip_files else tuple()
-            return current_json_count, current_zip_signature
-
-        def _should_run_upload_deep_scan(
-            *,
-            force_deep_scan: bool,
-            current_json_count: int,
-            current_zip_signature: tuple[str, ...],
-        ) -> bool:
-            cadence = decide_upload_deep_scan(
-                force_deep_scan=force_deep_scan,
-                pending_upload_retry=self.pending_upload_retry,
-                current_json_count=current_json_count,
-                last_json_count=self.last_json_count,
-                inspect_zip_files=self.settings.inspect_zip_files,
-                current_zip_signature=current_zip_signature,
-                last_zip_signature=self.last_zip_signature,
-                deep_scan_counter=self.deep_scan_counter,
-                deep_scan_interval_loops=self.settings.deep_scan_interval_loops,
-            )
-            self.deep_scan_counter = cadence.next_deep_scan_counter
-            self.runtime.upload.deep_scan_counter = self.deep_scan_counter
-            return cadence.should_deep_scan
-
-        def _refresh_upload_scan_inputs_after_zip_if_needed(
-            *,
-            current_json_count: int,
-            current_zip_signature: tuple[str, ...],
-        ) -> tuple[int, tuple[str, ...]]:
-            if not self.settings.inspect_zip_files:
-                return current_json_count, current_zip_signature
-            zip_changed = self.inspect_zip_archives()
-            if not zip_changed:
-                return current_json_count, current_zip_signature
-            return self.get_json_count(), self.get_zip_signature()
-
-        def _resolve_stable_upload_snapshot(
-            *,
-            current_snapshot: list[str],
-            skip_stability_wait: bool,
-        ) -> tuple[int, list[str] | None]:
-            if skip_stability_wait:
-                return 0, current_snapshot
-            log(f"Detected JSON changes. Waiting {self.settings.upload_stable_wait_seconds}s for stability...")
-            stable_wait_exit, stable_snapshot = self.wait_for_stable_snapshot(current_snapshot)
-            if stable_wait_exit != 0:
-                return stable_wait_exit, None
-            if stable_snapshot is None:
-                return 130, None
-            return 0, stable_snapshot
-
-        def _record_upload_scan_baseline(
-            *,
-            snapshot: list[str],
-            json_count: int,
-            zip_signature: tuple[str, ...],
-        ) -> None:
-            self.write_snapshot(self.stable_snapshot_file, snapshot)
-            self.last_json_count = json_count
-            if self.settings.inspect_zip_files:
-                self.last_zip_signature = zip_signature
-            self.runtime.snapshot.last_json_count = self.last_json_count
-            self.runtime.snapshot.last_zip_signature = self.last_zip_signature
-
-        def _handle_upload_no_changes_detected(
-            *,
-            current_snapshot: list[str],
-            current_json_count: int,
-            current_zip_signature: tuple[str, ...],
-            preserve_retry_state: bool,
-        ) -> int:
-            _record_upload_scan_baseline(
-                snapshot=current_snapshot,
-                json_count=current_json_count,
-                zip_signature=current_zip_signature,
-            )
-            state = mark_upload_no_changes(
-                state=self._upload_queue_state(),
-                preserve_retry_state=preserve_retry_state,
-            )
-            self._apply_upload_queue_state(state)
-            return 0
-
-        def _handle_upload_no_pending_discovered(
-            *,
-            stable_snapshot: list[str],
-            current_zip_signature: tuple[str, ...],
-            preserve_retry_state: bool,
-        ) -> int:
-            state = mark_upload_no_pending_discovered(
-                state=self._upload_queue_state(),
-                preserve_retry_state=preserve_retry_state,
-            )
-            self._apply_upload_queue_state(state)
-            _record_upload_scan_baseline(
-                snapshot=stable_snapshot,
-                json_count=len(stable_snapshot),
-                zip_signature=current_zip_signature,
-            )
-            if self.pending_upload_snapshot is None:
-                self.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_IDLE, done=0, total=0, force_render=True)
-            return 0
-
-        def _queue_pending_upload_snapshot(
-            *,
-            pending_snapshot: list[str],
-            queue_reason: str,
-            preserve_retry_state: bool,
-        ) -> int:
-            merge_result = merge_pending_upload_snapshot(
-                state=self._upload_queue_state(),
-                discovered_pending_snapshot=pending_snapshot,
-                queue_reason=queue_reason,
-                preserve_retry_state=preserve_retry_state,
-            )
-            self._apply_upload_queue_state(merge_result.state)
-            merged_pending = merge_result.merged_pending_snapshot
-            log(f"Upload batch queued. pending={len(merged_pending)}")
-            self.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_PENDING, force_render=True)
-            return 0
-
-        return run_upload_scan_cycle(
+        return self.upload_runtime_adapter.check_and_maybe_upload(
             force_deep_scan=force_deep_scan,
             preserve_retry_state=preserve_retry_state,
             skip_stability_wait=skip_stability_wait,
             queue_reason=queue_reason,
-            current_upload_scan_inputs=_current_upload_scan_inputs,
-            should_run_upload_deep_scan=_should_run_upload_deep_scan,
-            refresh_upload_scan_inputs_after_zip_if_needed=_refresh_upload_scan_inputs_after_zip_if_needed,
-            build_current_snapshot=lambda: self.build_snapshot(self.current_snapshot_file),
-            read_last_uploaded_snapshot=lambda: self.read_snapshot(self.last_uploaded_snapshot_file),
-            handle_upload_no_changes_detected=_handle_upload_no_changes_detected,
-            resolve_stable_upload_snapshot=_resolve_stable_upload_snapshot,
-            compute_pending_upload_snapshot=compute_pending_upload_snapshot_rows,
-            handle_upload_no_pending_discovered=_handle_upload_no_pending_discovered,
-            queue_pending_upload_snapshot=_queue_pending_upload_snapshot,
         )
 
 
