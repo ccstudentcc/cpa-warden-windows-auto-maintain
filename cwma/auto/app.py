@@ -35,6 +35,10 @@ from .infra.process_output import (
     decode_child_output_line as decode_process_output_line,
     should_log_child_alert_line as should_log_process_alert_line,
 )
+from .infra.inprocess_supervisor import (
+    poll_channel_exit as poll_inprocess_channel_exit,
+    start_channel as start_inprocess_channel,
+)
 from .ui.progress_parser import parse_progress_line
 from .runtime.shutdown_runtime import sleep_between_watch_cycles as sleep_between_watch_cycles_runtime
 from .runtime.channel_runtime import (
@@ -111,12 +115,41 @@ class AutoMaintainer:
             get_run_active_upload_probe_cycle=lambda: run_active_upload_probe_cycle,
             log=log,
         )
+        if settings.inprocess_execution_enabled:
+            def start_maintain(**kwargs: object) -> object:
+                return start_maintain_channel(
+                    **kwargs,
+                    start_channel_impl=start_inprocess_channel,
+                )
+
+            def start_upload(**kwargs: object) -> object:
+                return start_upload_channel(
+                    **kwargs,
+                    start_channel_impl=start_inprocess_channel,
+                )
+
+            def poll_maintain(**kwargs: object) -> object:
+                return poll_maintain_channel(
+                    **kwargs,
+                    poll_channel_exit_impl=poll_inprocess_channel_exit,
+                )
+
+            def poll_upload(**kwargs: object) -> object:
+                return poll_upload_channel(
+                    **kwargs,
+                    poll_channel_exit_impl=poll_inprocess_channel_exit,
+                )
+        else:
+            start_maintain = start_maintain_channel
+            start_upload = start_upload_channel
+            poll_maintain = poll_maintain_channel
+            poll_upload = poll_upload_channel
         self.channel_runtime_adapter = ChannelRuntimeAdapter(
             host=self,
-            get_start_maintain_channel=lambda: start_maintain_channel,
-            get_start_upload_channel=lambda: start_upload_channel,
-            get_poll_maintain_channel=lambda: poll_maintain_channel,
-            get_poll_upload_channel=lambda: poll_upload_channel,
+            get_start_maintain_channel=lambda: start_maintain,
+            get_start_upload_channel=lambda: start_upload,
+            get_poll_maintain_channel=lambda: poll_maintain,
+            get_poll_upload_channel=lambda: poll_upload,
             get_build_child_process_env=lambda: build_child_process_env,
             get_monotonic=lambda: time.monotonic,
             get_popen_factory=lambda: subprocess.Popen,

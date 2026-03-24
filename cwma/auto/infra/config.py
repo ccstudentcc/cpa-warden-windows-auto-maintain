@@ -58,6 +58,7 @@ class Settings:
     continue_on_command_failure: bool
     allow_multi_instance: bool
     run_once: bool
+    inprocess_execution_enabled: bool = False
 
 
 def load_watch_config(path: Path) -> dict[str, object]:
@@ -424,4 +425,13 @@ def load_settings(
             pick_setting("ALLOW_MULTI_INSTANCE", watch_config_data, "allow_multi_instance", False),
         ),
         run_once=bool(args.once),
+        inprocess_execution_enabled=parse_bool_value(
+            "INPROCESS_EXECUTION_ENABLED",
+            pick_setting(
+                "INPROCESS_EXECUTION_ENABLED",
+                watch_config_data,
+                "inprocess_execution_enabled",
+                False,
+            ),
+        ),
     )

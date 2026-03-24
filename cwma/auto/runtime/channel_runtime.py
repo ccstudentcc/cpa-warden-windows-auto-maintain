@@ -17,7 +17,8 @@ from ..channel.channel_lifecycle import (
 )
 from ..channel.channel_status import CHANNEL_MAINTAIN, CHANNEL_UPLOAD, STATUS_FAILED, STATUS_RETRY, STATUS_SUCCESS
 from ..state.maintain_queue import MaintainRuntimeState
-from ..infra.process_supervisor import poll_channel_exit, start_channel
+from ..infra.process_supervisor import poll_channel_exit as poll_subprocess_channel_exit
+from ..infra.process_supervisor import start_channel as start_subprocess_channel
 from ..state.upload_queue import UploadQueueState
 
 StateT = TypeVar("StateT")
@@ -107,6 +108,7 @@ def _start_channel_flow(
     mark_channel_running: Callable[[str], None] | None = None,
     now_monotonic: float | None = None,
     popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
+    start_channel_impl: Callable[..., object] = start_subprocess_channel,
 ) -> StartResultT:
     captured_exc: Exception | None = None
 
@@ -115,7 +117,7 @@ def _start_channel_flow(
         captured_exc = exc
         return 1
 
-    start_result = start_channel(
+    start_result = start_channel_impl(
         channel=channel,
         command=command,
         cwd=cwd,
@@ -157,8 +159,9 @@ def _poll_channel_flow(
     decide_process_exit: Callable[..., _ProcessExitDecision[StateT]],
     build_result: Callable[[subprocess.Popen | None, StateT, bool, int | None, str | None, int], PollResultT],
     now_monotonic: float | None = None,
+    poll_channel_exit_impl: Callable[..., object] = poll_subprocess_channel_exit,
 ) -> PollResultT:
-    poll_result = poll_channel_exit(process=process)
+    poll_result = poll_channel_exit_impl(process=process)
     if not poll_result.exited:
         return build_result(poll_result.process, state, False, None, None, 0)
 
@@ -196,6 +199,7 @@ def start_maintain_channel(
     mark_channel_running: Callable[[str], None] | None = None,
     now_monotonic: float | None = None,
     popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
+    start_channel_impl: Callable[..., object] = start_subprocess_channel,
 ) -> MaintainStartFlowResult:
     """Start maintain channel and apply start-error retry policy on failure."""
 
@@ -223,6 +227,7 @@ def start_maintain_channel(
         mark_channel_running=mark_channel_running,
         now_monotonic=now_monotonic,
         popen_factory=popen_factory,
+        start_channel_impl=start_channel_impl,
     )
 
 
@@ -240,6 +245,7 @@ def start_upload_channel(
     mark_channel_running: Callable[[str], None] | None = None,
     now_monotonic: float | None = None,
     popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
+    start_channel_impl: Callable[..., object] = start_subprocess_channel,
 ) -> UploadStartFlowResult:
     """Start upload channel and apply start-error retry policy on failure."""
 
@@ -267,6 +273,7 @@ def start_upload_channel(
         mark_channel_running=mark_channel_running,
         now_monotonic=now_monotonic,
         popen_factory=popen_factory,
+        start_channel_impl=start_channel_impl,
     )
 
 
@@ -278,6 +285,7 @@ def poll_maintain_channel(
     retry_count: int,
     retry_delay_seconds: int,
     now_monotonic: float | None = None,
+    poll_channel_exit_impl: Callable[..., object] = poll_subprocess_channel_exit,
 ) -> MaintainPollFlowResult:
     """Poll maintain process and apply maintain exit-lifecycle decision logic."""
 
@@ -299,6 +307,7 @@ def poll_maintain_channel(
             )
         ),
         now_monotonic=now_monotonic,
+        poll_channel_exit_impl=poll_channel_exit_impl,
     )
 
 
@@ -310,6 +319,7 @@ def poll_upload_channel(
     retry_count: int,
     retry_delay_seconds: int,
     now_monotonic: float | None = None,
+    poll_channel_exit_impl: Callable[..., object] = poll_subprocess_channel_exit,
 ) -> UploadPollFlowResult:
     """Poll upload process and apply upload exit-lifecycle decision logic."""
 
@@ -331,6 +341,7 @@ def poll_upload_channel(
             )
         ),
         now_monotonic=now_monotonic,
+        poll_channel_exit_impl=poll_channel_exit_impl,
     )
 
 

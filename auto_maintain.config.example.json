@@ -32,6 +32,7 @@
   "upload_retry_count": 1,
   "command_retry_delay_seconds": 20,
   "continue_on_command_failure": false,
+  "inprocess_execution_enabled": false,
   "allow_multi_instance": false,
   "inspect_zip_files": true,
   "auto_extract_zip_json": true,
