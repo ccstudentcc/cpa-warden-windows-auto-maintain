@@ -62,6 +62,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Corrected default Bandizip path spelling in optimized launcher profile
 - `start_auto_maintain_optimized.bat` now bootstraps and uses `auto_maintain.config.json` instead of hardcoding watcher env values
 - Watcher setting resolution now follows: environment variables > watch config JSON > built-in defaults
+- Stage-2.6 capability test mapping closeout completed: retired `tests/test_auto_modules.py`, aligned architecture/boundary docs to split suites, and updated regression commands to run only `process_channel` / `state` / `ui` modules
 
 ## [0.2.0] - 2026-03-09
 

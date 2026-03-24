@@ -103,7 +103,9 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
 - `start_auto_maintain_optimized.bat`: tuned profile for production-like unattended runs
 - `auto_maintain.config.example.json`: watcher profile template
 - `tests/test_auto_maintain.py`: regression tests for scheduling and file lifecycle behavior
-- `tests/test_auto_modules.py`: module-level tests for extracted `config` / `locking` / `dashboard` / `process_output` / `progress_parser` / `output_pump` / `zip_intake` / `process_runner` helpers
+- `tests/test_auto_modules_process_channel.py`: module-level tests for process/channel/infra seams (`config` / `locking` / `process_output` / `output_pump` / `zip_intake` / `process_runner` / channel lifecycle helpers)
+- `tests/test_auto_modules_state.py`: module-level tests for state seams (`maintain_queue` / `upload_queue` / `runtime_state` / `state_models` / `snapshots` / `scope_files` / cadence/postprocess helpers)
+- `tests/test_auto_modules_ui.py`: module-level tests for UI seams (`dashboard` / `progress_parser` / `panel_snapshot` / `panel_render` / `ui_runtime`)
 
 ## Requirements
 

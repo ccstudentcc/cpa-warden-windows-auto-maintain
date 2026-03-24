@@ -14,10 +14,49 @@ from cwma.auto.panel_render import (
     should_skip_render_by_signature_gate,
 )
 from cwma.auto.panel_snapshot import build_panel_snapshot
+from cwma.auto.progress_parser import parse_progress_line
 from cwma.auto.ui_runtime import UiRuntime, UiRuntimeState as UiPanelRuntimeState
 
 
 class AutoModuleUiTests(unittest.TestCase):
+    def test_parse_progress_line_upload_candidate_total(self) -> None:
+        result = parse_progress_line(
+            channel="upload",
+            text="上传候选文件数: 19",
+            current_upload_total=0,
+            should_log_alert_line=lambda _text: False,
+        )
+        self.assertEqual(len(result.updates), 1)
+        update = result.updates[0]
+        self.assertEqual(update.channel, "upload")
+        self.assertEqual(update.stage, "scan")
+        self.assertEqual(update.total, 19)
+        self.assertFalse(result.should_log_alert)
+
+    def test_parse_progress_line_maintain_probe_candidates(self) -> None:
+        result = parse_progress_line(
+            channel="maintain",
+            text="开始并发探测 wham/usage: candidates=88 workers=50",
+            current_upload_total=0,
+            should_log_alert_line=lambda _text: False,
+        )
+        self.assertEqual(len(result.updates), 1)
+        update = result.updates[0]
+        self.assertEqual(update.channel, "maintain")
+        self.assertEqual(update.stage, "probe")
+        self.assertEqual(update.total, 88)
+        self.assertTrue(update.force_render)
+
+    def test_parse_progress_line_alert_passthrough(self) -> None:
+        result = parse_progress_line(
+            channel="maintain",
+            text="request failed with status 500",
+            current_upload_total=0,
+            should_log_alert_line=lambda text: "failed" in text,
+        )
+        self.assertEqual(result.updates, ())
+        self.assertTrue(result.should_log_alert)
+
     def test_ui_runtime_on_stage_update_updates_progress_and_renders(self) -> None:
         rendered: list[list[str]] = []
         state = UiPanelRuntimeState()

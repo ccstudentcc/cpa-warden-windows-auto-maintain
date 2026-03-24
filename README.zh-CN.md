@@ -103,7 +103,9 @@
 - `start_auto_maintain_optimized.bat`：生产化参数模板
 - `auto_maintain.config.example.json`：watcher 配置模板
 - `tests/test_auto_maintain.py`：调度与文件生命周期回归测试
-- `tests/test_auto_modules.py`：`config` / `locking` / `dashboard` / `process_output` / `progress_parser` / `output_pump` / `zip_intake` / `process_runner` 抽取模块级测试
+- `tests/test_auto_modules_process_channel.py`：process/channel/infra 边界模块级测试（`config` / `locking` / `process_output` / `output_pump` / `zip_intake` / `process_runner` / channel 生命周期辅助）
+- `tests/test_auto_modules_state.py`：state 边界模块级测试（`maintain_queue` / `upload_queue` / `runtime_state` / `state_models` / `snapshots` / `scope_files` / cadence/postprocess 辅助）
+- `tests/test_auto_modules_ui.py`：ui 边界模块级测试（`dashboard` / `progress_parser` / `panel_snapshot` / `panel_render` / `ui_runtime`）
 
 ## 环境要求
 
