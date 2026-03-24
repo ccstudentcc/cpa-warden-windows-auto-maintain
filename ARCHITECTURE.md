@@ -31,6 +31,11 @@ As of `2026-03-24`, `cwma/auto` uses capability-oriented package boundaries:
 - `runtime` (host adapters)
 
 The old redundant top-level `cwma/auto/*.py` compatibility wrappers were removed after migration.
+Maintain pipeline Stage-3 runtime pieces are now in place:
+
+- step-level claim/advance/requeue transitions are implemented in `cwma/auto/state/maintain_queue.py`
+- in-process maintain pipeline cycle execution (`run_maintain_pipeline_cycle`) is provided by `cwma/auto/runtime/maintain_pipeline_runtime.py`
+- maintain service execution is now modeled as explicit ordered steps (`scan -> delete_401 -> quota -> reenable -> finalize`) in `cwma/warden/services/maintain.py`
 
 ## 3. Documentation Architecture
 
@@ -176,8 +181,11 @@ Runtime-local copy:
 - Upload runs in serial batches (`UPLOAD_BATCH_SIZE`) with scope files.
 - Scheduled maintain is full scope.
 - Post-upload maintain is incremental and derived from completed upload batch names.
-- Maintain queue state now keeps a unified Job model for full/incremental and separate step queues;
-  Stage-2 currently drives start decisions from the `scan` queue while preserving legacy pending projections.
+- Maintain queue state keeps a unified Job model for full/incremental and separate step queues (`scan/delete_401/quota/reenable/finalize`).
+- Maintain step engine enforces serial order per job and supports cross-job pipeline concurrency:
+  - one action-stage job can run while another job runs scan
+  - action-stage claim respects account-name locks to avoid conflicting side effects
+- Full and incremental maintain jobs share the same step engine and transition rules.
 - Smart scheduler adapts upload/maintain batching and incremental maintain deferral under backlog pressure.
 - Smart scheduler uses backlog-sensitive mode switching:
   - lower backlog: smaller slices to improve upload/maintain interleaving responsiveness
@@ -210,6 +218,11 @@ Stage-2.6 split suites:
 - `tests/test_auto_modules_state.py`
 - `tests/test_auto_modules_ui.py`
 
+Maintain pipeline runtime suites:
+
+- `tests/test_auto_maintain_pipeline_state_module.py`
+- `tests/test_auto_maintain_pipeline_runtime_module.py`
+
 Orchestration-specific suites:
 
 - `tests/test_startup_flow_module.py`
@@ -218,6 +231,7 @@ Orchestration-specific suites:
 CPA domain split suites:
 
 - `tests/test_warden_*_module.py` files (CLI/config/models/api/db/services/exports/interactive/runtime_ops)
+- maintain service step-engine behavior is covered in `tests/test_warden_maintain_service_module.py`
 
 ## 13. Architecture Change Checklist
 

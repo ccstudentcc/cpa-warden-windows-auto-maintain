@@ -3,7 +3,15 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from cwma.warden.services.maintain import run_maintain_async
+from cwma.warden.services.maintain import (
+    MAINTAIN_STEP_DELETE_401,
+    MAINTAIN_STEP_FINALIZE,
+    MAINTAIN_STEP_QUOTA,
+    MAINTAIN_STEP_SCAN,
+    normalize_maintain_steps,
+    run_maintain_async,
+    run_maintain_steps_async,
+)
 
 
 class _DummyLogger:
@@ -152,6 +160,56 @@ class WardenMaintainServiceModuleTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(action_calls, [])
+
+    def test_normalize_maintain_steps_rejects_out_of_order(self) -> None:
+        with self.assertRaises(ValueError):
+            _ = normalize_maintain_steps([MAINTAIN_STEP_QUOTA, MAINTAIN_STEP_SCAN])
+
+    async def test_run_maintain_steps_async_supports_partial_step_selection(self) -> None:
+        settings = self._base_settings()
+        settings["delete_401"] = True
+        settings["auto_reenable"] = True
+        call_seq: list[str] = []
+
+        async def _run_scan(conn: Any, cfg: dict[str, Any], scope: set[str] | None) -> dict[str, Any]:
+            return {
+                "candidate_records": [
+                    {"name": "a.json"},
+                    {"name": "b.json", "disabled": 0},
+                    {"name": "c.json", "disabled": 1, "managed_reason": "quota_disabled"},
+                ],
+                "invalid_records": [{"name": "a.json"}],
+                "quota_records": [{"name": "b.json", "disabled": 0, "is_invalid_401": 0}],
+                "recovered_records": [{"name": "c.json", "managed_reason": "quota_disabled"}],
+            }
+
+        async def _run_action(**kwargs: Any) -> list[dict[str, Any]]:
+            fn_name = str(kwargs["fn_name"])
+            if fn_name == "delete":
+                call_seq.append("delete_401")
+                return [{"name": "a.json", "ok": True}]
+            call_seq.append("quota")
+            return [{"name": "b.json", "ok": True}]
+
+        result = await run_maintain_steps_async(
+            object(),
+            settings,
+            resolve_maintain_name_scope=lambda cfg: {"a.json", "b.json", "c.json"},
+            run_scan_async=_run_scan,
+            run_action_group_async=_run_action,
+            confirm_action=lambda message, assume_yes: True,
+            apply_action_results=lambda records_by_name, results, **kwargs: [],
+            upsert_auth_accounts=lambda conn, rows: None,
+            mark_quota_already_disabled=lambda records: records,
+            summarize_action_results=lambda label, rows: None,
+            logger=_DummyLogger(),
+            steps=[MAINTAIN_STEP_SCAN, MAINTAIN_STEP_QUOTA, MAINTAIN_STEP_FINALIZE],
+        )
+
+        self.assertEqual(call_seq, ["quota"])
+        self.assertEqual(result["delete_401_results"], [])
+        self.assertEqual(len(result["quota_action_results"]), 1)
+        self.assertEqual(result["reenable_results"], [])
 
 
 if __name__ == "__main__":

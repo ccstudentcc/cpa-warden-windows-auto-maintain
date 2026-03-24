@@ -20,6 +20,14 @@ from .shutdown_runtime import (
 from .startup_runtime import StartupRuntimeDeps, StartupRuntimeResult, StartupRuntimeState, run_startup_cycle
 from .upload_scan_runtime import run_active_upload_probe_cycle, run_upload_scan_cycle
 from .watch_runtime import WatchRuntimeDeps, WatchRuntimeResult, WatchRuntimeState, run_watch_iteration
+from .maintain_pipeline_runtime import (
+    STEP_STATUS_FAILED,
+    STEP_STATUS_RETRY,
+    STEP_STATUS_SUCCESS,
+    MaintainPipelineCycleResult,
+    MaintainPipelineStepOutcome,
+    run_maintain_pipeline_cycle,
+)
 
 __all__ = [
     "MaintainStartFlowResult",
@@ -45,4 +53,10 @@ __all__ = [
     "sleep_between_watch_cycles",
     "run_upload_scan_cycle",
     "run_active_upload_probe_cycle",
+    "STEP_STATUS_SUCCESS",
+    "STEP_STATUS_RETRY",
+    "STEP_STATUS_FAILED",
+    "MaintainPipelineStepOutcome",
+    "MaintainPipelineCycleResult",
+    "run_maintain_pipeline_cycle",
 ]

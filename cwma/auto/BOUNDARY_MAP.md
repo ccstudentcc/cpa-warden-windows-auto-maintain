@@ -42,10 +42,12 @@ Owner scope:
 - `cwma/auto/channel/channel_runner.py`
 - `cwma/auto/runtime/channel_runtime.py`
 - `cwma/auto/runtime/channel_runtime_adapter.py`
+- `cwma/auto/runtime/maintain_pipeline_runtime.py`
 - `cwma/auto/runtime/upload_runtime_adapter.py`
 
 Responsibilities:
 - maintain/upload start + poll lifecycle
+- maintain step pipeline runtime policy (`scan/delete_401/quota/reenable/finalize`) and step-cycle execution contract
 - channel-specific retry/success/failure semantics
 - channel progress/status feedback shaping
 
@@ -113,6 +115,11 @@ Owner scope:
 Responsibilities:
 - package import surface only
 - no capability policy logic
+
+## Stage 3 Test Mapping Update
+
+- `tests/test_auto_maintain_pipeline_runtime_module.py` is the primary suite for maintain step-engine runtime policy (`serial per-job + cross-job pipeline + account-lock conflict`) in the channel/runtime capability.
+- `tests/test_auto_maintain_pipeline_state_module.py` remains the primary suite for maintain pipeline queue state transitions in state capability.
 
 ## Stage 2.6 Test Modules Map (Closeout Completed)
 

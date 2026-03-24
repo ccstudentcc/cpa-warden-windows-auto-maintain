@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `tools/stage0_json_replay_benchmark.py` for burst/sustained/mixed high-frequency JSON event replay
   - `results/stage0_json_replay_baseline.csv` as baseline metrics output
   - `results/stage0_baseline_report.md` as the baseline validation/readout record
+- Added maintain pipeline runtime module `cwma/auto/runtime/maintain_pipeline_runtime.py` for step-cycle orchestration (`1 action + 1 scan` pipeline claim policy per cycle).
+- Added maintain pipeline runtime test suite `tests/test_auto_maintain_pipeline_runtime_module.py` covering step-order progression, retry requeue, account-lock conflict handling, and full/incremental shared executor behavior.
 
 ### Changed
 
@@ -49,6 +51,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Python runtime lock arbitration remains authoritative and now uses Windows file locking (`msvcrt`) on `auto_maintain.lock`
 - Stage-2.6 capability test mapping closeout completed: retired `tests/test_auto_modules.py`, aligned architecture/boundary docs to split suites, and updated regression commands to run only `process_channel` / `state` / `ui` modules
 - Auto module layout now groups canonical implementations into capability subpackages (`cwma/auto/orchestration`, `channel`, `state`, `infra`, `ui`) and removes redundant top-level compatibility wrappers after import/test migration
+- Maintain queue state transitions now expose explicit step-level claim/advance/requeue operations in `cwma/auto/state/maintain_queue.py`, including account-lock-aware action-step conflict checks.
+- `cwma/warden/services/maintain.py` now provides an explicit maintain step engine (`scan -> delete_401 -> quota -> reenable -> finalize`) with ordered-step validation via `run_maintain_steps_async`; `run_maintain_async` remains the compatible full-flow entrypoint.
+- Extended `tests/test_warden_maintain_service_module.py` with maintain step-order validation and partial-step execution coverage.
 
 ## [cwma 0.1.0] - 2026-03-23
 
