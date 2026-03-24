@@ -118,7 +118,8 @@ Responsibilities:
 
 1. `process/channel/infra` capability-adjacent seams are currently consolidated in `tests/test_auto_modules_process_channel.py`.
 2. `ui` capability seams are currently consolidated in `tests/test_auto_modules_ui.py`.
-3. `tests/test_auto_modules.py` is retained as a transitional mixed residual suite during ongoing modularization.
+3. `state` capability seams are currently consolidated in `tests/test_auto_modules_state.py`.
+4. `tests/test_auto_modules.py` is retained as a transitional mixed residual suite during ongoing modularization.
 
 ## Allowed Dependency Directions
 
