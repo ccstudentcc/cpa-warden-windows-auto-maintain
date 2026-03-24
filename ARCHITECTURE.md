@@ -15,7 +15,8 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Internal note: interactive prompt primitives are delegated to `cwma/warden/interactive.py` via app-layer wrappers
 - Internal note: config loading + settings build are delegated to `cwma/warden/config.py` via app-layer compatibility wrappers
 - Internal note: maintain/upload scope and upload discovery helpers are delegated to `cwma/warden/services/*` via app-layer compatibility wrappers
-- Test coverage status: currently validated through CLI checks, production usage, and module tests (`tests/test_warden_cli_module.py`, `tests/test_warden_interactive_module.py`, `tests/test_warden_config_module.py`, `tests/test_warden_maintain_scope_module.py`, `tests/test_warden_upload_scope_module.py`)
+- Internal note: scan/maintain/upload/refill runtime action helpers are delegated to `cwma/warden/services/runtime_ops.py` via app-layer compatibility wrappers, keeping app host focused on CLI flow wiring
+- Test coverage status: currently validated through CLI checks, production usage, and module tests (`tests/test_warden_cli_module.py`, `tests/test_warden_interactive_module.py`, `tests/test_warden_config_module.py`, `tests/test_warden_maintain_scope_module.py`, `tests/test_warden_upload_scope_module.py`, `tests/test_warden_runtime_ops_module.py`)
 
 ### `cwma/warden/cli.py`
 
@@ -51,6 +52,13 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Public interface: `discover_upload_files`, `validate_and_digest_json_file`, `select_upload_candidates`
 - Responsibility: upload file discovery, JSON validation/digest, and local candidate conflict/duplicate selection
 - Test file: `tests/test_warden_upload_scope_module.py`
+
+### `cwma/warden/services/runtime_ops.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `upload_auth_file_async`, `summarize_upload_results`, `classify_account_state`, `probe_accounts_async`, `run_action_group_async`, `apply_action_results`, `mark_quota_already_disabled`, `print_scan_summary`, `summarize_action_results`, `confirm_action`, `run_register_hook_async`
+- Responsibility: centralized runtime action/probe/upload/register helper logic for scan/maintain/upload/refill flows, leaving app layer as compatibility host and dependency wiring
+- Test file: `tests/test_warden_runtime_ops_module.py`
 
 ### `cwma/auto/app.py`
 

@@ -7,12 +7,8 @@ import asyncio
 import json
 import logging
 import math
-import os
-import shlex
 import sqlite3
 import sys
-import urllib.parse
-from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -92,6 +88,19 @@ from ..warden.services.maintain_scope import (
     load_name_scope_file as load_name_scope_file_warden,
     resolve_maintain_name_scope as resolve_maintain_name_scope_warden,
     resolve_upload_name_scope as resolve_upload_name_scope_warden,
+)
+from ..warden.services.runtime_ops import (
+    apply_action_results as apply_action_results_runtime_warden,
+    classify_account_state as classify_account_state_runtime_warden,
+    confirm_action as confirm_action_runtime_warden,
+    mark_quota_already_disabled as mark_quota_already_disabled_runtime_warden,
+    print_scan_summary as print_scan_summary_runtime_warden,
+    probe_accounts_async as probe_accounts_async_runtime_warden,
+    run_action_group_async as run_action_group_async_runtime_warden,
+    run_register_hook_async as run_register_hook_async_runtime_warden,
+    summarize_action_results as summarize_action_results_runtime_warden,
+    summarize_upload_results as summarize_upload_results_runtime_warden,
+    upload_auth_file_async as upload_auth_file_async_runtime_warden,
 )
 from ..warden.services.maintain import run_maintain_async as run_maintain_async_service_warden
 from ..warden.services.refill import (
@@ -590,268 +599,23 @@ async def upload_auth_file_async(
     candidate: dict[str, Any],
     stop_event: asyncio.Event,
 ) -> dict[str, Any]:
-    base_url = settings["base_url"]
-    token = settings["token"]
-    timeout = settings["timeout"]
-    upload_retries = settings["upload_retries"]
-    upload_method = settings["upload_method"]
-    file_name = str(candidate["file_name"])
-    file_path = str(candidate["file_path"])
-    content_sha256 = str(candidate["content_sha256"])
-    file_size = int(candidate["file_size"])
-
-    if stop_event.is_set():
-        return {
-            "file_name": file_name,
-            "file_path": file_path,
-            "status_code": None,
-            "ok": False,
-            "outcome": "skipped_due_to_stop",
-            "error": "stopped: core auth manager unavailable",
-            "error_kind": "core_auth_manager_unavailable",
-        }
-
-    claim_state = claim_upload_slot(
+    return await upload_auth_file_async_runtime_warden(
+        session,
+        semaphore,
         conn,
-        base_url=base_url,
-        file_name=file_name,
-        content_sha256=content_sha256,
-        file_path=file_path,
-        file_size=file_size,
+        settings,
+        candidate,
+        stop_event,
+        claim_upload_slot=claim_upload_slot,
+        mark_upload_attempt=mark_upload_attempt,
+        mark_upload_success=mark_upload_success,
+        mark_upload_failure=mark_upload_failure,
+        mgmt_headers=mgmt_headers,
+        maybe_json_loads=maybe_json_loads,
+        compact_text=compact_text,
+        backoff_seconds=retry_backoff_seconds,
+        aiohttp_module=aiohttp,
     )
-    if claim_state == "skipped_done":
-        return {
-            "file_name": file_name,
-            "file_path": file_path,
-            "status_code": None,
-            "ok": True,
-            "outcome": "skipped_already_uploaded",
-            "error": None,
-            "error_kind": None,
-        }
-    if claim_state == "skipped_in_progress":
-        return {
-            "file_name": file_name,
-            "file_path": file_path,
-            "status_code": None,
-            "ok": True,
-            "outcome": "skipped_in_progress",
-            "error": None,
-            "error_kind": None,
-        }
-
-    if stop_event.is_set():
-        mark_upload_failure(
-            conn,
-            base_url=base_url,
-            file_name=file_name,
-            content_sha256=content_sha256,
-            http_status=None,
-            error_text="stopped: core auth manager unavailable",
-            response_text=None,
-        )
-        return {
-            "file_name": file_name,
-            "file_path": file_path,
-            "status_code": None,
-            "ok": False,
-            "outcome": "skipped_due_to_stop",
-            "error": "stopped: core auth manager unavailable",
-            "error_kind": "core_auth_manager_unavailable",
-        }
-
-    encoded_name = urllib.parse.quote(file_name, safe="")
-    json_upload_url = f"{base_url.rstrip('/')}/v0/management/auth-files?name={encoded_name}"
-    multipart_upload_url = f"{base_url.rstrip('/')}/v0/management/auth-files"
-
-    for attempt in range(upload_retries + 1):
-        mark_upload_attempt(
-            conn,
-            base_url=base_url,
-            file_name=file_name,
-            content_sha256=content_sha256,
-        )
-        try:
-            async with semaphore:
-                if stop_event.is_set():
-                    mark_upload_failure(
-                        conn,
-                        base_url=base_url,
-                        file_name=file_name,
-                        content_sha256=content_sha256,
-                        http_status=None,
-                        error_text="stopped: core auth manager unavailable",
-                        response_text=None,
-                    )
-                    return {
-                        "file_name": file_name,
-                        "file_path": file_path,
-                        "status_code": None,
-                        "ok": False,
-                        "outcome": "skipped_due_to_stop",
-                        "error": "stopped: core auth manager unavailable",
-                        "error_kind": "core_auth_manager_unavailable",
-                    }
-
-                if upload_method == "multipart":
-                    form = aiohttp.FormData()
-                    form.add_field(
-                        "file",
-                        candidate["content_bytes"],
-                        filename=file_name,
-                        content_type="application/json",
-                    )
-                    req_headers = mgmt_headers(token)
-                    request_kwargs: dict[str, Any] = {"data": form}
-                    request_url = multipart_upload_url
-                else:
-                    req_headers = mgmt_headers(token, include_json=True)
-                    request_kwargs = {"data": candidate["content_text"]}
-                    request_url = json_upload_url
-
-                async with session.post(
-                    request_url,
-                    headers=req_headers,
-                    timeout=timeout,
-                    **request_kwargs,
-                ) as resp:
-                    text = await resp.text()
-                    data = maybe_json_loads(text)
-                    ok = resp.status == 200 and isinstance(data, dict) and data.get("status") == "ok"
-                    if ok:
-                        mark_upload_success(
-                            conn,
-                            base_url=base_url,
-                            file_name=file_name,
-                            content_sha256=content_sha256,
-                            http_status=resp.status,
-                            response_text=text,
-                        )
-                        return {
-                            "file_name": file_name,
-                            "file_path": file_path,
-                            "status_code": resp.status,
-                            "ok": True,
-                            "outcome": "uploaded_success",
-                            "error": None,
-                            "error_kind": None,
-                        }
-
-                    resp_error = ""
-                    if isinstance(data, dict):
-                        resp_error = str(data.get("error") or "").strip()
-                    is_core_unavailable = resp.status == 503 and (
-                        resp_error == "core auth manager unavailable"
-                        or "core auth manager unavailable" in str(text).lower()
-                    )
-                    if is_core_unavailable:
-                        stop_event.set()
-                        mark_upload_failure(
-                            conn,
-                            base_url=base_url,
-                            file_name=file_name,
-                            content_sha256=content_sha256,
-                            http_status=resp.status,
-                            error_text="core auth manager unavailable",
-                            response_text=text,
-                        )
-                        return {
-                            "file_name": file_name,
-                            "file_path": file_path,
-                            "status_code": resp.status,
-                            "ok": False,
-                            "outcome": "upload_failed",
-                            "error": "core auth manager unavailable",
-                            "error_kind": "core_auth_manager_unavailable",
-                        }
-
-                    should_retry = resp.status == 429 or resp.status >= 500
-                    error_text = resp_error or compact_text(text, 240) or f"http {resp.status}"
-                    if should_retry and attempt < upload_retries:
-                        await asyncio.sleep(0.5 * (2**attempt))
-                        continue
-
-                    mark_upload_failure(
-                        conn,
-                        base_url=base_url,
-                        file_name=file_name,
-                        content_sha256=content_sha256,
-                        http_status=resp.status,
-                        error_text=error_text,
-                        response_text=text,
-                    )
-                    return {
-                        "file_name": file_name,
-                        "file_path": file_path,
-                        "status_code": resp.status,
-                        "ok": False,
-                        "outcome": "upload_failed",
-                        "error": error_text,
-                        "error_kind": None,
-                    }
-        except asyncio.TimeoutError:
-            if attempt < upload_retries:
-                await asyncio.sleep(0.5 * (2**attempt))
-                continue
-            mark_upload_failure(
-                conn,
-                base_url=base_url,
-                file_name=file_name,
-                content_sha256=content_sha256,
-                http_status=None,
-                error_text="timeout",
-                response_text=None,
-            )
-            return {
-                "file_name": file_name,
-                "file_path": file_path,
-                "status_code": None,
-                "ok": False,
-                "outcome": "upload_failed",
-                "error": "timeout",
-                "error_kind": "timeout",
-            }
-        except Exception as exc:
-            if attempt < upload_retries:
-                await asyncio.sleep(0.5 * (2**attempt))
-                continue
-            mark_upload_failure(
-                conn,
-                base_url=base_url,
-                file_name=file_name,
-                content_sha256=content_sha256,
-                http_status=None,
-                error_text=str(exc),
-                response_text=None,
-            )
-            return {
-                "file_name": file_name,
-                "file_path": file_path,
-                "status_code": None,
-                "ok": False,
-                "outcome": "upload_failed",
-                "error": str(exc),
-                "error_kind": "other",
-            }
-
-    mark_upload_failure(
-        conn,
-        base_url=base_url,
-        file_name=file_name,
-        content_sha256=content_sha256,
-        http_status=None,
-        error_text="upload failed after retries",
-        response_text=None,
-    )
-    return {
-        "file_name": file_name,
-        "file_path": file_path,
-        "status_code": None,
-        "ok": False,
-        "outcome": "upload_failed",
-        "error": "upload failed after retries",
-        "error_kind": None,
-    }
 
 
 def summarize_upload_results(
@@ -861,26 +625,14 @@ def summarize_upload_results(
     selected_count: int,
     to_upload_count: int,
 ) -> None:
-    counter = Counter(str(row.get("outcome") or "unknown") for row in results)
-    LOGGER.info("上传扫描文件数: %s", discovered_count)
-    LOGGER.info("上传候选文件数: %s", selected_count)
-    LOGGER.info("需要实际上传数: %s", to_upload_count)
-    LOGGER.info("上传成功: %s", counter.get("uploaded_success", 0))
-    LOGGER.info("跳过(已上传): %s", counter.get("skipped_already_uploaded", 0))
-    LOGGER.info("跳过(远端已存在): %s", counter.get("skipped_remote_exists", 0))
-    LOGGER.info("跳过(进行中): %s", counter.get("skipped_in_progress", 0))
-    LOGGER.info("跳过(本地重复): %s", counter.get("skipped_local_duplicate", 0))
-    LOGGER.info("校验失败: %s", counter.get("validation_failed", 0))
-    LOGGER.info("上传失败: %s", counter.get("upload_failed", 0))
-
-    failed = [row for row in results if row.get("outcome") in {"validation_failed", "upload_failed"}]
-    for row in failed[:10]:
-        LOGGER.warning(
-            "[上传失败] %s | status=%s | %s",
-            row.get("file_name") or row.get("file_path"),
-            row.get("status_code"),
-            compact_text(row.get("error"), 200) or "-",
-        )
+    summarize_upload_results_runtime_warden(
+        results,
+        discovered_count=discovered_count,
+        selected_count=selected_count,
+        to_upload_count=to_upload_count,
+        compact_text=compact_text,
+        logger=LOGGER,
+    )
 
 
 async def run_upload_async(
@@ -945,49 +697,14 @@ async def probe_wham_usage_async(
 
 
 def classify_account_state(record: dict[str, Any], *, quota_disable_threshold: float) -> dict[str, Any]:
-    invalid_401 = bool(record.get("unavailable")) or record.get("api_status_code") == 401
-    effective_limit_reached, effective_allowed, quota_signal_source = resolve_quota_signal(record)
-    effective_remaining_ratio, remaining_ratio_source = resolve_quota_remaining_ratio(record)
-    quota_limited_by_threshold = (
-        quota_disable_threshold > 0
-        and effective_remaining_ratio is not None
-        and effective_remaining_ratio <= quota_disable_threshold
+    return classify_account_state_runtime_warden(
+        record,
+        quota_disable_threshold=quota_disable_threshold,
+        resolve_quota_signal=resolve_quota_signal,
+        resolve_quota_remaining_ratio=resolve_quota_remaining_ratio,
+        utc_now_iso=utc_now_iso,
+        logger=LOGGER,
     )
-    quota_limited = (
-        not invalid_401
-        and not bool(record.get("unavailable"))
-        and record.get("api_status_code") == 200
-        and (effective_limit_reached == 1 or quota_limited_by_threshold)
-    )
-    recovered = (
-        not invalid_401
-        and not quota_limited
-        and bool(record.get("disabled"))
-        # Recovery is based on live usage signals only, so different CPA instances
-        # with independent local DBs can still converge on the same re-enable set.
-        and record.get("api_status_code") == 200
-        and effective_allowed == 1
-        and effective_limit_reached == 0
-    )
-
-    record["quota_signal_source"] = quota_signal_source
-    record["quota_remaining_ratio"] = effective_remaining_ratio
-    record["quota_remaining_ratio_source"] = remaining_ratio_source
-    record["quota_threshold_triggered"] = int(quota_limited_by_threshold)
-    record["is_invalid_401"] = int(invalid_401)
-    record["is_quota_limited"] = int(quota_limited)
-    record["is_recovered"] = int(recovered)
-    record["updated_at"] = utc_now_iso()
-    if quota_limited_by_threshold and effective_limit_reached != 1:
-        LOGGER.info(
-            "限额阈值触发: name=%s remaining_ratio=%.4f threshold=%.4f signal_source=%s ratio_source=%s",
-            record.get("name"),
-            effective_remaining_ratio,
-            quota_disable_threshold,
-            quota_signal_source,
-            remaining_ratio_source,
-        )
-    return record
 
 
 async def probe_accounts_async(
@@ -1002,54 +719,23 @@ async def probe_accounts_async(
     quota_disable_threshold: float,
     debug: bool,
 ) -> list[dict[str, Any]]:
-    if not records:
-        return []
-
-    LOGGER.info(
-        "开始并发探测 wham/usage: candidates=%s workers=%s timeout=%ss retries=%s",
-        len(records),
-        probe_workers,
-        timeout,
-        retries,
+    return await probe_accounts_async_runtime_warden(
+        records,
+        base_url=base_url,
+        token=token,
+        timeout=timeout,
+        retries=retries,
+        user_agent=user_agent,
+        probe_workers=probe_workers,
+        quota_disable_threshold=quota_disable_threshold,
+        debug=debug,
+        probe_wham_usage_async=probe_wham_usage_async,
+        classify_account_state=classify_account_state,
+        progress_log_step=progress_log_step,
+        progress_reporter_factory=ProgressReporter,
+        logger=LOGGER,
+        aiohttp_module=aiohttp,
     )
-
-    connector = aiohttp.TCPConnector(limit=max(1, probe_workers), limit_per_host=max(1, probe_workers))
-    client_timeout = aiohttp.ClientTimeout(total=max(1, timeout))
-    semaphore = asyncio.Semaphore(max(1, probe_workers))
-
-    results: list[dict[str, Any]] = []
-    async with aiohttp.ClientSession(connector=connector, timeout=client_timeout, trust_env=True) as session:
-        tasks = [
-            asyncio.create_task(
-                probe_wham_usage_async(
-                    session,
-                    semaphore,
-                    base_url,
-                    token,
-                    record,
-                    timeout,
-                    retries,
-                    user_agent,
-                )
-            )
-            for record in records
-        ]
-
-        done = 0
-        total = len(tasks)
-        report_step = progress_log_step(total)
-        next_report = report_step
-        with ProgressReporter("探测账号", total, debug=debug) as progress:
-            for task in asyncio.as_completed(tasks):
-                probed = classify_account_state(await task, quota_disable_threshold=quota_disable_threshold)
-                results.append(probed)
-                done += 1
-                progress.advance()
-                if (not progress.enabled) and (done >= next_report or done == total):
-                    LOGGER.info("探测进度: %s/%s", done, total)
-                    next_report += report_step
-
-    return results
 
 
 def build_invalid_export_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -1137,60 +823,23 @@ async def run_action_group_async(
     delete_retries: int = 0,
     debug: bool = False,
 ) -> list[dict[str, Any]]:
-    if not items:
-        return []
-
-    connector = aiohttp.TCPConnector(limit=max(1, workers), limit_per_host=max(1, workers))
-    client_timeout = aiohttp.ClientTimeout(total=max(1, timeout))
-    semaphore = asyncio.Semaphore(max(1, workers))
-
-    async with aiohttp.ClientSession(connector=connector, timeout=client_timeout, trust_env=True) as session:
-        tasks = []
-        for name in items:
-            if fn_name == "delete":
-                tasks.append(
-                    asyncio.create_task(
-                        delete_account_async(
-                            session,
-                            semaphore,
-                            base_url,
-                            token,
-                            name,
-                            timeout,
-                            delete_retries=max(0, int(delete_retries)),
-                        )
-                    )
-                )
-            else:
-                tasks.append(
-                    asyncio.create_task(
-                        set_account_disabled_async(
-                            session,
-                            semaphore,
-                            base_url,
-                            token,
-                            name,
-                            bool(disabled),
-                            timeout,
-                        )
-                    )
-                )
-
-        results: list[dict[str, Any]] = []
-        done = 0
-        total = len(tasks)
-        report_step = progress_log_step(total)
-        next_report = report_step
-        action_label = "删除" if fn_name == "delete" else ("禁用" if disabled else "启用")
-        with ProgressReporter(f"{action_label}账号", total, debug=debug) as progress:
-            for task in asyncio.as_completed(tasks):
-                results.append(await task)
-                done += 1
-                progress.advance()
-                if (not progress.enabled) and (done >= next_report or done == total):
-                    LOGGER.info("%s进度: %s/%s", action_label, done, total)
-                    next_report += report_step
-        return results
+    return await run_action_group_async_runtime_warden(
+        base_url=base_url,
+        token=token,
+        timeout=timeout,
+        workers=workers,
+        items=items,
+        fn_name=fn_name,
+        disabled=disabled,
+        delete_retries=delete_retries,
+        debug=debug,
+        delete_account_async=delete_account_async,
+        set_account_disabled_async=set_account_disabled_async,
+        progress_log_step=progress_log_step,
+        progress_reporter_factory=ProgressReporter,
+        logger=LOGGER,
+        aiohttp_module=aiohttp,
+    )
 
 
 def apply_action_results(
@@ -1201,49 +850,24 @@ def apply_action_results(
     managed_reason_on_success: str | None,
     disabled_value: int | None,
 ) -> list[dict[str, Any]]:
-    updated: list[dict[str, Any]] = []
-    now_iso = utc_now_iso()
-    for result in results:
-        name = result.get("name")
-        record = records_by_name.get(name)
-        if not record:
-            continue
-        record["last_action"] = action
-        record["last_action_status"] = "success" if result.get("ok") else "failed"
-        record["last_action_error"] = result.get("error")
-        record["updated_at"] = now_iso
-        if result.get("ok"):
-            if managed_reason_on_success is None:
-                record["managed_reason"] = None
-            else:
-                record["managed_reason"] = managed_reason_on_success
-            if disabled_value is not None:
-                record["disabled"] = disabled_value
-            LOGGER.debug("动作成功: action=%s name=%s", action, name)
-        else:
-            LOGGER.debug(
-                "动作失败: action=%s name=%s status_code=%s error=%s",
-                action,
-                name,
-                result.get("status_code"),
-                compact_text(result.get("error"), 200),
-            )
-        updated.append(record)
-    return updated
+    return apply_action_results_runtime_warden(
+        records_by_name,
+        results,
+        action=action,
+        managed_reason_on_success=managed_reason_on_success,
+        disabled_value=disabled_value,
+        utc_now_iso=utc_now_iso,
+        compact_text=compact_text,
+        logger=LOGGER,
+    )
 
 
 def mark_quota_already_disabled(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    now_iso = utc_now_iso()
-    updated = []
-    for record in records:
-        record["managed_reason"] = "quota_disabled"
-        record["last_action"] = "mark_quota_disabled"
-        record["last_action_status"] = "success"
-        record["last_action_error"] = None
-        record["updated_at"] = now_iso
-        LOGGER.debug("标记已禁用限额账号: name=%s", record.get("name"))
-        updated.append(record)
-    return updated
+    return mark_quota_already_disabled_runtime_warden(
+        records,
+        utc_now_iso=utc_now_iso,
+        logger=LOGGER,
+    )
 
 
 def print_scan_summary(
@@ -1254,34 +878,27 @@ def print_scan_summary(
     quota_records: list[dict[str, Any]],
     recovered_records: list[dict[str, Any]],
 ) -> None:
-    status_counter = Counter(str(row.get("status") or "") for row in candidate_records)
-    LOGGER.info("总认证文件数: %s", total_files)
-    LOGGER.info("符合过滤条件账号数: %s", len(candidate_records))
-    LOGGER.info("401 账号数: %s", len(invalid_records))
-    LOGGER.info("限额账号数: %s", len(quota_records))
-    LOGGER.info("恢复候选账号数: %s", len(recovered_records))
-    LOGGER.debug("状态分布: %s", dict(sorted(status_counter.items(), key=lambda item: item[0])))
+    print_scan_summary_runtime_warden(
+        total_files=total_files,
+        candidate_records=candidate_records,
+        invalid_records=invalid_records,
+        quota_records=quota_records,
+        recovered_records=recovered_records,
+        logger=LOGGER,
+    )
 
 
 def summarize_action_results(label: str, results: list[dict[str, Any]]) -> None:
-    if not results:
-        LOGGER.info("%s: 0", label)
-        return
-    success = [row for row in results if row.get("ok")]
-    failed = [row for row in results if not row.get("ok")]
-    LOGGER.info("%s: 成功=%s，失败=%s", label, len(success), len(failed))
-    for row in failed[:10]:
-        LOGGER.warning("[%s失败] %s | %s", label, row.get("name"), compact_text(row.get("error"), 160) or "-")
+    summarize_action_results_runtime_warden(
+        label,
+        results,
+        compact_text=compact_text,
+        logger=LOGGER,
+    )
 
 
 def confirm_action(message: str, assume_yes: bool) -> bool:
-    if assume_yes:
-        return True
-    if not sys.stdin.isatty():
-        LOGGER.warning("缺少交互终端，已取消: %s", message)
-        return False
-    answer = input(f"{message}，输入 DELETE 确认: ").strip()
-    return answer == "DELETE"
+    return confirm_action_runtime_warden(message, assume_yes, stdin=sys.stdin, input_fn=input, logger=LOGGER)
 
 
 def export_current_results(
@@ -1357,79 +974,13 @@ def compute_refill_upload_count(valid_count: int, min_valid_accounts: int, strat
 
 
 async def run_register_hook_async(settings: dict[str, Any], *, count: int) -> dict[str, Any]:
-    if count <= 0:
-        return {"executed": False, "requested_count": 0, "new_files": 0}
-
-    command = str(settings.get("register_command") or "").strip()
-    if not command:
-        raise RuntimeError("register_command 为空，无法执行 auto_register")
-
-    upload_dir = Path(str(settings["upload_dir"])).expanduser()
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    before_files = {
-        str(path)
-        for path in discover_upload_files(str(upload_dir), bool(settings["upload_recursive"]))
-    }
-
-    cwd = str(settings.get("register_workdir") or "").strip()
-    cwd_path = Path(cwd).expanduser() if cwd else None
-    if cwd_path is not None and (not cwd_path.exists() or not cwd_path.is_dir()):
-        raise RuntimeError(f"register_workdir 不存在或不是目录: {cwd}")
-
-    cmd = (
-        f"{command} "
-        f"--count {shlex.quote(str(count))} "
-        f"--output-dir {shlex.quote(str(upload_dir))}"
+    return await run_register_hook_async_runtime_warden(
+        settings,
+        count=count,
+        discover_upload_files=discover_upload_files,
+        compact_text=compact_text,
+        logger=LOGGER,
     )
-    env = os.environ.copy()
-    env["CPA_REGISTER_COUNT"] = str(count)
-    env["CPA_REGISTER_OUTPUT_DIR"] = str(upload_dir)
-
-    LOGGER.info("执行外部注册钩子: count=%s command=%s", count, command)
-    process = await asyncio.create_subprocess_shell(
-        cmd,
-        cwd=str(cwd_path) if cwd_path is not None else None,
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            process.communicate(),
-            timeout=int(settings["register_timeout"]),
-        )
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
-        raise RuntimeError(f"register command timeout after {settings['register_timeout']}s")
-
-    stdout_text = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-    stderr_text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-    if process.returncode != 0:
-        raise RuntimeError(
-            f"register command failed: exit={process.returncode}, stderr={compact_text(stderr_text, 240) or '-'}"
-        )
-
-    after_files = {
-        str(path)
-        for path in discover_upload_files(str(upload_dir), bool(settings["upload_recursive"]))
-    }
-    new_files = max(0, len(after_files - before_files))
-    if new_files < 1:
-        raise RuntimeError("register command succeeded but produced no new .json files")
-
-    LOGGER.info("外部注册钩子完成: 新增文件=%s", new_files)
-    if stdout_text.strip():
-        LOGGER.debug("register stdout: %s", compact_text(stdout_text, 800))
-    if stderr_text.strip():
-        LOGGER.debug("register stderr: %s", compact_text(stderr_text, 800))
-
-    return {
-        "executed": True,
-        "requested_count": int(count),
-        "new_files": int(new_files),
-        "return_code": int(process.returncode),
-    }
 
 
 async def run_maintain_refill_async(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
