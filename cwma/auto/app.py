@@ -116,6 +116,7 @@ from .runtime.channel_runtime import (
     start_maintain_channel,
     start_upload_channel,
 )
+from .runtime.channel_runtime_adapter import ChannelRuntimeAdapter
 from .runtime.startup_runtime import (
     StartupRuntimeDeps,
     StartupRuntimeState,
@@ -327,6 +328,17 @@ class AutoMaintainer:
             compute_pending_upload_snapshot=compute_pending_upload_snapshot_rows,
             get_run_upload_scan_cycle=lambda: run_upload_scan_cycle,
             get_run_active_upload_probe_cycle=lambda: run_active_upload_probe_cycle,
+            log=log,
+        )
+        self.channel_runtime_adapter = ChannelRuntimeAdapter(
+            host=self,
+            get_start_maintain_channel=lambda: start_maintain_channel,
+            get_start_upload_channel=lambda: start_upload_channel,
+            get_poll_maintain_channel=lambda: poll_maintain_channel,
+            get_poll_upload_channel=lambda: poll_upload_channel,
+            get_build_child_process_env=lambda: build_child_process_env,
+            get_monotonic=lambda: time.monotonic,
+            get_popen_factory=lambda: subprocess.Popen,
             log=log,
         )
 
@@ -1170,51 +1182,6 @@ class AutoMaintainer:
             self.update_channel_progress(CHANNEL_MAINTAIN, stage=STAGE_DEFERRED, force_render=True)
         return True
 
-    def _apply_channel_start_flow_feedback(
-        self,
-        *,
-        channel: str,
-        status: str,
-        start_exception: Exception | None,
-        return_code: int,
-    ) -> int:
-        if status == STATUS_SUCCESS:
-            return return_code
-        if start_exception is not None:
-            log(format_command_start_failed_message(channel, start_exception))
-        self.update_channel_progress(channel, stage=STAGE_START_FAILED, force_render=True)
-        if status == STATUS_RETRY:
-            log(
-                format_command_start_retry_message(
-                    channel,
-                    self.settings.command_retry_delay_seconds,
-                )
-            )
-            self.update_channel_progress(channel, stage=STAGE_RETRY_WAIT, force_render=True)
-        return return_code
-
-    def _finalize_channel_start_flow(
-        self,
-        *,
-        channel: str,
-        process: subprocess.Popen | None,
-        status: str,
-        start_exception: Exception | None,
-        return_code: int,
-        apply_state: Callable[[], None],
-    ) -> int:
-        apply_state()
-        if channel == CHANNEL_MAINTAIN:
-            self._set_maintain_process(process)
-        else:
-            self._set_upload_process(process)
-        return self._apply_channel_start_flow_feedback(
-            channel=channel,
-            status=status,
-            start_exception=start_exception,
-            return_code=return_code,
-        )
-
     def _set_maintain_process(self, process: subprocess.Popen | None) -> None:
         self.maintain_process = process
         self.runtime.lifecycle.maintain_process = self.maintain_process
@@ -1223,368 +1190,21 @@ class AutoMaintainer:
         self.upload_process = process
         self.runtime.lifecycle.upload_process = self.upload_process
 
-    def _start_and_finalize_channel_flow(
-        self,
-        *,
-        channel: str,
-        command: list[str],
-        state: object,
-        retry_count: int,
-        output_file: Path,
-        start_channel: Callable[..., object],
-        apply_state_from_flow: Callable[[object], None],
-    ) -> int:
-        start_flow = start_channel(
-            command=command,
-            cwd=self.settings.base_dir,
-            state=state,
-            retry_count=retry_count,
-            retry_delay_seconds=self.settings.command_retry_delay_seconds,
-            env=build_child_process_env(),
-            output_file=output_file,
-            on_output_line=lambda line: self.parse_child_progress_line(channel, line),
-            log=log,
-            mark_channel_running=self.mark_channel_running,
-            now_monotonic=time.monotonic(),
-            popen_factory=subprocess.Popen,
-        )
-        return self._finalize_channel_start_flow(
-            channel=channel,
-            process=getattr(start_flow, "process"),
-            status=getattr(start_flow, "status"),
-            start_exception=getattr(start_flow, "start_exception"),
-            return_code=getattr(start_flow, "return_code"),
-            apply_state=lambda: apply_state_from_flow(start_flow),
-        )
-
     def maybe_start_maintain(self) -> int:
-        now = time.monotonic()
-        if self.maintain_process is not None:
-            return 0
-        if not self.pending_maintain:
-            return 0
-        if now < self.maintain_retry_due_at:
-            return 0
-        if self._defer_incremental_maintain_if_needed(now):
-            return 0
-        self.last_incremental_defer_reason = None
-
-        self.maintain_attempt += 1
-        max_attempts = self.settings.maintain_retry_count + 1
-        reason = self.pending_maintain_reason or "unspecified"
-        if self.pending_maintain_names is None:
-            batch_size = 0
-        else:
-            batch_size = self.scheduler_policy.choose_incremental_maintain_batch_size(
-                pending_count=len(self.pending_maintain_names),
-                upload_pressure=(self.upload_process is not None) or bool(self.pending_upload_snapshot),
-            )
-        decision = decide_maintain_start_scope(
-            state=self._maintain_queue_state(),
-            batch_size=batch_size,
-        )
-        self._apply_maintain_queue_state(decision.state)
-        if decision.skip_reason:
-            self.maintain_attempt = 0
-            self.maintain_retry_due_at = 0.0
-            log(f"Skipped maintain start: {decision.skip_reason}.")
-            return 0
-        if not decision.should_start:
-            return 0
-        prep = prepare_maintain_start(
-            reason=reason,
-            attempt=self.maintain_attempt,
-            max_attempts=max_attempts,
-            scope_names=decision.scope_names,
-            write_scope_file=lambda names: write_scope_names(self.maintain_names_file, names),
-            build_command=self.build_maintain_command,
-            format_start_message=lambda attempt, max_attempts, reason, scope_names: (
-                format_maintain_start_message_rows(
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                    reason=reason,
-                    maintain_scope_names=scope_names,
-                )
-            ),
-        )
-        log(prep.log_message)
-        if prep.started_incremental:
-            self.last_incremental_maintain_started_at = now
-        self.inflight_maintain_names = prep.scope_names
-        return self._start_and_finalize_channel_flow(
-            channel=CHANNEL_MAINTAIN,
-            command=prep.command,
-            state=self._maintain_runtime_state(),
-            retry_count=self.settings.maintain_retry_count,
-            output_file=self.maintain_cmd_output_file,
-            start_channel=start_maintain_channel,
-            apply_state_from_flow=lambda flow: self._apply_maintain_runtime_state(
-                getattr(flow, "state")
-            ),
-        )
+        return self.channel_runtime_adapter.maybe_start_maintain()
 
     def maybe_start_upload(self) -> int:
-        if self.upload_process is not None:
-            return 0
-
-        state = self._upload_queue_state()
-        if state.pending_snapshot is None:
-            return 0
-
-        now = time.monotonic()
-        if state.pending_retry and state.inflight_snapshot is not None:
-            batch_size = 1
-        else:
-            pending_total = len(state.pending_snapshot or [])
-            maintain_pressure = self.maintain_process is not None or self.pending_maintain
-            batch_size = self.scheduler_policy.choose_upload_batch_size(
-                pending_count=pending_total,
-                maintain_pressure=maintain_pressure,
-            )
-
-        decision = decide_upload_start(
-            state=state,
-            now_monotonic=now,
-            batch_size=batch_size,
-        )
-        self._apply_upload_queue_state(decision.state)
-        if decision.waiting_retry:
-            return 0
-        if not decision.can_start:
-            return 0
-
-        self.upload_attempt += 1
-        max_attempts = self.settings.upload_retry_count + 1
-        reason = self.pending_upload_reason or "detected changes"
-        prep = prepare_upload_start(
-            reason=reason,
-            attempt=self.upload_attempt,
-            max_attempts=max_attempts,
-            batch=decision.batch,
-            pending_total=len(self.pending_upload_snapshot or []),
-            extract_scope_names=extract_names_from_snapshot_rows,
-            write_scope_file=lambda names: write_scope_names(self.upload_names_file, names),
-            build_command=self.build_upload_command,
-            format_start_message=lambda attempt, max_attempts, reason, batch_size, pending_total: (
-                format_upload_start_message_rows(
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                    reason=reason,
-                    batch_size=batch_size,
-                    pending_total=pending_total,
-                )
-            ),
-        )
-        log(prep.log_message)
-        self.inflight_upload_snapshot = list(prep.batch)
-        return self._start_and_finalize_channel_flow(
-            channel=CHANNEL_UPLOAD,
-            command=prep.command,
-            state=self._upload_queue_state(),
-            retry_count=self.settings.upload_retry_count,
-            output_file=self.upload_cmd_output_file,
-            start_channel=start_upload_channel,
-            apply_state_from_flow=lambda flow: self._apply_upload_queue_state(
-                getattr(flow, "state")
-            ),
-        )
+        return self.channel_runtime_adapter.maybe_start_upload()
 
     def handle_command_start_error(self, name: str, exc: Exception) -> int:
         # Kept for compatibility with tests/hooks that may invoke this path directly.
-        if name == CHANNEL_MAINTAIN:
-            decision = decide_maintain_start_error(
-                state=self._maintain_runtime_state(),
-                retry_count=self.settings.maintain_retry_count,
-                now_monotonic=time.monotonic(),
-                retry_delay_seconds=self.settings.command_retry_delay_seconds,
-            )
-            self._apply_maintain_runtime_state(decision.state)
-            should_retry = decision.should_retry
-        else:
-            decision = decide_upload_start_error(
-                state=self._upload_queue_state(),
-                retry_count=self.settings.upload_retry_count,
-                now_monotonic=time.monotonic(),
-                retry_delay_seconds=self.settings.command_retry_delay_seconds,
-            )
-            self._apply_upload_queue_state(decision.state)
-            should_retry = decision.should_retry
-        return self._apply_channel_start_flow_feedback(
-            channel=name,
-            status=STATUS_RETRY if should_retry else STATUS_FAILED,
-            start_exception=exc,
-            return_code=0 if should_retry else 1,
-        )
-
-    def _handle_maintain_success(self) -> None:
-        log(format_command_completed_message(CHANNEL_MAINTAIN))
-        stage = maintain_pending_progress_stage(
-            has_pending=self.pending_maintain,
-            pending_names=self.pending_maintain_names,
-        )
-        self.update_channel_progress(CHANNEL_MAINTAIN, stage=stage, done=0, total=0, force_render=True)
-
-    def _sync_post_upload_snapshots(self, *, uploaded_snapshot: list[str]) -> UploadSuccessPostProcessResult:
-        previous_uploaded_baseline = self.read_snapshot(self.last_uploaded_snapshot_file)
-
-        if self.settings.delete_uploaded_files_after_upload:
-            self.delete_uploaded_files_from_snapshot(uploaded_snapshot)
-
-        current_snapshot = self.build_snapshot(self.current_snapshot_file)
-        self.write_snapshot(self.stable_snapshot_file, current_snapshot)
-        postprocess = build_upload_success_postprocess(
-            previous_uploaded_baseline=previous_uploaded_baseline,
-            uploaded_snapshot=uploaded_snapshot,
-            current_snapshot=current_snapshot,
-        )
-        self.write_snapshot(self.last_uploaded_snapshot_file, postprocess.uploaded_baseline)
-        self.last_json_count = len(current_snapshot)
-        if self.settings.inspect_zip_files:
-            self.last_zip_signature = self.get_zip_signature()
-        self.runtime.snapshot.last_json_count = self.last_json_count
-        self.runtime.snapshot.last_zip_signature = self.last_zip_signature
-        self.runtime.snapshot.zip_extract_processed_signatures = dict(self.zip_extract_processed_signatures)
-        return postprocess
-
-    def _apply_post_upload_queue_state(self, *, postprocess: UploadSuccessPostProcessResult) -> None:
-        self.pending_upload_snapshot = postprocess.queue_snapshot
-        self.pending_upload_reason = postprocess.queue_reason
-        if postprocess.pending_snapshot:
-            log(
-                "Detected files outside uploaded baseline after upload. "
-                f"Queued next upload batch ({len(postprocess.pending_snapshot)} pending)."
-            )
-            self.update_channel_progress(CHANNEL_UPLOAD, stage=postprocess.progress_stage, force_render=True)
-            return
-        self.update_channel_progress(
-            CHANNEL_UPLOAD,
-            stage=postprocess.progress_stage,
-            done=0,
-            total=0,
-            force_render=True,
-        )
-
-    def _run_post_upload_follow_up_check_if_needed(self) -> int:
-        if not self.pending_source_changes_during_upload:
-            return 0
-        self.pending_source_changes_during_upload = False
-        log("Running immediate deep upload check after active-upload source changes.")
-        return self.check_and_maybe_upload(force_deep_scan=True)
-
-    def _queue_post_upload_maintain_if_enabled(self, *, uploaded_names: set[str]) -> None:
-        if not self.settings.run_maintain_after_upload:
-            return
-        if uploaded_names:
-            self.queue_maintain("post-upload maintain", names=uploaded_names)
-            return
-        log("Skipped post-upload maintain: no uploaded names detected.")
-
-    def _handle_upload_success(self, *, uploaded_snapshot: list[str], return_code: int) -> int:
-        log(format_command_completed_message(CHANNEL_UPLOAD))
-        postprocess = self._sync_post_upload_snapshots(uploaded_snapshot=uploaded_snapshot)
-        self._apply_post_upload_queue_state(postprocess=postprocess)
-        follow_up_exit = self._run_post_upload_follow_up_check_if_needed()
-        if follow_up_exit != 0:
-            return follow_up_exit
-        self._queue_post_upload_maintain_if_enabled(uploaded_names=postprocess.uploaded_names)
-        return return_code
-
-    def _finalize_polled_channel_flow(
-        self,
-        *,
-        channel: str,
-        exited: bool,
-        status: str | None,
-        exit_code: int | None,
-        return_code: int,
-        apply_state: Callable[[], None],
-        on_success: Callable[[], int],
-        on_non_success: Callable[[], None] | None = None,
-    ) -> int:
-        if not exited:
-            return 0
-        apply_state()
-        if status == STATUS_SUCCESS:
-            return on_success()
-        if status == STATUS_SHUTDOWN:
-            return return_code
-        feedback = build_non_success_exit_feedback(
-            channel=channel,
-            status=str(status),
-            code=int(exit_code or 0),
-            retry_delay_seconds=self.settings.command_retry_delay_seconds,
-        )
-        if feedback.message:
-            log(feedback.message)
-        if feedback.stage is not None:
-            self.update_channel_progress(channel, stage=feedback.stage, force_render=True)
-        if on_non_success is not None:
-            on_non_success()
-        return return_code
-
-    def _poll_and_finalize_channel_flow(
-        self,
-        *,
-        channel: str,
-        process: subprocess.Popen | None,
-        state: object,
-        retry_count: int,
-        poll_channel: Callable[..., object],
-        apply_state_from_flow: Callable[[object], None],
-        set_process: Callable[[subprocess.Popen | None], None],
-        on_success_from_flow: Callable[[object], int],
-        on_non_success: Callable[[], None] | None = None,
-    ) -> int:
-        flow = poll_channel(
-            process=process,
-            state=state,
-            shutdown_requested=self.shutdown_requested,
-            retry_count=retry_count,
-            retry_delay_seconds=self.settings.command_retry_delay_seconds,
-            now_monotonic=time.monotonic(),
-        )
-        set_process(getattr(flow, "process"))
-        return self._finalize_polled_channel_flow(
-            channel=channel,
-            exited=getattr(flow, "exited"),
-            status=getattr(flow, "status"),
-            exit_code=getattr(flow, "exit_code"),
-            return_code=getattr(flow, "return_code"),
-            apply_state=lambda: apply_state_from_flow(flow),
-            on_success=lambda: on_success_from_flow(flow),
-            on_non_success=on_non_success,
-        )
+        return self.channel_runtime_adapter.handle_command_start_error(name, exc)
 
     def poll_maintain_process(self) -> int:
-        return self._poll_and_finalize_channel_flow(
-            channel=CHANNEL_MAINTAIN,
-            process=self.maintain_process,
-            state=self._maintain_runtime_state(),
-            retry_count=self.settings.maintain_retry_count,
-            poll_channel=poll_maintain_channel,
-            apply_state_from_flow=lambda flow: self._apply_maintain_runtime_state(getattr(flow, "state")),
-            set_process=self._set_maintain_process,
-            on_success_from_flow=lambda flow: (
-                self._handle_maintain_success() or getattr(flow, "return_code")
-            ),
-        )
+        return self.channel_runtime_adapter.poll_maintain_process()
 
     def poll_upload_process(self) -> int:
-        uploaded_snapshot = self.inflight_upload_snapshot or []
-        return self._poll_and_finalize_channel_flow(
-            channel=CHANNEL_UPLOAD,
-            process=self.upload_process,
-            state=self._upload_queue_state(),
-            retry_count=self.settings.upload_retry_count,
-            poll_channel=poll_upload_channel,
-            apply_state_from_flow=lambda flow: self._apply_upload_queue_state(getattr(flow, "state")),
-            set_process=self._set_upload_process,
-            on_success_from_flow=lambda flow: self._handle_upload_success(
-                uploaded_snapshot=uploaded_snapshot,
-                return_code=getattr(flow, "return_code"),
-            ),
-            on_non_success=lambda: setattr(self, "pending_source_changes_during_upload", False),
-        )
+        return self.channel_runtime_adapter.poll_upload_process()
 
     def probe_changes_during_active_upload(self) -> int:
         return self.upload_runtime_adapter.probe_changes_during_active_upload()

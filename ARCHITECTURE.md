@@ -72,25 +72,23 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Internal note: channel-specific success side effects are routed through dedicated handlers (`_handle_maintain_success` / `_handle_upload_success`) to isolate post-success orchestration
 - Internal note: startup/watch/upload-scan/shutdown core orchestration has begun delegating into `cwma/auto/runtime/*` adapters, and process launch/poll/terminate paths now route through `cwma/auto/process_supervisor.py`
 - Internal note: low-value host pass-through wrappers continue to be removed in small batches (ZIP/scope/snapshot helper seams now prefer direct module wiring where compatibility hooks are not needed)
-- Internal note: maintain/upload start orchestration now reuses `_start_and_finalize_channel_flow(...)` so channel launch, runtime-state apply, and feedback dispatch stay symmetric
-- Internal note: maintain/upload poll orchestration now reuses `_poll_and_finalize_channel_flow(...)` + `_finalize_polled_channel_flow(...)` to keep process-writeback and non-success feedback handling centralized
+- Internal note: maintain/upload start-error/start/poll/post-success orchestration is now delegated to `cwma/auto/runtime/channel_runtime_adapter.py`, with host methods reduced to thin entrypoint forwarding
 - Internal note: maintain/upload process lifecycle (start-error + poll exit decisions) is now primarily delegated through `cwma/auto/runtime/channel_runtime.py`, with host methods focused on state writeback and channel-specific side effects
 - Internal note: upload-success postprocess path is decomposed into dedicated helper steps (snapshot sync, queue/progress apply, follow-up deep check, post-upload maintain queueing)
 - Internal note: host poll handlers keep only status-dispatch responsibilities after runtime poll delegation (`success` / `shutdown` / `retry/failed` feedback)
-- Internal note: upload deep-scan path (`check_and_maybe_upload`) now keeps thin-host callback closures for scan inputs, cadence gate, stability resolve, and queue/no-change state transitions
-- Internal note: active-upload source probe path now keeps thin-host callback closures for probe input capture, decision, state apply, and refresh dispatch
-- Internal note: maintain/upload start-error lifecycle now routes through dedicated decision + retry-feedback helpers to keep channel failure paths symmetric
-- Internal note: maintain/upload subprocess launch now routes through runtime channel start adapters (`start_maintain_channel` / `start_upload_channel`) backed by `process_supervisor`
-- Internal note: upload deep-scan no-change/no-pending branches share a single baseline-write callback inside `check_and_maybe_upload(...)` to keep snapshot/count/signature updates consistent
+- Internal note: upload deep-scan and active-upload source probe callback wiring is now delegated to `cwma/auto/runtime/upload_runtime_adapter.py`, with host methods reduced to thin entrypoint forwarding
+- Internal note: maintain/upload start-error lifecycle still uses dedicated decision + retry-feedback policies, now assembled by `channel_runtime_adapter` for symmetric host integration
+- Internal note: maintain/upload subprocess launch still routes through runtime channel start adapters (`start_maintain_channel` / `start_upload_channel`) backed by `process_supervisor`
+- Internal note: upload deep-scan no-change/no-pending branches share centralized baseline-write logic in `upload_runtime_adapter` to keep snapshot/count/signature updates consistent
 - Internal note: startup/watch multi-stage execution now reuses `_run_stage_sequence(...)` for consistent ordered execution and fail-fast short-circuiting
 - Internal note: startup/watch runtime invocation now keeps `_run_startup_phase` / `_run_watch_iteration` thin by isolating runtime state/dependency assembly into dedicated `_build_*_runtime_state/deps` helpers
 - Internal note: top-level `run()` loop now delegates one watch-cycle step through `_run_watch_cycle_and_maybe_sleep(...)` to centralize watch-exit vs sleep-exit control flow
 - Internal note: startup/watch runtime invocation now shares `_run_runtime_cycle(...)` template for cycle execution, state apply, and exit-code propagation symmetry
-- Internal note: upload deep-scan and active-upload probe callback orchestration is delegated to `cwma/auto/runtime/upload_runtime_adapter.py`, keeping `check_and_maybe_upload(...)` / `probe_changes_during_active_upload(...)` as thin host entrypoints
+- Internal note: channel/upload runtime adapters (`channel_runtime_adapter`, `upload_runtime_adapter`) now carry most callback orchestration complexity, materially reducing host branch density in `app.py`
 - Internal note: startup configuration log emission is centralized through `_settings_log_rows(...)` to reduce duplicated output wiring
 - Internal note: upload cleanup core logic is extracted to `cwma/auto/upload_cleanup.py`; app-layer methods now focus on orchestration + logging
 - Internal note: progress panel rendering now uses `cwma/auto/panel_render.py` pure helpers, with `render_progress_snapshot` split into snapshot build, line composition, and signature-gate steps
-- Internal note: `cwma/auto/ui_runtime.py` now handles progress-stage update and render cadence/signature gating through host delegation wrappers; remaining thin-host work is channel/watch/upload orchestration branches
+- Internal note: `cwma/auto/ui_runtime.py` now handles progress-stage update and render cadence/signature gating through host delegation wrappers; remaining thin-host work is run-loop and residual host utility consolidation
 - Internal note: startup bootstrap decisions are extracted to `cwma/auto/startup_flow.py` (`seed`, `zip follow-up`, `startup action plan`) with `_run_startup_phase` focused on orchestration
 - Internal note: watch-cycle due-maintain advancement and upload-check gating are extracted to `cwma/auto/watch_cycle.py` for pure decision logic reuse
 - Test file: `tests/test_auto_maintain.py`
@@ -239,6 +237,12 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Entry point: imported by `cwma/auto/app.py`
 - Public interface: `UploadRuntimeAdapter`
 - Responsibility: host adapter that assembles callback wiring and state writeback for upload-scan/probe runtime flows, keeping host methods thin
+
+### `cwma/auto/runtime/channel_runtime_adapter.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `ChannelRuntimeAdapter`
+- Responsibility: host adapter that assembles maintain/upload channel start-error/start/poll/post-success orchestration while reusing runtime policy modules
 
 ### `cwma/auto/runtime/shutdown_runtime.py`
 
