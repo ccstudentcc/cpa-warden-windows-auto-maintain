@@ -19,7 +19,7 @@ This repository is a derivative project based on `cpa-warden`.
 
 See [NOTICE](NOTICE) for attribution details.
 
-## Latest Project Status (2026-03-24)
+## Latest Project Status (2026-03-25)
 
 - `cwma/auto` is now capability-grouped: `orchestration`, `channel`, `state`, `infra`, `ui`, plus `runtime` adapters
 - Stage-2.6 capability split test mapping is closed out:
@@ -27,6 +27,9 @@ See [NOTICE](NOTICE) for attribution details.
   - `tests/test_auto_modules_state.py`
   - `tests/test_auto_modules_ui.py`
 - Redundant top-level `cwma/auto/*.py` compatibility wrappers have been removed; canonical paths are subpackage paths
+- Maintain queue is now modeled as staged jobs with explicit step-level transitions shared by full and incremental runs
+- Maintain service now executes explicit ordered steps (`scan -> delete_401 -> quota -> reenable -> finalize`) through a step engine + pipeline runtime policy
+- Upload stability wait now freezes the current candidate batch, defers in-window new/updated rows to next-round intake, and merges pending rows by path (`last-writer-wins`)
 
 ## Documentation Architecture
 
@@ -49,7 +52,9 @@ The goal is not replacing `cpa_warden.py`, but running it safely and continuousl
 - run `upload` and `maintain` as independent channels
 - run scheduled full maintain and post-upload incremental maintain
 - auto-switch between real-time interleaving and backlog-drain throughput modes for upload/incremental-maintain scheduling
+- execute maintain work as an explicit staged pipeline with deterministic step ordering and account-lock-aware action claims
 - isolate maintain/upload runtime DB and log files
+- keep upload stability wait bounded by freezing the current batch and deferring in-window changes to the next queue intake
 - support archive intake (`.zip/.7z/.rar`, Bandizip first, Windows fallback for `.zip`)
 - clean uploaded files and prune empty directories
 - keep single-instance safety (launcher lock + Python runtime lock)
@@ -81,9 +86,10 @@ Deep module ownership and dependency rules are maintained in [ARCHITECTURE.md](A
 3. Optionally inspect archives (`.zip/.7z/.rar`) and feed extracted JSON changes into the same upload pipeline.
 4. Queue startup maintain/upload checks according to settings.
 5. Start `upload` and `maintain` independently when each channel is idle.
-6. While child processes run, keep active probes and channel-local poll/retry handling.
-7. On upload success, update baseline, apply cleanup, and optionally queue scoped post-upload maintain.
-8. In `--once` mode, exit only after pending/running work resolves; unresolved failure exits non-zero.
+6. While child processes run, keep active probes, channel-local poll/retry handling, and maintain step-engine cycle progression.
+7. During upload stability wait, freeze the current candidate batch; defer in-window new/updated rows to the next queue intake.
+8. On upload success, update baseline, apply cleanup, and optionally queue scoped post-upload maintain.
+9. In `--once` mode, exit only after pending/running work resolves; unresolved failure exits non-zero.
 
 ## Requirements
 
