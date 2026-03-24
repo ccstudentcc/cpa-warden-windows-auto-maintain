@@ -24,6 +24,7 @@ def start_output_pump_thread(
     decode_line: Callable[[bytes | str], str],
     on_line: Callable[[str], None],
     warn: Callable[[str], None],
+    thread_factory: Callable[..., threading.Thread] = threading.Thread,
 ) -> threading.Thread | None:
     stream = getattr(proc, "stdout", None)
     if stream is None:
@@ -42,6 +43,6 @@ def start_output_pump_thread(
             except Exception:
                 pass
 
-    thread = threading.Thread(target=_pump, name=f"{channel}-output-pump", daemon=True)
+    thread = thread_factory(target=_pump, name=f"{channel}-output-pump", daemon=True)
     thread.start()
     return thread

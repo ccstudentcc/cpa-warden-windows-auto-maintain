@@ -1424,8 +1424,30 @@ class AutoModuleTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.stdout = BytesIO("维护完成\n".encode("utf-8"))
 
+        class _FakeThread:
+            def __init__(self, *, target: object, name: str, daemon: bool) -> None:
+                self._target = target
+                self.name = name
+                self.daemon = daemon
+                self.started = False
+
+            def start(self) -> None:
+                self.started = True
+                if callable(self._target):
+                    self._target()
+
+            def join(self, timeout: float | None = None) -> None:
+                return None
+
         received: list[str] = []
         warnings: list[str] = []
+        fake_threads: list[_FakeThread] = []
+
+        def _thread_factory(*, target: object, name: str, daemon: bool) -> _FakeThread:
+            thread = _FakeThread(target=target, name=name, daemon=daemon)
+            fake_threads.append(thread)
+            return thread
+
         proc = _Proc()
         thread = start_output_pump_thread(
             channel="maintain",
@@ -1433,11 +1455,15 @@ class AutoModuleTests(unittest.TestCase):
             decode_line=lambda raw: raw.decode("utf-8") if isinstance(raw, bytes) else raw,
             on_line=lambda line: received.append(line),
             warn=lambda msg: warnings.append(msg),
+            thread_factory=_thread_factory,  # type: ignore[arg-type]
         )
         self.assertIsNotNone(thread)
         if thread is None:
             self.fail("expected output pump thread")
-        thread.join(timeout=1)
+        self.assertEqual(len(fake_threads), 1)
+        self.assertTrue(fake_threads[0].started)
+        self.assertEqual(fake_threads[0].name, "maintain-output-pump")
+        self.assertTrue(fake_threads[0].daemon)
         self.assertEqual(received, ["维护完成\n"])
         self.assertEqual(warnings, [])
 
