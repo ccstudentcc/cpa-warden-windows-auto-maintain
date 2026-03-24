@@ -32,6 +32,38 @@ from ..warden.interactive import (
     prompt_string as prompt_string_interactive,
     prompt_yes_no as prompt_yes_no_interactive,
 )
+from ..warden.api.management import (
+    build_management_headers as mgmt_headers_warden,
+    delete_account_async as delete_account_async_warden,
+    fetch_auth_files as fetch_auth_files_warden,
+    fetch_remote_auth_file_names as fetch_remote_auth_file_names_warden,
+    set_account_disabled_async as set_account_disabled_async_warden,
+)
+from ..warden.api.usage_probe import (
+    build_wham_usage_payload as build_wham_usage_payload_warden,
+    extract_remaining_ratio as extract_remaining_ratio_warden,
+    find_spark_rate_limit as find_spark_rate_limit_warden,
+    probe_wham_usage_async as probe_wham_usage_async_warden,
+)
+from ..warden.models import (
+    AUTH_ACCOUNT_COLUMNS as AUTH_ACCOUNT_COLUMNS_WARDEN,
+    build_auth_record as build_auth_record_warden,
+    compact_text as compact_text_warden,
+    extract_chatgpt_account_id_from_item as extract_chatgpt_account_id_from_item_warden,
+    extract_id_token_plan_type as extract_id_token_plan_type_warden,
+    get_id_token_object as get_id_token_object_warden,
+    get_item_account as get_item_account_warden,
+    get_item_name as get_item_name_warden,
+    get_item_type as get_item_type_warden,
+    matches_filters as matches_filters_warden,
+    maybe_json_loads as maybe_json_loads_warden,
+    normalize_optional_flag as normalize_optional_flag_warden,
+    normalize_optional_number as normalize_optional_number_warden,
+    normalize_optional_ratio as normalize_optional_ratio_warden,
+    pick_first_number as pick_first_number_warden,
+    resolve_quota_remaining_ratio as resolve_quota_remaining_ratio_warden,
+    resolve_quota_signal as resolve_quota_signal_warden,
+)
 from ..warden.services.maintain_scope import (
     load_name_scope_file as load_name_scope_file_warden,
     resolve_maintain_name_scope as resolve_maintain_name_scope_warden,
@@ -90,51 +122,7 @@ DEFAULT_QUOTA_DISABLE_THRESHOLD = 0.0
 WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 SPARK_METERED_FEATURE = "codex_bengalfox"
 
-AUTH_ACCOUNT_COLUMNS = [
-    "name",
-    "disabled",
-    "id_token_json",
-    "email",
-    "provider",
-    "source",
-    "unavailable",
-    "auth_index",
-    "account",
-    "type",
-    "runtime_only",
-    "status",
-    "status_message",
-    "chatgpt_account_id",
-    "id_token_plan_type",
-    "auth_updated_at",
-    "auth_modtime",
-    "auth_last_refresh",
-    "api_http_status",
-    "api_status_code",
-    "usage_allowed",
-    "usage_limit_reached",
-    "usage_plan_type",
-    "usage_email",
-    "usage_reset_at",
-    "usage_reset_after_seconds",
-    "usage_spark_allowed",
-    "usage_spark_limit_reached",
-    "usage_spark_reset_at",
-    "usage_spark_reset_after_seconds",
-    "quota_signal_source",
-    "is_invalid_401",
-    "is_quota_limited",
-    "is_recovered",
-    "probe_error_kind",
-    "probe_error_text",
-    "managed_reason",
-    "last_action",
-    "last_action_status",
-    "last_action_error",
-    "last_seen_at",
-    "last_probed_at",
-    "updated_at",
-]
+AUTH_ACCOUNT_COLUMNS = list(AUTH_ACCOUNT_COLUMNS_WARDEN)
 
 
 LOGGER = logging.getLogger("cpa_warden")
@@ -220,63 +208,23 @@ def safe_json(resp: requests.Response) -> dict[str, Any]:
 
 
 def maybe_json_loads(value: Any) -> Any:
-    if isinstance(value, (dict, list)):
-        return value
-    if not isinstance(value, str):
-        return None
-    stripped = value.strip()
-    if not stripped:
-        return None
-    try:
-        return json.loads(stripped)
-    except Exception:
-        return None
+    return maybe_json_loads_warden(value)
 
 
 def compact_text(text: Any, limit: int = 240) -> str | None:
-    if text is None:
-        return None
-    normalized = str(text).replace("\r", " ").replace("\n", " ").strip()
-    if not normalized:
-        return None
-    if len(normalized) <= limit:
-        return normalized
-    return normalized[: max(0, limit - 3)] + "..."
+    return compact_text_warden(text, limit=limit)
 
 
 def normalize_optional_flag(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return int(value)
-    if value is None:
-        return None
-    try:
-        normalized = int(value)
-    except (TypeError, ValueError):
-        return None
-    return normalized if normalized in {0, 1} else None
+    return normalize_optional_flag_warden(value)
 
 
 def normalize_optional_number(value: Any) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        normalized = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(normalized):
-        return None
-    return normalized
+    return normalize_optional_number_warden(value)
 
 
 def normalize_optional_ratio(value: Any) -> float | None:
-    normalized = normalize_optional_number(value)
-    if normalized is None:
-        return None
-    if normalized < 0:
-        return 0.0
-    if normalized > 1:
-        return 1.0
-    return normalized
+    return normalize_optional_ratio_warden(value)
 
 
 def retry_backoff_seconds(attempt: int) -> float:
@@ -284,124 +232,23 @@ def retry_backoff_seconds(attempt: int) -> float:
 
 
 def pick_first_number(record: dict[str, Any], keys: tuple[str, ...]) -> float | None:
-    for key in keys:
-        if key not in record:
-            continue
-        value = normalize_optional_number(record.get(key))
-        if value is not None:
-            return value
-    return None
+    return pick_first_number_warden(record, keys)
 
 
 def extract_remaining_ratio(rate_limit: dict[str, Any] | None) -> float | None:
-    if not isinstance(rate_limit, dict):
-        return None
-
-    total_keys = (
-        "total",
-        "limit",
-        "max",
-        "maximum",
-        "quota",
-        "request_limit",
-        "requests_limit",
-        "total_requests",
-    )
-    remaining_keys = (
-        "remaining",
-        "remaining_requests",
-        "requests_remaining",
-        "available",
-        "available_requests",
-        "left",
-    )
-    used_keys = (
-        "used",
-        "consumed",
-        "used_requests",
-        "requests_used",
-        "spent",
-    )
-
-    windows: list[dict[str, Any]] = [rate_limit]
-    for window_key in ("primary_window", "window", "current_window"):
-        window = rate_limit.get(window_key)
-        if isinstance(window, dict):
-            windows.append(window)
-
-    for window in windows:
-        total = pick_first_number(window, total_keys)
-        if total is None or total <= 0:
-            continue
-        remaining = pick_first_number(window, remaining_keys)
-        used = pick_first_number(window, used_keys)
-        if remaining is None and used is None:
-            continue
-        if remaining is not None:
-            ratio = remaining / total
-        else:
-            ratio = (total - used) / total
-        return normalize_optional_ratio(ratio)
-    return None
+    return extract_remaining_ratio_warden(rate_limit)
 
 
 def find_spark_rate_limit(parsed_body: dict[str, Any]) -> dict[str, Any] | None:
-    additional_limits = parsed_body.get("additional_rate_limits")
-    if not isinstance(additional_limits, list):
-        return None
-
-    spark_candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for item in additional_limits:
-        if not isinstance(item, dict):
-            continue
-        rate_limit = item.get("rate_limit")
-        if not isinstance(rate_limit, dict):
-            continue
-        spark_candidates.append((item, rate_limit))
-
-    for item, rate_limit in spark_candidates:
-        metered_feature = str(item.get("metered_feature") or "").strip().lower()
-        if metered_feature == SPARK_METERED_FEATURE:
-            return rate_limit
-
-    for item, rate_limit in spark_candidates:
-        limit_name = str(item.get("limit_name") or "").strip().lower()
-        if "spark" in limit_name:
-            return rate_limit
-
-    return None
+    return find_spark_rate_limit_warden(parsed_body, spark_metered_feature=SPARK_METERED_FEATURE)
 
 
 def resolve_quota_signal(record: dict[str, Any]) -> tuple[int | None, int | None, str]:
-    plan_type = str(record.get("usage_plan_type") or record.get("id_token_plan_type") or "").strip().lower()
-    spark_limit_reached = normalize_optional_flag(record.get("usage_spark_limit_reached"))
-    spark_allowed = normalize_optional_flag(record.get("usage_spark_allowed"))
-    primary_limit_reached = normalize_optional_flag(record.get("usage_limit_reached"))
-    primary_allowed = normalize_optional_flag(record.get("usage_allowed"))
-
-    if plan_type == "pro" and spark_limit_reached is not None:
-        effective_allowed = spark_allowed if spark_allowed is not None else primary_allowed
-        return spark_limit_reached, effective_allowed, "spark"
-    return primary_limit_reached, primary_allowed, "primary"
+    return resolve_quota_signal_warden(record)
 
 
 def resolve_quota_remaining_ratio(record: dict[str, Any]) -> tuple[float | None, str]:
-    _, _, quota_signal_source = resolve_quota_signal(record)
-    primary_ratio = normalize_optional_ratio(record.get("usage_remaining_ratio"))
-    spark_ratio = normalize_optional_ratio(record.get("usage_spark_remaining_ratio"))
-
-    if quota_signal_source == "spark":
-        if spark_ratio is not None:
-            return spark_ratio, "spark"
-        if primary_ratio is not None:
-            return primary_ratio, "primary_fallback"
-        return None, "spark"
-
-    if primary_ratio is not None:
-        return primary_ratio, "primary"
-    if spark_ratio is not None:
-        return spark_ratio, "spark_fallback"
-    return None, "primary"
+    return resolve_quota_remaining_ratio_warden(record)
 
 
 def ensure_aiohttp() -> None:
@@ -411,46 +258,31 @@ def ensure_aiohttp() -> None:
 
 
 def get_item_name(item: dict[str, Any]) -> str:
-    return str(item.get("name") or item.get("id") or "").strip()
+    return get_item_name_warden(item)
 
 
 def get_item_type(item: dict[str, Any]) -> str:
-    return str(item.get("type") or item.get("typo") or "").strip()
+    return get_item_type_warden(item)
 
 
 def get_item_account(item: dict[str, Any]) -> str:
-    return str(item.get("account") or item.get("email") or "").strip()
+    return get_item_account_warden(item)
 
 
 def get_id_token_object(item: dict[str, Any]) -> dict[str, Any]:
-    parsed = maybe_json_loads(item.get("id_token"))
-    return parsed if isinstance(parsed, dict) else {}
+    return get_id_token_object_warden(item)
 
 
 def extract_chatgpt_account_id_from_item(item: dict[str, Any]) -> str:
-    id_token = get_id_token_object(item)
-    for source in (id_token, item):
-        for key in ("chatgpt_account_id", "chatgptAccountId", "account_id", "accountId"):
-            value = source.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    return ""
+    return extract_chatgpt_account_id_from_item_warden(item)
 
 
 def extract_id_token_plan_type(item: dict[str, Any]) -> str:
-    id_token = get_id_token_object(item)
-    value = id_token.get("plan_type")
-    return value.strip() if isinstance(value, str) else ""
+    return extract_id_token_plan_type_warden(item)
 
 
 def mgmt_headers(token: str, include_json: bool = False) -> dict[str, str]:
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json, text/plain, */*",
-    }
-    if include_json:
-        headers["Content-Type"] = "application/json"
-    return headers
+    return mgmt_headers_warden(token, include_json=include_json)
 
 
 def config_lookup(conf: dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -724,62 +556,11 @@ def build_auth_record(
     existing_row: dict[str, Any] | None,
     now_iso: str,
 ) -> dict[str, Any]:
-    id_token_obj = get_id_token_object(item)
-    id_token_json = json.dumps(id_token_obj, ensure_ascii=False) if id_token_obj else None
-    existing_row = existing_row or {}
-    return {
-        "name": get_item_name(item),
-        "disabled": int(bool(item.get("disabled"))),
-        "id_token_json": id_token_json,
-        "email": str(item.get("email") or "").strip() or None,
-        "provider": str(item.get("provider") or "").strip() or None,
-        "source": str(item.get("source") or "").strip() or None,
-        "unavailable": int(bool(item.get("unavailable"))),
-        "auth_index": str(item.get("auth_index") or "").strip() or None,
-        "account": get_item_account(item) or None,
-        "type": get_item_type(item) or None,
-        "runtime_only": int(bool(item.get("runtime_only"))),
-        "status": str(item.get("status") or "").strip() or None,
-        "status_message": compact_text(item.get("status_message"), 1200),
-        "chatgpt_account_id": extract_chatgpt_account_id_from_item(item) or None,
-        "id_token_plan_type": extract_id_token_plan_type(item) or None,
-        "auth_updated_at": str(item.get("updated_at") or "").strip() or None,
-        "auth_modtime": str(item.get("modtime") or "").strip() or None,
-        "auth_last_refresh": str(item.get("last_refresh") or "").strip() or None,
-        "api_http_status": None,
-        "api_status_code": None,
-        "usage_allowed": None,
-        "usage_limit_reached": None,
-        "usage_plan_type": None,
-        "usage_email": None,
-        "usage_reset_at": None,
-        "usage_reset_after_seconds": None,
-        "usage_spark_allowed": None,
-        "usage_spark_limit_reached": None,
-        "usage_spark_reset_at": None,
-        "usage_spark_reset_after_seconds": None,
-        "quota_signal_source": None,
-        "is_invalid_401": 0,
-        "is_quota_limited": 0,
-        "is_recovered": 0,
-        "probe_error_kind": None,
-        "probe_error_text": None,
-        "managed_reason": existing_row.get("managed_reason"),
-        "last_action": existing_row.get("last_action"),
-        "last_action_status": existing_row.get("last_action_status"),
-        "last_action_error": existing_row.get("last_action_error"),
-        "last_seen_at": now_iso,
-        "last_probed_at": None,
-        "updated_at": now_iso,
-    }
+    return build_auth_record_warden(item, existing_row, now_iso)
 
 
 def matches_filters(record: dict[str, Any], target_type: str, provider: str) -> bool:
-    if str(record.get("type") or "").lower() != target_type.lower():
-        return False
-    if provider and str(record.get("provider") or "").lower() != provider.lower():
-        return False
-    return True
+    return matches_filters_warden(record, target_type, provider)
 
 
 def load_name_scope_file(path_text: str, *, option_label: str) -> set[str]:
@@ -797,16 +578,15 @@ def resolve_upload_name_scope(settings: dict[str, Any]) -> set[str] | None:
 def fetch_auth_files(base_url: str, token: str, timeout: int) -> list[dict[str, Any]]:
     LOGGER.info("开始拉取 auth-files 列表")
     LOGGER.debug("GET %s/v0/management/auth-files", base_url.rstrip("/"))
-    resp = requests.get(
-        f"{base_url.rstrip('/')}/v0/management/auth-files",
-        headers=mgmt_headers(token),
-        timeout=timeout,
+    files = fetch_auth_files_warden(
+        base_url,
+        token,
+        timeout,
+        headers_builder=mgmt_headers,
+        json_loader=safe_json,
     )
-    resp.raise_for_status()
-    data = safe_json(resp)
-    files = data.get("files")
-    LOGGER.info("auth-files 拉取完成: %s", len(files) if isinstance(files, list) else 0)
-    return files if isinstance(files, list) else []
+    LOGGER.info("auth-files 拉取完成: %s", len(files))
+    return files
 
 
 def discover_upload_files(upload_dir: str, recursive: bool) -> list[Path]:
@@ -824,13 +604,13 @@ def select_upload_candidates(
 
 
 def fetch_remote_auth_file_names(base_url: str, token: str, timeout: int) -> set[str]:
-    files = fetch_auth_files(base_url, token, timeout)
-    names = set()
-    for item in files:
-        name = get_item_name(item)
-        if name:
-            names.add(name)
-    return names
+    return fetch_remote_auth_file_names_warden(
+        base_url,
+        token,
+        timeout,
+        fetcher=fetch_auth_files,
+        name_extractor=get_item_name,
+    )
 
 
 def mark_upload_skipped_remote_exists(
@@ -1498,17 +1278,12 @@ async def run_upload_async(
 
 
 def build_wham_usage_payload(auth_index: str, user_agent: str, chatgpt_account_id: str) -> dict[str, Any]:
-    return {
-        "authIndex": auth_index,
-        "method": "GET",
-        "url": WHAM_USAGE_URL,
-        "header": {
-            "Authorization": "Bearer $TOKEN$",
-            "Content-Type": "application/json",
-            "User-Agent": user_agent,
-            "Chatgpt-Account-Id": chatgpt_account_id,
-        },
-    }
+    return build_wham_usage_payload_warden(
+        auth_index,
+        user_agent,
+        chatgpt_account_id,
+        usage_url=WHAM_USAGE_URL,
+    )
 
 
 async def probe_wham_usage_async(
@@ -1521,241 +1296,22 @@ async def probe_wham_usage_async(
     retries: int,
     user_agent: str,
 ) -> dict[str, Any]:
-    result = dict(record)
-    result["last_probed_at"] = utc_now_iso()
-    LOGGER.debug(
-        "开始探测账号: name=%s auth_index=%s unavailable=%s disabled=%s has_account_id=%s",
-        result.get("name"),
-        result.get("auth_index"),
-        bool(result.get("unavailable")),
-        bool(result.get("disabled")),
-        "yes" if result.get("chatgpt_account_id") else "no",
+    return await probe_wham_usage_async_warden(
+        session,
+        semaphore,
+        base_url,
+        token,
+        record,
+        timeout,
+        retries,
+        user_agent,
+        headers_builder=mgmt_headers,
+        backoff_seconds=retry_backoff_seconds,
+        now_iso=utc_now_iso,
+        quota_signal_resolver=resolve_quota_signal,
+        logger=LOGGER,
+        usage_url=WHAM_USAGE_URL,
     )
-
-    auth_index = str(result.get("auth_index") or "").strip()
-    account_id = str(result.get("chatgpt_account_id") or "").strip()
-
-    if not auth_index:
-        result["probe_error_kind"] = "missing_auth_index"
-        result["probe_error_text"] = "missing auth_index"
-        LOGGER.debug("跳过账号: name=%s reason=missing_auth_index", result.get("name"))
-        return result
-
-    if not account_id:
-        result["probe_error_kind"] = "missing_chatgpt_account_id"
-        result["probe_error_text"] = "missing Chatgpt-Account-Id"
-        LOGGER.debug("跳过账号: name=%s reason=missing_chatgpt_account_id", result.get("name"))
-        return result
-
-    payload = build_wham_usage_payload(auth_index, user_agent, account_id)
-    url = f"{base_url.rstrip('/')}/v0/management/api-call"
-
-    for attempt in range(retries + 1):
-        try:
-            async with semaphore:
-                async with session.post(
-                    url,
-                    headers=mgmt_headers(token, include_json=True),
-                    json=payload,
-                    timeout=timeout,
-                ) as resp:
-                    text = await resp.text()
-                    result["api_http_status"] = resp.status
-
-                    if resp.status == 429:
-                        result["probe_error_kind"] = "management_api_http_429"
-                        result["probe_error_text"] = "management api-call http 429"
-                        if attempt < retries:
-                            delay = retry_backoff_seconds(attempt)
-                            LOGGER.debug(
-                                "探测受限重试: name=%s api_http=429 attempt=%s/%s delay=%.2fs",
-                                result.get("name"),
-                                attempt + 1,
-                                retries + 1,
-                                delay,
-                            )
-                            await asyncio.sleep(delay)
-                            continue
-                        LOGGER.debug("探测失败: name=%s api_http=429 retries_exhausted=true", result.get("name"))
-                        return result
-                    if resp.status >= 500:
-                        result["probe_error_kind"] = "management_api_http_5xx"
-                        result["probe_error_text"] = f"management api-call http {resp.status}"
-                        if attempt < retries:
-                            delay = retry_backoff_seconds(attempt)
-                            LOGGER.debug(
-                                "探测服务端错误重试: name=%s api_http=%s attempt=%s/%s delay=%.2fs",
-                                result.get("name"),
-                                resp.status,
-                                attempt + 1,
-                                retries + 1,
-                                delay,
-                            )
-                            await asyncio.sleep(delay)
-                            continue
-                        LOGGER.debug(
-                            "探测失败: name=%s api_http=%s retries_exhausted=true",
-                            result.get("name"),
-                            resp.status,
-                        )
-                        return result
-                    if resp.status >= 400:
-                        result["probe_error_kind"] = "management_api_http_4xx"
-                        result["probe_error_text"] = f"management api-call http {resp.status}"
-                        LOGGER.debug("探测失败: name=%s api_http=%s", result.get("name"), resp.status)
-                        return result
-
-                    try:
-                        outer = json.loads(text)
-                    except Exception:
-                        result["probe_error_kind"] = "api_call_invalid_json"
-                        result["probe_error_text"] = "api-call response is not valid JSON"
-                        LOGGER.debug("探测失败: name=%s reason=api_call_invalid_json", result.get("name"))
-                        return result
-
-                    if not isinstance(outer, dict):
-                        result["probe_error_kind"] = "api_call_not_object"
-                        result["probe_error_text"] = f"api-call response is not JSON object: {type(outer).__name__}"
-                        LOGGER.debug("探测失败: name=%s reason=api_call_not_object", result.get("name"))
-                        return result
-
-                    status_code = outer.get("status_code")
-                    result["api_status_code"] = status_code
-                    if status_code is None:
-                        result["probe_error_kind"] = "missing_status_code"
-                        result["probe_error_text"] = "missing status_code in api-call response"
-                        LOGGER.debug("探测失败: name=%s reason=missing_status_code", result.get("name"))
-                        return result
-
-                    if status_code == 401:
-                        result["probe_error_kind"] = None
-                        result["probe_error_text"] = None
-                        LOGGER.debug("探测完成: name=%s status_code=401", result.get("name"))
-                        return result
-
-                    body = outer.get("body")
-                    if isinstance(body, dict):
-                        parsed_body = body
-                    elif isinstance(body, str):
-                        try:
-                            parsed_body = json.loads(body)
-                        except Exception:
-                            result["probe_error_kind"] = "body_invalid_json"
-                            result["probe_error_text"] = "api-call body is not valid JSON"
-                            LOGGER.debug("探测失败: name=%s reason=body_invalid_json", result.get("name"))
-                            return result
-                    elif body is None:
-                        parsed_body = {}
-                    else:
-                        result["probe_error_kind"] = "body_not_object"
-                        result["probe_error_text"] = f"api-call body is not JSON object: {type(body).__name__}"
-                        LOGGER.debug("探测失败: name=%s reason=body_not_object", result.get("name"))
-                        return result
-
-                    if parsed_body and not isinstance(parsed_body, dict):
-                        result["probe_error_kind"] = "body_not_object"
-                        result["probe_error_text"] = f"api-call body is not JSON object: {type(parsed_body).__name__}"
-                        LOGGER.debug("探测失败: name=%s reason=body_not_object", result.get("name"))
-                        return result
-
-                    rate_limit = parsed_body.get("rate_limit") if isinstance(parsed_body, dict) else None
-                    primary_window = rate_limit.get("primary_window") if isinstance(rate_limit, dict) else None
-                    result["usage_allowed"] = (
-                        int(rate_limit.get("allowed"))
-                        if isinstance(rate_limit, dict) and isinstance(rate_limit.get("allowed"), bool)
-                        else None
-                    )
-                    result["usage_limit_reached"] = (
-                        int(rate_limit.get("limit_reached"))
-                        if isinstance(rate_limit, dict) and isinstance(rate_limit.get("limit_reached"), bool)
-                        else None
-                    )
-                    result["usage_remaining_ratio"] = extract_remaining_ratio(rate_limit)
-                    result["usage_plan_type"] = (
-                        str(parsed_body.get("plan_type") or "").strip() or None
-                        if isinstance(parsed_body, dict)
-                        else None
-                    )
-                    result["usage_email"] = (
-                        str(parsed_body.get("email") or "").strip() or None
-                        if isinstance(parsed_body, dict)
-                        else None
-                    )
-                    result["usage_reset_at"] = (
-                        int(primary_window.get("reset_at"))
-                        if isinstance(primary_window, dict) and primary_window.get("reset_at") is not None
-                        else None
-                    )
-                    result["usage_reset_after_seconds"] = (
-                        int(primary_window.get("reset_after_seconds"))
-                        if isinstance(primary_window, dict) and primary_window.get("reset_after_seconds") is not None
-                        else None
-                    )
-                    spark_rate_limit = find_spark_rate_limit(parsed_body) if isinstance(parsed_body, dict) else None
-                    spark_primary_window = spark_rate_limit.get("primary_window") if isinstance(spark_rate_limit, dict) else None
-                    result["usage_spark_allowed"] = (
-                        int(spark_rate_limit.get("allowed"))
-                        if isinstance(spark_rate_limit, dict) and isinstance(spark_rate_limit.get("allowed"), bool)
-                        else None
-                    )
-                    result["usage_spark_limit_reached"] = (
-                        int(spark_rate_limit.get("limit_reached"))
-                        if isinstance(spark_rate_limit, dict) and isinstance(spark_rate_limit.get("limit_reached"), bool)
-                        else None
-                    )
-                    result["usage_spark_remaining_ratio"] = extract_remaining_ratio(spark_rate_limit)
-                    result["usage_spark_reset_at"] = (
-                        int(spark_primary_window.get("reset_at"))
-                        if isinstance(spark_primary_window, dict) and spark_primary_window.get("reset_at") is not None
-                        else None
-                    )
-                    result["usage_spark_reset_after_seconds"] = (
-                        int(spark_primary_window.get("reset_after_seconds"))
-                        if isinstance(spark_primary_window, dict) and spark_primary_window.get("reset_after_seconds") is not None
-                        else None
-                    )
-                    effective_limit_reached, effective_allowed, quota_signal_source = resolve_quota_signal(result)
-                    result["quota_signal_source"] = quota_signal_source
-
-                    if status_code == 200:
-                        result["probe_error_kind"] = None
-                        result["probe_error_text"] = None
-                        LOGGER.debug(
-                            "探测完成: name=%s api_http=%s status_code=%s limit_reached=%s allowed=%s source=%s remaining_ratio=%s spark_limit_reached=%s spark_remaining_ratio=%s",
-                            result.get("name"),
-                            result.get("api_http_status"),
-                            result.get("api_status_code"),
-                            effective_limit_reached,
-                            effective_allowed,
-                            result.get("quota_signal_source"),
-                            result.get("usage_remaining_ratio"),
-                            result.get("usage_spark_limit_reached"),
-                            result.get("usage_spark_remaining_ratio"),
-                        )
-                        return result
-
-                    result["probe_error_kind"] = "other"
-                    result["probe_error_text"] = f"unexpected upstream status_code={status_code}"
-                    LOGGER.debug(
-                        "探测异常: name=%s api_http=%s status_code=%s",
-                        result.get("name"),
-                        result.get("api_http_status"),
-                        status_code,
-                    )
-                    return result
-        except asyncio.TimeoutError:
-            result["probe_error_kind"] = "timeout"
-            result["probe_error_text"] = "timeout"
-            LOGGER.debug("探测超时: name=%s attempt=%s", result.get("name"), attempt + 1)
-        except Exception as exc:
-            result["probe_error_kind"] = "other"
-            result["probe_error_text"] = str(exc)
-            LOGGER.debug("探测异常: name=%s error=%s", result.get("name"), exc)
-
-        if attempt >= retries:
-            return result
-
-    return result
 
 
 def classify_account_state(record: dict[str, Any], *, quota_disable_threshold: float) -> dict[str, Any]:
@@ -1989,63 +1545,19 @@ async def delete_account_async(
     timeout: int,
     delete_retries: int,
 ) -> dict[str, Any]:
-    encoded_name = urllib.parse.quote(name, safe="")
-    url = f"{base_url.rstrip('/')}/v0/management/auth-files?name={encoded_name}"
-    max_attempts = max(1, int(delete_retries) + 1)
-    for attempt in range(max_attempts):
-        try:
-            async with semaphore:
-                async with session.delete(url, headers=mgmt_headers(token), timeout=timeout) as resp:
-                    text = await resp.text()
-                    data = maybe_json_loads(text)
-                    ok = resp.status == 200 and isinstance(data, dict) and data.get("status") == "ok"
-                    if ok:
-                        return {
-                            "name": name,
-                            "ok": True,
-                            "status_code": resp.status,
-                            "error": None,
-                            "attempts": attempt + 1,
-                        }
-
-                    should_retry = resp.status in {408, 425, 429} or resp.status >= 500
-                    if should_retry and attempt < (max_attempts - 1):
-                        wait_seconds = min(5.0, 0.5 * (2**attempt))
-                        LOGGER.debug(
-                            "删除失败准备重试: name=%s status=%s attempt=%s/%s wait=%.1fs",
-                            name,
-                            resp.status,
-                            attempt + 1,
-                            max_attempts,
-                            wait_seconds,
-                        )
-                        await asyncio.sleep(wait_seconds)
-                        continue
-
-                    return {
-                        "name": name,
-                        "ok": False,
-                        "status_code": resp.status,
-                        "error": compact_text(text, 200),
-                        "attempts": attempt + 1,
-                    }
-        except Exception as exc:
-            if attempt < (max_attempts - 1):
-                wait_seconds = min(5.0, 0.5 * (2**attempt))
-                LOGGER.debug(
-                    "删除异常准备重试: name=%s attempt=%s/%s error=%s wait=%.1fs",
-                    name,
-                    attempt + 1,
-                    max_attempts,
-                    exc,
-                    wait_seconds,
-                )
-                await asyncio.sleep(wait_seconds)
-                continue
-
-            return {"name": name, "ok": False, "status_code": None, "error": str(exc), "attempts": attempt + 1}
-
-    return {"name": name, "ok": False, "status_code": None, "error": "unreachable", "attempts": 0}
+    return await delete_account_async_warden(
+        session,
+        semaphore,
+        base_url,
+        token,
+        name,
+        timeout,
+        delete_retries,
+        headers_builder=mgmt_headers,
+        maybe_json_loads=maybe_json_loads,
+        compact_text=compact_text,
+        logger=LOGGER,
+    )
 
 
 async def set_account_disabled_async(
@@ -2057,34 +1569,18 @@ async def set_account_disabled_async(
     disabled: bool,
     timeout: int,
 ) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/v0/management/auth-files/status"
-    payload = {"name": name, "disabled": bool(disabled)}
-    try:
-        async with semaphore:
-            async with session.patch(
-                url,
-                headers=mgmt_headers(token, include_json=True),
-                json=payload,
-                timeout=timeout,
-            ) as resp:
-                text = await resp.text()
-                data = maybe_json_loads(text)
-                ok = resp.status == 200 and isinstance(data, dict) and data.get("status") == "ok"
-                return {
-                    "name": name,
-                    "ok": ok,
-                    "disabled": bool(disabled),
-                    "status_code": resp.status,
-                    "error": None if ok else compact_text(text, 200),
-                }
-    except Exception as exc:
-        return {
-            "name": name,
-            "ok": False,
-            "disabled": bool(disabled),
-            "status_code": None,
-            "error": str(exc),
-        }
+    return await set_account_disabled_async_warden(
+        session,
+        semaphore,
+        base_url,
+        token,
+        name,
+        disabled,
+        timeout,
+        headers_builder=mgmt_headers,
+        maybe_json_loads=maybe_json_loads,
+        compact_text=compact_text,
+    )
 
 
 async def run_action_group_async(
