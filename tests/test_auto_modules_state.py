@@ -7,6 +7,8 @@ import tempfile
 
 from cwma.auto.state.active_probe import ActiveUploadProbeState, decide_active_upload_probe
 from cwma.auto.state.maintain_queue import (
+    MAINTAIN_SCOPE_FULL,
+    MAINTAIN_SCOPE_INCREMENTAL,
     MaintainQueueState,
     MaintainRuntimeState,
     clear_maintain_queue_state,
@@ -601,6 +603,9 @@ class AutoModuleStateTests(unittest.TestCase):
         self.assertEqual(result.state.reason, "inc")
         self.assertEqual(result.state.names, {"a.json", "b.json"})
         self.assertEqual(result.progress_stage, "pending_incremental")
+        self.assertEqual(len(result.state.pipeline.maintain_scan_queue), 1)
+        job_id = result.state.pipeline.maintain_scan_queue[0]
+        self.assertEqual(result.state.pipeline.jobs[job_id].scope_type, MAINTAIN_SCOPE_INCREMENTAL)
 
     def test_merge_incremental_maintain_names_noop_when_full_queued(self) -> None:
         state = MaintainQueueState(pending=True, reason="full", names=None)
@@ -637,6 +642,22 @@ class AutoModuleStateTests(unittest.TestCase):
         self.assertFalse(decision.state.pending)
         self.assertIsNone(decision.state.reason)
         self.assertIsNone(decision.state.names)
+        self.assertEqual(decision.state.pipeline.jobs, {})
+
+    def test_queue_maintain_request_full_overrides_incremental_pipeline_jobs(self) -> None:
+        state = clear_maintain_queue_state()
+        state = queue_maintain_request(
+            state=state,
+            reason="post-upload maintain",
+            names={"a.json", "b.json"},
+        ).state
+        state = queue_maintain_request(state=state, reason="scheduled full", names=None).state
+
+        self.assertTrue(state.pending)
+        self.assertIsNone(state.names)
+        self.assertEqual(len(state.pipeline.jobs), 1)
+        full_job_id = state.pipeline.maintain_scan_queue[0]
+        self.assertEqual(state.pipeline.jobs[full_job_id].scope_type, MAINTAIN_SCOPE_FULL)
 
     def test_decide_maintain_start_scope_incremental_slices_remaining(self) -> None:
         state = MaintainQueueState(

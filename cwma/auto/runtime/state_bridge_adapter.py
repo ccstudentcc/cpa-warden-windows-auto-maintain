@@ -13,10 +13,8 @@ from ..state.maintain_queue import (
 )
 from ..state.runtime_state import (
     build_composed_maintain_runtime_state,
-    build_maintain_queue_state,
     build_maintain_runtime_state,
     build_upload_queue_state,
-    unpack_maintain_queue_state,
     unpack_maintain_runtime_state,
     unpack_upload_queue_state,
 )
@@ -93,23 +91,13 @@ class StateBridgeAdapter:
         )
 
     def maintain_queue_state(self) -> MaintainQueueState:
-        return build_maintain_queue_state(
-            pending=self.host.pending_maintain,
-            reason=self.host.pending_maintain_reason,
-            names=self.host.pending_maintain_names,
-        )
+        return self.host.runtime.maintain.queue
 
     def apply_maintain_queue_state(self, state: MaintainQueueState) -> None:
-        (
-            self.host.pending_maintain,
-            self.host.pending_maintain_reason,
-            self.host.pending_maintain_names,
-        ) = unpack_maintain_queue_state(state)
-        self.host.runtime.maintain.queue = build_maintain_queue_state(
-            pending=self.host.pending_maintain,
-            reason=self.host.pending_maintain_reason,
-            names=self.host.pending_maintain_names,
-        )
+        self.host.pending_maintain = state.pending
+        self.host.pending_maintain_reason = state.reason
+        self.host.pending_maintain_names = None if state.names is None else set(state.names)
+        self.host.runtime.maintain.queue = state
 
     def maintain_runtime_state(self) -> MaintainRuntimeState:
         return build_maintain_runtime_state(
@@ -126,11 +114,7 @@ class StateBridgeAdapter:
         self.host.maintain_attempt = attempt
         self.host.maintain_retry_due_at = retry_due_at
         self.host.runtime.maintain = build_composed_maintain_runtime_state(
-            queue=build_maintain_queue_state(
-                pending=self.host.pending_maintain,
-                reason=self.host.pending_maintain_reason,
-                names=self.host.pending_maintain_names,
-            ),
+            queue=queue_state,
             inflight_names=self.host.inflight_maintain_names,
             attempt=self.host.maintain_attempt,
             retry_due_at=self.host.maintain_retry_due_at,

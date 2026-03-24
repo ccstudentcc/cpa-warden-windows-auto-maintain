@@ -138,6 +138,7 @@ Core runtime artifacts:
 - maintain/upload sqlite db files
 - maintain/upload logs
 - maintain/upload scope files
+- maintain pipeline state (`MaintainJob` + step queues: `scan/delete_401/quota/reenable/finalize`)
 - current/stable/uploaded snapshots
 - launcher/runtime lock files
 - child command output logs
@@ -175,6 +176,8 @@ Runtime-local copy:
 - Upload runs in serial batches (`UPLOAD_BATCH_SIZE`) with scope files.
 - Scheduled maintain is full scope.
 - Post-upload maintain is incremental and derived from completed upload batch names.
+- Maintain queue state now keeps a unified Job model for full/incremental and separate step queues;
+  Stage-2 currently drives start decisions from the `scan` queue while preserving legacy pending projections.
 - Smart scheduler adapts upload/maintain batching and incremental maintain deferral under backlog pressure.
 - Smart scheduler uses backlog-sensitive mode switching:
   - lower backlog: smaller slices to improve upload/maintain interleaving responsiveness
