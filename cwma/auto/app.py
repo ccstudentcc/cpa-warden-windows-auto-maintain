@@ -117,6 +117,7 @@ from .runtime.channel_runtime import (
     start_upload_channel,
 )
 from .runtime.channel_runtime_adapter import ChannelRuntimeAdapter
+from .runtime.cycle_runtime_adapter import CycleRuntimeAdapter
 from .runtime.host_init_adapter import initialize_host_state
 from .runtime.host_ops_adapter import HostOpsAdapter
 from .runtime.panel_runtime_adapter import PanelRuntimeAdapter, detect_panel_capability
@@ -220,71 +221,34 @@ class AutoMaintainer:
             host=self,
             get_log=lambda: log,
         )
+        self.cycle_runtime_adapter = CycleRuntimeAdapter(
+            host=self,
+            get_run_startup_cycle=lambda: run_startup_cycle,
+            get_run_watch_iteration=lambda: run_watch_iteration,
+            monotonic=time.monotonic,
+            log=log,
+        )
 
     def ensure_paths(self) -> None:
         self.host_ops_adapter.ensure_paths()
 
     def _apply_startup_runtime_state(self, state: StartupRuntimeState) -> None:
-        self.last_json_count = state.last_json_count
-        self.last_zip_signature = state.last_zip_signature
-        self.next_maintain_due_at = state.next_maintain_due_at
-        self.runtime.snapshot.last_json_count = self.last_json_count
-        self.runtime.snapshot.last_zip_signature = self.last_zip_signature
-        self.runtime.lifecycle.next_maintain_due_at = self.next_maintain_due_at
+        self.cycle_runtime_adapter.apply_startup_runtime_state(state)
 
     def _apply_watch_runtime_state(self, state: WatchRuntimeState) -> None:
-        self.next_maintain_due_at = state.next_maintain_due_at
-        self.runtime.lifecycle.next_maintain_due_at = self.next_maintain_due_at
+        self.cycle_runtime_adapter.apply_watch_runtime_state(state)
 
     def _build_startup_runtime_state(self) -> StartupRuntimeState:
-        return StartupRuntimeState(
-            last_json_count=self.last_json_count,
-            last_zip_signature=self.last_zip_signature,
-            next_maintain_due_at=self.next_maintain_due_at,
-        )
+        return self.cycle_runtime_adapter.build_startup_runtime_state()
 
     def _build_startup_runtime_deps(self) -> StartupRuntimeDeps:
-        return StartupRuntimeDeps(
-            build_snapshot=lambda: self.build_snapshot(self.current_snapshot_file),
-            uploaded_snapshot_exists=self.last_uploaded_snapshot_file.exists,
-            write_uploaded_snapshot=lambda rows: self.write_snapshot(self.last_uploaded_snapshot_file, rows),
-            get_json_count=self.get_json_count,
-            inspect_zip_files=self.settings.inspect_zip_files,
-            get_zip_signature=self.get_zip_signature,
-            inspect_zip_archives=self.inspect_zip_archives,
-            run_stage=self._run_stage,
-            run_stage_sequence=self._run_stage_sequence,
-            check_and_maybe_upload=self.check_and_maybe_upload,
-            queue_maintain=self.queue_maintain,
-            run_maintain_on_start=self.settings.run_maintain_on_start,
-            run_upload_on_start=self.settings.run_upload_on_start,
-            maybe_start_maintain=self.maybe_start_maintain,
-            maybe_start_upload=self.maybe_start_upload,
-            render_progress_snapshot=self.render_progress_snapshot,
-            monotonic=time.monotonic,
-            maintain_interval_seconds=self.settings.maintain_interval_seconds,
-            log=log,
-        )
+        return self.cycle_runtime_adapter.build_startup_runtime_deps()
 
     def _build_watch_runtime_state(self) -> WatchRuntimeState:
-        return WatchRuntimeState(next_maintain_due_at=self.next_maintain_due_at)
+        return self.cycle_runtime_adapter.build_watch_runtime_state()
 
     def _build_watch_runtime_deps(self) -> WatchRuntimeDeps:
-        return WatchRuntimeDeps(
-            maintain_interval_seconds=self.settings.maintain_interval_seconds,
-            upload_running=lambda: self.upload_process is not None,
-            has_pending_upload_snapshot=lambda: self.pending_upload_snapshot is not None,
-            queue_maintain=self.queue_maintain,
-            run_stage=self._run_stage,
-            run_stage_sequence=self._run_stage_sequence,
-            poll_upload_process=self.poll_upload_process,
-            poll_maintain_process=self.poll_maintain_process,
-            probe_changes_during_active_upload=self.probe_changes_during_active_upload,
-            check_and_maybe_upload=self.check_and_maybe_upload,
-            maybe_start_upload=self.maybe_start_upload,
-            maybe_start_maintain=self.maybe_start_maintain,
-            render_progress_snapshot=self.render_progress_snapshot,
-        )
+        return self.cycle_runtime_adapter.build_watch_runtime_deps()
 
     def _run_runtime_cycle(
         self,
@@ -292,45 +256,25 @@ class AutoMaintainer:
         run_cycle: Callable[[], object],
         apply_state: Callable[[object], None],
     ) -> int:
-        result = run_cycle()
-        apply_state(getattr(result, "state"))
-        return int(getattr(result, "exit_code"))
+        return self.cycle_runtime_adapter.run_runtime_cycle(
+            run_cycle=run_cycle,
+            apply_state=apply_state,
+        )
 
     def _run_startup_phase(self) -> int:
-        return self._run_runtime_cycle(
-            run_cycle=lambda: run_startup_cycle(
-                state=self._build_startup_runtime_state(),
-                deps=self._build_startup_runtime_deps(),
-            ),
-            apply_state=lambda state: self._apply_startup_runtime_state(state),
-        )
+        return self.cycle_runtime_adapter.run_startup_phase()
 
     def _run_watch_iteration(self, now: float) -> int:
-        return self._run_runtime_cycle(
-            run_cycle=lambda: run_watch_iteration(
-                now_monotonic=now,
-                state=self._build_watch_runtime_state(),
-                deps=self._build_watch_runtime_deps(),
-            ),
-            apply_state=lambda state: self._apply_watch_runtime_state(state),
-        )
+        return self.cycle_runtime_adapter.run_watch_iteration(now)
 
     def _run_stage_sequence(self, stages: Iterable[tuple[str, Callable[[], int]]]) -> int:
-        for stage, runner in stages:
-            handled_exit = self._run_stage(stage, runner)
-            if handled_exit != 0:
-                return handled_exit
-        return 0
+        return self.cycle_runtime_adapter.run_stage_sequence(stages)
 
     def _run_stage(self, stage: str, runner: Callable[[], int]) -> int:
-        return self._resolve_stage_failure(stage, runner())
+        return self.cycle_runtime_adapter.run_stage(stage, runner)
 
     def _resolve_stage_failure(self, stage: str, code: int) -> int:
-        if code == 0:
-            return 0
-        if self.handle_failure(stage, code):
-            return 0
-        return code
+        return self.cycle_runtime_adapter.resolve_stage_failure(stage, code)
 
     def _is_run_once_cycle_complete(self) -> bool:
         nothing_running = self.upload_process is None and self.maintain_process is None
