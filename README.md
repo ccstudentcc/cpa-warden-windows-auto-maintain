@@ -30,6 +30,7 @@ See [NOTICE](NOTICE) for attribution details.
 - Maintain queue is now modeled as staged jobs with explicit step-level transitions shared by full and incremental runs
 - Maintain service now executes explicit ordered steps (`scan -> delete_401 -> quota -> reenable -> finalize`) through a step engine + pipeline runtime policy
 - Upload stability wait now freezes the current candidate batch, defers in-window new/updated rows to next-round intake, and merges pending rows by path (`last-writer-wins`)
+- Smart scheduler batch sizing is now driven by a shared total-backlog signal (upload pending + incremental pending + full-maintain equivalent backlog), and incremental defer is narrowed to `batch_too_small_waiting_fill` only
 
 ## Documentation Architecture
 
@@ -52,9 +53,11 @@ The goal is not replacing `cpa_warden.py`, but running it safely and continuousl
 - run `upload` and `maintain` as independent channels
 - run scheduled full maintain and post-upload incremental maintain
 - auto-switch between real-time interleaving and backlog-drain throughput modes for upload/incremental-maintain scheduling
+- drive upload/incremental batch sizing from total backlog rather than local single-queue pressure only
 - execute maintain work as an explicit staged pipeline with deterministic step ordering and account-lock-aware action claims
 - isolate maintain/upload runtime DB and log files
 - keep upload stability wait bounded by freezing the current batch and deferring in-window changes to the next queue intake
+- allow incremental maintain defer only when current incremental slice is too small and upload-side fill source is active (`batch_too_small_waiting_fill`)
 - support archive intake (`.zip/.7z/.rar`, Bandizip first, Windows fallback for `.zip`)
 - clean uploaded files and prune empty directories
 - keep single-instance safety (launcher lock + Python runtime lock)
@@ -163,6 +166,8 @@ Full schema is tracked in `auto_maintain.config.example.json`. Frequently adjust
 - upload scheduling: `upload_batch_size`, `adaptive_upload_batching`, `upload_high_backlog_*`
 - maintain scheduling: `adaptive_maintain_batching`, `incremental_maintain_*`, `maintain_high_backlog_*`
   - scheduler mode switching rule: low backlog favors smaller slices for faster upload/maintain interleaving; high backlog favors larger slices for faster queue drain
+  - total-backlog rule: upload/incremental batch selection consumes a shared backlog estimate (upload pending + incremental pending + full-maintain equivalent)
+  - incremental defer rule: defer is used only for small-batch fill waiting (`batch_too_small_waiting_fill`), not cooldown/full-guard legacy reasons
 - runtime behavior: `run_maintain_on_start`, `run_upload_on_start`, `run_maintain_after_upload`
 - failure policy: `maintain_retry_count`, `upload_retry_count`, `command_retry_delay_seconds`, `continue_on_command_failure`
 - safety: `allow_multi_instance`, `maintain_assume_yes`

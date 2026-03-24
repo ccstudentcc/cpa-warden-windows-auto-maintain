@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: `2026-03-24`
+Last updated: `2026-03-25`
 
 ## 1. Goal and Scope
 
@@ -41,6 +41,11 @@ Upload intake Stage-4 stability/queue hardening is now in place:
 
 - stability wait freezes the current candidate batch and defers in-window new/updated rows to next-round intake
 - pending upload queue merge is path-coalesced (`last-writer-wins`) to prevent stale duplicate row versions for the same file path
+
+Scheduling Stage-5 total-backlog policy is now in place:
+
+- upload/incremental maintain batch sizing accepts a shared total-backlog signal (`pending upload + pending incremental + full-maintain equivalent backlog`)
+- incremental maintain defer semantics are narrowed to the single small-fill case (`batch_too_small_waiting_fill`) when upload-side fill source is active
 
 ## 3. Documentation Architecture
 
@@ -194,9 +199,13 @@ Runtime-local copy:
   - action-stage claim respects account-name locks to avoid conflicting side effects
 - Full and incremental maintain jobs share the same step engine and transition rules.
 - Smart scheduler adapts upload/maintain batching and incremental maintain deferral under backlog pressure.
+- Smart scheduler batch planning now consumes total backlog, not only local queue length.
 - Smart scheduler uses backlog-sensitive mode switching:
   - lower backlog: smaller slices to improve upload/maintain interleaving responsiveness
   - higher backlog: larger slices to improve queue-drain throughput
+- Incremental maintain defer is constrained to a narrow fill behavior:
+  - defer only when current incremental pending is below the minimum fill threshold of the planned batch and upload-side fill source exists
+  - no defer for cooldown/full-guard legacy reasons
 
 ## 11. Failure and Safety Model
 

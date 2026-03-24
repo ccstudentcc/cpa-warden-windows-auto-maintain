@@ -117,28 +117,53 @@ class AutoModuleStateTests(unittest.TestCase):
         )
         self.assertEqual(batch_size, 60)
 
-    def test_smart_scheduler_defers_incremental_when_upload_backlog_priority_active(self) -> None:
+    def test_smart_scheduler_upload_batch_uses_total_backlog_signal(self) -> None:
+        policy = self._build_scheduler_policy()
+        batch_size = policy.choose_upload_batch_size(
+            pending_count=250,
+            maintain_pressure=True,
+            total_backlog=520,
+        )
+        self.assertEqual(batch_size, 250)
+
+    def test_smart_scheduler_incremental_batch_uses_total_backlog_signal(self) -> None:
+        policy = self._build_scheduler_policy()
+        batch_size = policy.choose_incremental_maintain_batch_size(
+            pending_count=180,
+            upload_pressure=False,
+            total_backlog=400,
+        )
+        self.assertEqual(batch_size, 180)
+
+    def test_smart_scheduler_defers_incremental_only_for_small_fill(self) -> None:
         policy = self._build_scheduler_policy()
         deferred, reason = policy.should_defer_incremental_maintain(
-            now_monotonic=100.0,
-            last_incremental_started_at=90.0,
-            next_full_maintain_due_at=500.0,
-            has_pending_full_maintain=False,
-            pending_upload_count=450,
+            pending_incremental_count=1,
+            planned_batch_size=4,
+            pending_upload_count=60,
             upload_running=True,
         )
         self.assertTrue(deferred)
-        self.assertEqual(reason, "upload backlog priority mode")
+        self.assertEqual(reason, "batch_too_small_waiting_fill")
 
-    def test_smart_scheduler_upload_backlog_priority_skips_first_incremental_start(self) -> None:
+    def test_smart_scheduler_does_not_defer_incremental_when_fill_is_enough(self) -> None:
         policy = self._build_scheduler_policy()
         deferred, reason = policy.should_defer_incremental_maintain(
-            now_monotonic=100.0,
-            last_incremental_started_at=0.0,
-            next_full_maintain_due_at=500.0,
-            has_pending_full_maintain=False,
-            pending_upload_count=450,
+            pending_incremental_count=2,
+            planned_batch_size=4,
+            pending_upload_count=60,
             upload_running=True,
+        )
+        self.assertFalse(deferred)
+        self.assertEqual(reason, "")
+
+    def test_smart_scheduler_does_not_defer_incremental_without_upload_fill_source(self) -> None:
+        policy = self._build_scheduler_policy()
+        deferred, reason = policy.should_defer_incremental_maintain(
+            pending_incremental_count=1,
+            planned_batch_size=4,
+            pending_upload_count=0,
+            upload_running=False,
         )
         self.assertFalse(deferred)
         self.assertEqual(reason, "")

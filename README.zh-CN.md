@@ -30,6 +30,7 @@
 - maintain 队列已升级为分阶段作业模型；全量与增量任务共享显式的步骤级状态转换
 - maintain 服务已通过步骤引擎与流水线运行策略执行有序步骤（`scan -> delete_401 -> quota -> reenable -> finalize`）
 - 上传稳定等待已采用“冻结当前候选批次”策略；窗口内新增/更新项延后到下一轮入队，且按路径合并待上传项（`last-writer-wins`）
+- 智能调度批次决策已改为共享“总积压”信号（上传待处理 + 增量维护待处理 + 全量维护等价积压）；增量 defer 语义已收敛为仅 `batch_too_small_waiting_fill`
 
 ## 文档架构（避免冗余）
 
@@ -52,9 +53,11 @@
 - `upload` 与 `maintain` 两个通道独立调度
 - 支持定时全量维护 + 上传后增量维护
 - 上传/增量维护调度可根据积压自动在“实时并行”与“吞吐清队列”模式间切换
+- 上传/增量维护批次不再只看单队列局部压力，而是由统一总积压驱动
 - maintain 任务按显式分阶段流水线执行，步骤顺序可预测，并对 action 阶段应用账号级锁冲突规避
 - 维护/上传运行数据库与日志分离
 - 上传稳定等待采用冻结当前批次策略，避免等待窗口内变更无限重置计时
+- 增量维护仅在“当前批次过小且存在上传侧补充来源”时才 defer（`batch_too_small_waiting_fill`）
 - 支持归档入口（`.zip/.7z/.rar`，Bandizip 优先，`.zip` 可回退 Windows 内置解压）
 - 上传后清理文件并清理空目录
 - 双层单实例保护（启动器锁 + Python 运行时锁）
@@ -163,6 +166,8 @@ start_auto_maintain_optimized.bat
 - 上传调度：`upload_batch_size`、`adaptive_upload_batching`、`upload_high_backlog_*`
 - 维护调度：`adaptive_maintain_batching`、`incremental_maintain_*`、`maintain_high_backlog_*`
   - 调度模式切换规则：低积压偏小批次，提升上传/维护交错实时性；高积压偏大批次，加速队列清空
+  - 总积压规则：上传/增量维护批次选择共享同一积压估算（上传待处理 + 增量待处理 + 全量维护等价积压）
+  - 增量 defer 规则：仅用于“小批补充等待”（`batch_too_small_waiting_fill`），不再使用 cooldown/full-guard 旧语义
 - 运行行为：`run_maintain_on_start`、`run_upload_on_start`、`run_maintain_after_upload`
 - 失败策略：`maintain_retry_count`、`upload_retry_count`、`command_retry_delay_seconds`、`continue_on_command_failure`
 - 安全策略：`allow_multi_instance`、`maintain_assume_yes`

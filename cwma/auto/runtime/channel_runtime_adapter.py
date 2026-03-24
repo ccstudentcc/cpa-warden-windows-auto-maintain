@@ -75,7 +75,7 @@ class ChannelRuntimeHost(Protocol):
     stable_snapshot_file: Path
     zip_extract_processed_signatures: dict[str, str]
 
-    def _defer_incremental_maintain_if_needed(self, now: float) -> bool: ...
+    def _defer_incremental_maintain_if_needed(self, now: float, *, planned_batch_size: int) -> bool: ...
     def _maintain_queue_state(self) -> Any: ...
     def _apply_maintain_queue_state(self, state: Any) -> None: ...
     def _maintain_runtime_state(self) -> Any: ...
@@ -224,21 +224,39 @@ class ChannelRuntimeAdapter:
             return 0
         if now < self.host.maintain_retry_due_at:
             return 0
-        if self.host._defer_incremental_maintain_if_needed(now):
-            return 0
-        self.host.last_incremental_defer_reason = None
 
         self.host.maintain_attempt += 1
         max_attempts = self.host.settings.maintain_retry_count + 1
         reason = self.host.pending_maintain_reason or "unspecified"
+        pending_upload_count = len(self.host.pending_upload_snapshot or [])
+        pending_incremental_count = len(self.host.pending_maintain_names or set())
+        total_backlog = self.host.scheduler_policy.estimate_total_backlog(
+            pending_upload_count=pending_upload_count,
+            pending_incremental_maintain_count=pending_incremental_count,
+            has_pending_full_maintain=(self.host.pending_maintain and self.host.pending_maintain_names is None),
+        )
         if self.host.pending_maintain_names is None:
+            planned_batch_size = 0
             batch_size = 0
         else:
+            planned_batch_size = self.host.scheduler_policy.estimate_incremental_target_batch_size(
+                pending_count=len(self.host.pending_maintain_names),
+                upload_pressure=(self.host.upload_process is not None)
+                or bool(self.host.pending_upload_snapshot),
+                total_backlog=total_backlog,
+            )
             batch_size = self.host.scheduler_policy.choose_incremental_maintain_batch_size(
                 pending_count=len(self.host.pending_maintain_names),
                 upload_pressure=(self.host.upload_process is not None)
                 or bool(self.host.pending_upload_snapshot),
+                total_backlog=total_backlog,
             )
+        if self.host._defer_incremental_maintain_if_needed(
+            now,
+            planned_batch_size=planned_batch_size,
+        ):
+            return 0
+        self.host.last_incremental_defer_reason = None
         decision = decide_maintain_start_scope(
             state=self.host._maintain_queue_state(),
             batch_size=batch_size,
@@ -297,9 +315,17 @@ class ChannelRuntimeAdapter:
         else:
             pending_total = len(state.pending_snapshot or [])
             maintain_pressure = self.host.maintain_process is not None or self.host.pending_maintain
+            total_backlog = self.host.scheduler_policy.estimate_total_backlog(
+                pending_upload_count=pending_total,
+                pending_incremental_maintain_count=len(self.host.pending_maintain_names or set()),
+                has_pending_full_maintain=(
+                    self.host.pending_maintain and self.host.pending_maintain_names is None
+                ),
+            )
             batch_size = self.host.scheduler_policy.choose_upload_batch_size(
                 pending_count=pending_total,
                 maintain_pressure=maintain_pressure,
+                total_backlog=total_backlog,
             )
 
         decision = decide_upload_start(

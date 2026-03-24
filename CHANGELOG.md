@@ -57,6 +57,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Extended `tests/test_warden_maintain_service_module.py` with maintain step-order validation and partial-step execution coverage.
 - Upload stability wait now freezes the current candidate batch and defers in-window new/updated rows to the next queue intake instead of resetting the timer indefinitely.
 - Upload pending queue merge is now path-coalesced (`last-writer-wins`) so active deep-scan intake replaces stale versions of the same file path.
+- Smart scheduler batch selection now consumes a shared total-backlog estimate (`upload pending + incremental pending + full-maintain equivalent`) when deciding upload and incremental-maintain batch sizes.
+- Incremental maintain defer semantics are narrowed to the small-fill case only (`batch_too_small_waiting_fill`) when upload-side fill source is active; cooldown/full-guard backlog-priority defer reasons were removed.
+- `cwma/auto/runtime/channel_runtime_adapter.py` now computes total backlog at maintain/upload start boundaries and passes it to scheduler policy consistently (including panel next-batch projections via `panel_runtime_adapter`).
+- Added Stage-5 scheduler/defer regression coverage in `tests/test_auto_modules_state.py` and host-level Stage-5 integration coverage in `tests/test_auto_maintain.py`.
 
 ## [cwma 0.1.0] - 2026-03-23
 

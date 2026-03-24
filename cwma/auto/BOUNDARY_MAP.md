@@ -126,6 +126,15 @@ Responsibilities:
 - `tests/test_auto_upload_stability_module.py` is the primary suite for upload stability-wait freeze behavior (infra/runtime seam) and deferred-next-round intake contract.
 - `tests/test_auto_maintain.py::test_check_and_maybe_upload_queue_merge_replaces_same_path_with_latest_version` covers queue intake merge semantics at host runtime wiring level.
 
+## Stage 5 Test Mapping Update
+
+- `tests/test_auto_modules_state.py` now includes Stage-5 scheduler/defer assertions for:
+  - total-backlog-aware batch sizing on upload and incremental maintain policy entrypoints
+  - narrowed incremental defer semantics (`batch_too_small_waiting_fill` only)
+- `tests/test_auto_maintain.py` now includes host-level batch/defer integration assertions for:
+  - upload batch expansion from total backlog signal when full maintain is pending
+  - incremental maintain defer/no-defer boundaries under small-fill vs sufficient-fill scenarios
+
 ## Stage 2.6 Test Modules Map (Closeout Completed)
 
 1. `process/channel/infra` runtime and lifecycle seams are mapped to `tests/test_auto_modules_process_channel.py` as the active destination for new coverage in this capability group.

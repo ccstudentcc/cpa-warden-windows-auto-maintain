@@ -143,16 +143,18 @@ class StateBridgeAdapter:
         )
         self.apply_maintain_queue_state(state)
 
-    def defer_incremental_maintain_if_needed(self, now: float) -> bool:
+    def defer_incremental_maintain_if_needed(
+        self,
+        now: float,
+        *,
+        planned_batch_size: int,
+    ) -> bool:
         if self.host.pending_maintain_names is None:
             return False
+        pending_incremental_count = len(self.host.pending_maintain_names or set())
         defer_incremental, defer_reason = self.host.scheduler_policy.should_defer_incremental_maintain(
-            now_monotonic=now,
-            last_incremental_started_at=self.host.last_incremental_maintain_started_at,
-            next_full_maintain_due_at=self.host.next_maintain_due_at,
-            has_pending_full_maintain=(
-                self.host.pending_maintain and self.host.pending_maintain_names is None
-            ),
+            pending_incremental_count=pending_incremental_count,
+            planned_batch_size=planned_batch_size,
             pending_upload_count=len(self.host.pending_upload_snapshot or []),
             upload_running=self.host.upload_process is not None,
         )

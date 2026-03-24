@@ -93,9 +93,15 @@ class PanelRuntimeAdapter:
         if pending_count <= 0:
             return 0, 0
         maintain_pressure = self.host.maintain_process is not None or self.host.pending_maintain
+        total_backlog = self.host.scheduler_policy.estimate_total_backlog(
+            pending_upload_count=pending_count,
+            pending_incremental_maintain_count=len(self.host.pending_maintain_names or set()),
+            has_pending_full_maintain=(self.host.pending_maintain and self.host.pending_maintain_names is None),
+        )
         next_batch_size = self.host.scheduler_policy.choose_upload_batch_size(
             pending_count=pending_count,
             maintain_pressure=maintain_pressure,
+            total_backlog=total_backlog,
         )
         if next_batch_size <= 0:
             return 0, 0
@@ -125,6 +131,13 @@ class PanelRuntimeAdapter:
                 lambda pending_count, upload_pressure: self.host.scheduler_policy.choose_incremental_maintain_batch_size(
                     pending_count=pending_count,
                     upload_pressure=upload_pressure,
+                    total_backlog=self.host.scheduler_policy.estimate_total_backlog(
+                        pending_upload_count=len(self.host.pending_upload_snapshot or []),
+                        pending_incremental_maintain_count=pending_count,
+                        has_pending_full_maintain=(
+                            self.host.pending_maintain and self.host.pending_maintain_names is None
+                        ),
+                    ),
                 )
             ),
         )

@@ -393,6 +393,33 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertIsNotNone(maintainer.inflight_upload_snapshot)
             self.assertEqual(len(maintainer.inflight_upload_snapshot or []), 8)
 
+    def test_maybe_start_upload_uses_total_backlog_with_pending_full_maintain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            settings.upload_batch_size = 20
+            settings.upload_high_backlog_threshold = 150
+            settings.upload_high_backlog_batch_size = 80
+            maintainer = AutoMaintainer(settings)
+
+            maintainer.queue_maintain("scheduled maintain")
+            maintainer.pending_upload_snapshot = [
+                f"{auth_dir / f'{idx}.json'}|1|1"
+                for idx in range(80)
+            ]
+            maintainer.pending_upload_reason = "detected JSON changes"
+
+            with mock.patch("auto_maintain.subprocess.Popen", return_value=_DoneProcess(0)):
+                result = maintainer.maybe_start_upload()
+
+            self.assertEqual(result, 0)
+            self.assertIsNotNone(maintainer.inflight_upload_snapshot)
+            # Local upload queue has only 80 rows (< high threshold 150), but total backlog
+            # includes pending full maintain equivalent and should switch to high-throughput size.
+            self.assertEqual(len(maintainer.inflight_upload_snapshot or []), 80)
+
     def test_maybe_start_upload_passes_env_and_monotonic_to_runtime_channel(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -468,20 +495,18 @@ class AutoMaintainTests(unittest.TestCase):
             baseline_after = maintainer.read_snapshot(maintainer.last_uploaded_snapshot_file)
             self.assertEqual(baseline_after, snapshot)
 
-    def test_maybe_start_maintain_defers_incremental_by_cooldown(self) -> None:
+    def test_maybe_start_maintain_defers_incremental_when_batch_too_small_for_fill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             auth_dir = base / "auth"
             auth_dir.mkdir(parents=True, exist_ok=True)
             settings = _build_settings(base, auth_dir)
-            settings.incremental_maintain_min_interval_seconds = 60
-            settings.incremental_maintain_full_guard_seconds = 0
+            settings.incremental_maintain_batch_size = 6
             maintainer = AutoMaintainer(settings)
 
-            maintainer.pending_maintain = True
-            maintainer.pending_maintain_reason = "post-upload maintain"
-            maintainer.pending_maintain_names = {"a.json"}
-            maintainer.last_incremental_maintain_started_at = 995.0
+            maintainer.queue_maintain("post-upload maintain", names={"a.json"})
+            maintainer.pending_upload_snapshot = [f"{auth_dir / 'u1.json'}|1|1"]
+            maintainer.upload_process = _DoneProcess(0)
 
             with mock.patch("auto_maintain.subprocess.Popen") as popen, mock.patch(
                 "auto_maintain.time.monotonic",
@@ -492,33 +517,33 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertIsNone(maintainer.maintain_process)
             self.assertTrue(maintainer.pending_maintain)
+            self.assertEqual(maintainer.last_incremental_defer_reason, "batch_too_small_waiting_fill")
             self.assertEqual(popen.call_count, 0)
 
-    def test_maybe_start_maintain_defers_incremental_when_full_due_soon(self) -> None:
+    def test_maybe_start_maintain_does_not_defer_incremental_when_batch_fill_is_enough(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             auth_dir = base / "auth"
             auth_dir.mkdir(parents=True, exist_ok=True)
             settings = _build_settings(base, auth_dir)
-            settings.incremental_maintain_min_interval_seconds = 0
-            settings.incremental_maintain_full_guard_seconds = 120
+            settings.incremental_maintain_batch_size = 6
             maintainer = AutoMaintainer(settings)
 
-            maintainer.pending_maintain = True
-            maintainer.pending_maintain_reason = "post-upload maintain"
-            maintainer.pending_maintain_names = {"a.json"}
-            maintainer.next_maintain_due_at = 1030.0
+            maintainer.queue_maintain("post-upload maintain", names={"a.json", "b.json"})
+            maintainer.pending_upload_snapshot = [f"{auth_dir / 'u1.json'}|1|1"]
+            maintainer.upload_process = _DoneProcess(0)
 
-            with mock.patch("auto_maintain.subprocess.Popen") as popen, mock.patch(
+            with mock.patch("auto_maintain.subprocess.Popen", return_value=_DoneProcess(0)) as popen, mock.patch(
                 "auto_maintain.time.monotonic",
                 return_value=1000.0,
             ):
                 result = maintainer.maybe_start_maintain()
 
             self.assertEqual(result, 0)
-            self.assertIsNone(maintainer.maintain_process)
+            self.assertIsNotNone(maintainer.maintain_process)
             self.assertTrue(maintainer.pending_maintain)
-            self.assertEqual(popen.call_count, 0)
+            self.assertIsNone(maintainer.last_incremental_defer_reason)
+            self.assertEqual(popen.call_count, 1)
 
     def test_check_and_maybe_upload_invokes_snapshot_seams(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

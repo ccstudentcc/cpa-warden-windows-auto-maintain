@@ -492,8 +492,11 @@ class AutoMaintainer:
     def merge_pending_incremental_maintain_names(self, names: set[str]) -> None:
         self.state_bridge_adapter.merge_pending_incremental_maintain_names(names)
 
-    def _defer_incremental_maintain_if_needed(self, now: float) -> bool:
-        return self.state_bridge_adapter.defer_incremental_maintain_if_needed(now)
+    def _defer_incremental_maintain_if_needed(self, now: float, *, planned_batch_size: int) -> bool:
+        return self.state_bridge_adapter.defer_incremental_maintain_if_needed(
+            now,
+            planned_batch_size=planned_batch_size,
+        )
 
     def _set_maintain_process(self, process: subprocess.Popen | None) -> None:
         self.maintain_process = process
