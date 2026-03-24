@@ -4,6 +4,14 @@
 
 This repository provides a Windows-first automation layer on top of the CPA maintenance capabilities from `cpa_warden.py`.
 
+## Stage 3 Closeout (Warden, 2026-03-24)
+
+- Scope status: `W3-06` through `W3-16` completed for `cwma/apps/cpa_warden.py` host thinning and `cwma/warden/*` domain split.
+- Validation gate:
+  - `uv run python cpa_warden.py --help` passed.
+  - `uv run python auto_maintain.py --help` passed.
+  - `uv run python -m unittest -q tests.test_warden_runtime_ops_module tests.test_warden_exports_module tests.test_warden_refill_service_module tests.test_warden_maintain_service_module tests.test_warden_upload_service_module tests.test_warden_scan_service_module tests.test_warden_db_schema_module tests.test_warden_db_repository_module tests.test_warden_management_api_module tests.test_warden_usage_probe_api_module tests.test_warden_models_module tests.test_warden_config_module tests.test_warden_cli_module tests.test_warden_interactive_module tests.test_warden_maintain_scope_module tests.test_warden_upload_scope_module` passed (`Ran 83 tests ... OK`).
+
 ## Module Map
 
 ### `cwma/apps/cpa_warden.py`
