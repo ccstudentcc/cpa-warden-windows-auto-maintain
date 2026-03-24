@@ -9,16 +9,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeVar
 
-from ..channel_lifecycle import (
+from ..channel.channel_lifecycle import (
     decide_maintain_process_exit,
     decide_maintain_start_error,
     decide_upload_process_exit,
     decide_upload_start_error,
 )
-from ..channel_status import CHANNEL_MAINTAIN, CHANNEL_UPLOAD, STATUS_FAILED, STATUS_RETRY, STATUS_SUCCESS
-from ..maintain_queue import MaintainRuntimeState
-from ..process_supervisor import poll_channel_exit, start_channel
-from ..upload_queue import UploadQueueState
+from ..channel.channel_status import CHANNEL_MAINTAIN, CHANNEL_UPLOAD, STATUS_FAILED, STATUS_RETRY, STATUS_SUCCESS
+from ..state.maintain_queue import MaintainRuntimeState
+from ..infra.process_supervisor import poll_channel_exit, start_channel
+from ..state.upload_queue import UploadQueueState
 
 StateT = TypeVar("StateT")
 StartResultT = TypeVar("StartResultT")

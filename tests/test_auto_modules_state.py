@@ -5,8 +5,8 @@ from datetime import datetime
 from pathlib import Path
 import tempfile
 
-from cwma.auto.active_probe import ActiveUploadProbeState, decide_active_upload_probe
-from cwma.auto.maintain_queue import (
+from cwma.auto.state.active_probe import ActiveUploadProbeState, decide_active_upload_probe
+from cwma.auto.state.maintain_queue import (
     MaintainQueueState,
     MaintainRuntimeState,
     clear_maintain_queue_state,
@@ -18,7 +18,7 @@ from cwma.auto.maintain_queue import (
     merge_incremental_maintain_names,
     queue_maintain_request,
 )
-from cwma.auto.runtime_state import (
+from cwma.auto.state.runtime_state import (
     build_auto_runtime_state,
     build_composed_maintain_runtime_state,
     build_lifecycle_runtime_state,
@@ -38,7 +38,7 @@ from cwma.auto.runtime_state import (
     unpack_upload_queue_state,
     unpack_upload_runtime_state,
 )
-from cwma.auto.state_models import (
+from cwma.auto.state.state_models import (
     AutoRuntimeState,
     LifecycleRuntimeState,
     MaintainRuntimeState as ComposedMaintainRuntimeState,
@@ -46,18 +46,18 @@ from cwma.auto.state_models import (
     UiRuntimeState,
     UploadRuntimeState,
 )
-from cwma.auto.scope_files import write_scope_names
-from cwma.auto.snapshots import (
+from cwma.auto.state.scope_files import write_scope_names
+from cwma.auto.state.snapshots import (
     build_snapshot_file,
     build_snapshot_lines,
     read_snapshot_lines,
     write_snapshot_lines,
 )
-from cwma.auto.upload_postprocess import (
+from cwma.auto.state.upload_postprocess import (
     POST_UPLOAD_PENDING_REASON,
     build_upload_success_postprocess,
 )
-from cwma.auto.upload_queue import (
+from cwma.auto.state.upload_queue import (
     UploadQueueState,
     clear_upload_queue_state,
     decide_upload_start,
@@ -68,7 +68,7 @@ from cwma.auto.upload_queue import (
     mark_upload_terminal_failure,
     merge_pending_upload_snapshot,
 )
-from cwma.auto.upload_scan_cadence import decide_upload_deep_scan
+from cwma.auto.state.upload_scan_cadence import decide_upload_deep_scan
 
 
 class AutoModuleStateTests(unittest.TestCase):
@@ -821,3 +821,4 @@ class AutoModuleStateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

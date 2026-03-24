@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from cwma.auto.startup_flow import (
+from cwma.auto.orchestration.startup_flow import (
     build_startup_action_plan,
     decide_startup_seed,
     decide_startup_zip_follow_up,
@@ -54,3 +54,4 @@ class StartupFlowModuleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

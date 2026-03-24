@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..active_probe import ActiveUploadProbeDecision
+from ..state.active_probe import ActiveUploadProbeDecision
 
 UploadSnapshot = list[str]
 ZipSignature = tuple[str, ...]

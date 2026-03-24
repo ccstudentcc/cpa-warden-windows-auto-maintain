@@ -5,14 +5,14 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Protocol
 
-from ..active_probe import ActiveUploadProbeState, decide_active_upload_probe
-from ..channel_status import CHANNEL_UPLOAD, STAGE_IDLE, STAGE_PENDING
-from ..upload_queue import (
+from ..state.active_probe import ActiveUploadProbeState, decide_active_upload_probe
+from ..channel.channel_status import CHANNEL_UPLOAD, STAGE_IDLE, STAGE_PENDING
+from ..state.upload_queue import (
     mark_upload_no_changes,
     mark_upload_no_pending_discovered,
     merge_pending_upload_snapshot,
 )
-from ..upload_scan_cadence import decide_upload_deep_scan
+from ..state.upload_scan_cadence import decide_upload_deep_scan
 
 UploadSnapshot = list[str]
 ZipSignature = tuple[str, ...]

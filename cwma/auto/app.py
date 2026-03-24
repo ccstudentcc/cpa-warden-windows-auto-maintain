@@ -10,32 +10,32 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .config import Settings, load_settings as load_auto_settings
-from .channel_status import (
+from .infra.config import Settings, load_settings as load_auto_settings
+from .channel.channel_status import (
     CHANNEL_UPLOAD,
     STAGE_RUNNING,
 )
-from .channel_commands import (
+from .channel.channel_commands import (
     build_maintain_command as build_maintain_command_rows,
     build_upload_command as build_upload_command_rows,
 )
-from .dashboard import (
+from .ui.dashboard import (
     apply_panel_colors as apply_dashboard_panel_colors,
 )
-from .maintain_queue import (
+from .state.maintain_queue import (
     MaintainRuntimeState,
     MaintainQueueState,
 )
-from .output_pump import (
+from .infra.output_pump import (
     append_child_output_line as append_output_line,
     start_output_pump_thread,
 )
-from .process_output import (
+from .infra.process_output import (
     build_child_process_env,
     decode_child_output_line as decode_process_output_line,
     should_log_child_alert_line as should_log_process_alert_line,
 )
-from .progress_parser import parse_progress_line
+from .ui.progress_parser import parse_progress_line
 from .runtime.shutdown_runtime import sleep_between_watch_cycles as sleep_between_watch_cycles_runtime
 from .runtime.channel_runtime import (
     poll_maintain_channel,
@@ -65,9 +65,9 @@ from .runtime.watch_runtime import (
     WatchRuntimeState,
     run_watch_iteration,
 )
-from .ui_runtime import UiRuntime
-from .snapshots import compute_pending_upload_snapshot as compute_pending_upload_snapshot_rows
-from .upload_queue import UploadQueueState
+from .ui.ui_runtime import UiRuntime
+from .state.snapshots import compute_pending_upload_snapshot as compute_pending_upload_snapshot_rows
+from .state.upload_queue import UploadQueueState
 
 
 def log(message: str) -> None:

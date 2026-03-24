@@ -7,10 +7,10 @@ import sys
 from datetime import datetime
 from typing import Any, Callable, Protocol
 
-from ..panel_render import PanelLinesContext, build_plain_panel_lines
-from ..panel_snapshot import build_panel_snapshot
-from ..dashboard import fit_panel_line as fit_dashboard_panel_line
-from ..dashboard import panel_border_line as dashboard_border_line
+from ..ui.panel_render import PanelLinesContext, build_plain_panel_lines
+from ..ui.panel_snapshot import build_panel_snapshot
+from ..ui.dashboard import fit_panel_line as fit_dashboard_panel_line
+from ..ui.dashboard import panel_border_line as dashboard_border_line
 
 
 def detect_panel_capability() -> bool:

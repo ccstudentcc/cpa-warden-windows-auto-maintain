@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
-from ..startup_flow import build_startup_action_plan, decide_startup_seed, decide_startup_zip_follow_up
+from ..orchestration.startup_flow import build_startup_action_plan, decide_startup_seed, decide_startup_zip_follow_up
 
 StageRunner = Callable[[], int]
 

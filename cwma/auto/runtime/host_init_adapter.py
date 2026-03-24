@@ -8,8 +8,8 @@ import threading
 from datetime import datetime
 from typing import Any, Callable
 
-from ..channel_status import STAGE_IDLE
-from ..runtime_state import (
+from ..channel.channel_status import STAGE_IDLE
+from ..state.runtime_state import (
     build_auto_runtime_state,
     build_composed_maintain_runtime_state,
     build_lifecycle_runtime_state,

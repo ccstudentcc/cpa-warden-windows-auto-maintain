@@ -1,8 +1,8 @@
 """Auto-maintain domain modules."""
 
-from .config import Settings, load_settings, load_watch_config
-from .active_probe import ActiveUploadProbeDecision, ActiveUploadProbeState, decide_active_upload_probe
-from .channel_status import (
+from .infra.config import Settings, load_settings, load_watch_config
+from .state.active_probe import ActiveUploadProbeDecision, ActiveUploadProbeState, decide_active_upload_probe
+from .channel.channel_status import (
     CHANNEL_MAINTAIN,
     CHANNEL_UPLOAD,
     STAGE_DEFERRED,
@@ -31,13 +31,13 @@ from .channel_status import (
     STATUS_SHUTDOWN,
     STATUS_SUCCESS,
 )
-from .channel_commands import (
+from .channel.channel_commands import (
     build_maintain_command,
     build_upload_command,
     format_maintain_start_message,
     format_upload_start_message,
 )
-from .channel_lifecycle import (
+from .channel.channel_lifecycle import (
     MaintainProcessExitDecision,
     MaintainStartErrorDecision,
     UploadProcessExitDecision,
@@ -47,9 +47,9 @@ from .channel_lifecycle import (
     decide_upload_process_exit,
     decide_upload_start_error,
 )
-from .dashboard import apply_panel_colors, fit_panel_line, panel_border_line
-from .locking import acquire_instance_lock, release_instance_lock
-from .maintain_queue import (
+from .ui.dashboard import apply_panel_colors, fit_panel_line, panel_border_line
+from .infra.locking import acquire_instance_lock, release_instance_lock
+from .state.maintain_queue import (
     MaintainRuntimeState,
     MaintainQueueState,
     MaintainStartDecision,
@@ -63,11 +63,11 @@ from .maintain_queue import (
     merge_incremental_maintain_names,
     queue_maintain_request,
 )
-from .output_pump import append_child_output_line, start_output_pump_thread
-from .process_runner import launch_child_command, start_channel_command, terminate_running_process
-from .process_output import build_child_process_env, decode_child_output_line, should_log_child_alert_line
-from .progress_parser import parse_progress_line
-from .runtime_state import (
+from .infra.output_pump import append_child_output_line, start_output_pump_thread
+from .infra.process_runner import launch_child_command, start_channel_command, terminate_running_process
+from .infra.process_output import build_child_process_env, decode_child_output_line, should_log_child_alert_line
+from .ui.progress_parser import parse_progress_line
+from .state.runtime_state import (
     build_maintain_queue_state,
     build_maintain_runtime_state,
     build_upload_queue_state,
@@ -75,8 +75,8 @@ from .runtime_state import (
     unpack_maintain_runtime_state,
     unpack_upload_queue_state,
 )
-from .scope_files import write_scope_names
-from .snapshots import (
+from .state.scope_files import write_scope_names
+from .state.snapshots import (
     build_snapshot_file,
     build_snapshot_lines,
     compute_pending_upload_snapshot,
@@ -85,7 +85,7 @@ from .snapshots import (
     read_snapshot_lines,
     write_snapshot_lines,
 )
-from .upload_queue import (
+from .state.upload_queue import (
     UploadMergeResult,
     UploadQueueState,
     UploadStartDecision,
@@ -98,12 +98,12 @@ from .upload_queue import (
     mark_upload_terminal_failure,
     merge_pending_upload_snapshot,
 )
-from .upload_postprocess import (
+from .state.upload_postprocess import (
     POST_UPLOAD_PENDING_REASON,
     UploadSuccessPostProcessResult,
     build_upload_success_postprocess,
 )
-from .zip_intake import (
+from .infra.zip_intake import (
     compute_zip_signature,
     count_zip_files,
     extract_zip_with_bandizip,

@@ -80,9 +80,6 @@ Capability ownership:
 4. `infra`: process/zip/lock/config/shutdown side-effect boundaries (`cwma/auto/infra/*`, lifecycle/host ops adapters).
 5. `ui`: progress parsing, panel snapshot/render cadence and terminal presentation (`cwma/auto/ui/*`, panel runtime adapters).
 
-Compatibility note:
-- Top-level modules under `cwma/auto/*.py` remain as compatibility wrappers, aliasing canonical implementations in the capability subpackages above.
-
 Allowed dependency directions:
 1. `orchestration -> channel|state|infra|ui`.
 2. `channel -> state|infra` (no orchestration imports).
@@ -101,9 +98,8 @@ Stage 2.6 capability-to-test modules map (closeout completed):
 
 ## Module Map
 
-Auto package compatibility note:
-- For `cwma/auto`, top-level modules are compatibility import paths.
-- Canonical implementations for capability-owned modules are located under `cwma/auto/orchestration/`, `cwma/auto/channel/`, `cwma/auto/state/`, `cwma/auto/infra/`, and `cwma/auto/ui/`.
+Auto package layout note:
+- Capability-owned modules are located under `cwma/auto/orchestration/`, `cwma/auto/channel/`, `cwma/auto/state/`, `cwma/auto/infra/`, and `cwma/auto/ui/`.
 
 ### `cwma/apps/cpa_warden.py`
 

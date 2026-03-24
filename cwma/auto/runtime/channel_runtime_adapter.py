@@ -5,20 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
-from ..channel_commands import (
+from ..channel.channel_commands import (
     format_maintain_start_message as format_maintain_start_message_rows,
     format_upload_start_message as format_upload_start_message_rows,
 )
-from ..channel_feedback import (
+from ..channel.channel_feedback import (
     build_non_success_exit_feedback,
     format_command_completed_message,
     format_command_start_failed_message,
     format_command_start_retry_message,
     maintain_pending_progress_stage,
 )
-from ..channel_lifecycle import decide_maintain_start_error, decide_upload_start_error
-from ..channel_start_prep import prepare_maintain_start, prepare_upload_start
-from ..channel_status import (
+from ..channel.channel_lifecycle import decide_maintain_start_error, decide_upload_start_error
+from ..channel.channel_start_prep import prepare_maintain_start, prepare_upload_start
+from ..channel.channel_status import (
     CHANNEL_MAINTAIN,
     CHANNEL_UPLOAD,
     STAGE_DEFERRED,
@@ -30,17 +30,17 @@ from ..channel_status import (
     STATUS_SHUTDOWN,
     STATUS_SUCCESS,
 )
-from ..maintain_queue import decide_maintain_start_scope
+from ..state.maintain_queue import decide_maintain_start_scope
 from ..runtime.channel_runtime import (
     poll_maintain_channel,
     poll_upload_channel,
     start_maintain_channel,
     start_upload_channel,
 )
-from ..scope_files import write_scope_names
-from ..snapshots import extract_names_from_snapshot as extract_names_from_snapshot_rows
-from ..upload_postprocess import build_upload_success_postprocess
-from ..upload_queue import decide_upload_start
+from ..state.scope_files import write_scope_names
+from ..state.snapshots import extract_names_from_snapshot as extract_names_from_snapshot_rows
+from ..state.upload_postprocess import build_upload_success_postprocess
+from ..state.upload_queue import decide_upload_start
 
 
 class ChannelRuntimeHost(Protocol):
@@ -550,4 +550,3 @@ class ChannelRuntimeAdapter:
             ),
             on_non_success=lambda: setattr(self.host, "pending_source_changes_during_upload", False),
         )
-

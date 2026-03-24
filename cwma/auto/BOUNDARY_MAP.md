@@ -12,9 +12,6 @@ This document defines capability-oriented ownership boundaries for `cwma/auto` a
 
 The goal is to make change impact explicit and keep dependency directions stable.
 
-Compatibility note:
-- Top-level modules under `cwma/auto/*.py` are retained as compatibility wrappers that alias canonical implementations in subpackages.
-
 ## Capability Ownership
 
 ### Orchestration

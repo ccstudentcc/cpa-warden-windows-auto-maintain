@@ -8,8 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from ..channel_status import CHANNEL_MAINTAIN, CHANNEL_UPLOAD
-from ..process_supervisor import terminate_channel
+from ..channel.channel_status import CHANNEL_MAINTAIN, CHANNEL_UPLOAD
+from ..infra.process_supervisor import terminate_channel
 from .shutdown_runtime import (
     ShutdownRuntimeState,
     current_loop_sleep_seconds as current_loop_sleep_seconds_runtime,

@@ -7,15 +7,15 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from ..locking import InstanceLockState, acquire_instance_lock as acquire_lock_state, release_instance_lock
-from ..snapshots import (
+from ..infra.locking import InstanceLockState, acquire_instance_lock as acquire_lock_state, release_instance_lock
+from ..state.snapshots import (
     build_snapshot_file as build_snapshot_file_rows,
     build_snapshot_lines as build_snapshot_lines_rows,
     read_snapshot_lines as read_snapshot_lines_rows,
     write_snapshot_lines as write_snapshot_lines_rows,
 )
-from ..upload_cleanup import cleanup_uploaded_files, prune_empty_dirs_under
-from ..zip_intake import (
+from ..infra.upload_cleanup import cleanup_uploaded_files, prune_empty_dirs_under
+from ..infra.zip_intake import (
     compute_zip_signature as compute_zip_signature_rows,
     extract_zip_with_bandizip as extract_zip_with_bandizip_rows,
     extract_zip_with_windows_builtin as extract_zip_with_windows_builtin_rows,

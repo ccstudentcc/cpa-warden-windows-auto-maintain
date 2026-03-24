@@ -63,7 +63,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `start_auto_maintain_optimized.bat` now bootstraps and uses `auto_maintain.config.json` instead of hardcoding watcher env values
 - Watcher setting resolution now follows: environment variables > watch config JSON > built-in defaults
 - Stage-2.6 capability test mapping closeout completed: retired `tests/test_auto_modules.py`, aligned architecture/boundary docs to split suites, and updated regression commands to run only `process_channel` / `state` / `ui` modules
-- Auto module layout now groups canonical implementations into capability subpackages (`cwma/auto/orchestration`, `channel`, `state`, `infra`, `ui`) while keeping top-level `cwma/auto/*.py` compatibility wrappers for existing imports/tests
+- Auto module layout now groups canonical implementations into capability subpackages (`cwma/auto/orchestration`, `channel`, `state`, `infra`, `ui`) and removes redundant top-level compatibility wrappers after import/test migration
 
 ## [0.2.0] - 2026-03-09
 

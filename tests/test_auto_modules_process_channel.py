@@ -9,13 +9,13 @@ from io import BytesIO
 from pathlib import Path
 from unittest import mock
 
-from cwma.auto.channel_commands import (
+from cwma.auto.channel.channel_commands import (
     build_maintain_command,
     build_upload_command,
     format_maintain_start_message,
     format_upload_start_message,
 )
-from cwma.auto.channel_feedback import (
+from cwma.auto.channel.channel_feedback import (
     build_non_success_exit_feedback,
     format_command_completed_message,
     format_command_failed_message,
@@ -25,20 +25,20 @@ from cwma.auto.channel_feedback import (
     maintain_pending_progress_stage,
     non_success_exit_progress_stage,
 )
-from cwma.auto.channel_lifecycle import (
+from cwma.auto.channel.channel_lifecycle import (
     decide_maintain_process_exit,
     decide_maintain_start_error,
     decide_upload_process_exit,
     decide_upload_start_error,
 )
-from cwma.auto.channel_runner import (
+from cwma.auto.channel.channel_runner import (
     ChannelStartResult,
     ProcessPollResult,
     poll_process_exit,
     start_channel_with_handler,
 )
-from cwma.auto.channel_start_prep import prepare_maintain_start, prepare_upload_start
-from cwma.auto.channel_status import (
+from cwma.auto.channel.channel_start_prep import prepare_maintain_start, prepare_upload_start
+from cwma.auto.channel.channel_status import (
     CHANNEL_MAINTAIN,
     CHANNEL_UPLOAD,
     STAGE_FAILED,
@@ -50,24 +50,24 @@ from cwma.auto.channel_status import (
     STATUS_RETRY,
     STATUS_SUCCESS,
 )
-from cwma.auto.config import load_watch_config
-from cwma.auto.locking import InstanceLockState, is_pid_running, read_lock_pid, release_instance_lock
-from cwma.auto.maintain_queue import MaintainQueueState, MaintainRuntimeState
-from cwma.auto.output_pump import append_child_output_line, start_output_pump_thread
-from cwma.auto.process_output import (
+from cwma.auto.infra.config import load_watch_config
+from cwma.auto.infra.locking import InstanceLockState, is_pid_running, read_lock_pid, release_instance_lock
+from cwma.auto.state.maintain_queue import MaintainQueueState, MaintainRuntimeState
+from cwma.auto.infra.output_pump import append_child_output_line, start_output_pump_thread
+from cwma.auto.infra.process_output import (
     build_child_process_env,
     decode_child_output_line,
     should_log_child_alert_line,
 )
-from cwma.auto.process_runner import (
+from cwma.auto.infra.process_runner import (
     launch_child_command,
     start_channel_command,
     terminate_running_process,
 )
-from cwma.auto.process_supervisor import poll_channel_exit, start_channel
-from cwma.auto.upload_cleanup import cleanup_uploaded_files, prune_empty_dirs_under
-from cwma.auto.upload_queue import UploadQueueState
-from cwma.auto.zip_intake import (
+from cwma.auto.infra.process_supervisor import poll_channel_exit, start_channel
+from cwma.auto.infra.upload_cleanup import cleanup_uploaded_files, prune_empty_dirs_under
+from cwma.auto.state.upload_queue import UploadQueueState
+from cwma.auto.infra.zip_intake import (
     compute_zip_signature,
     extract_zip_with_bandizip,
     extract_zip_with_windows_builtin,
@@ -609,7 +609,7 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
             zip_path = base_dir / "x.zip"
             zip_path.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
             logs: list[str] = []
-            with mock.patch("cwma.auto.zip_intake.shutil.which", return_value=None):
+            with mock.patch("cwma.auto.infra.zip_intake.shutil.which", return_value=None):
                 code = extract_zip_with_bandizip(
                     zip_path=zip_path,
                     output_dir=base_dir,
@@ -627,7 +627,7 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
             zip_path = base_dir / "x.zip"
             zip_path.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
             logs: list[str] = []
-            with mock.patch("cwma.auto.zip_intake.shutil.which", return_value=None):
+            with mock.patch("cwma.auto.infra.zip_intake.shutil.which", return_value=None):
                 code = extract_zip_with_windows_builtin(
                     zip_path=zip_path,
                     output_dir=base_dir,
@@ -833,16 +833,16 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
                 return ChannelStartResult(return_code=0, process=proc)  # type: ignore[arg-type]
 
             with mock.patch(
-                "cwma.auto.process_supervisor.build_child_process_env",
+                "cwma.auto.infra.process_supervisor.build_child_process_env",
                 return_value={"AUTO": "1"},
             ) as env_builder, mock.patch(
-                "cwma.auto.process_supervisor.start_channel_with_handler",
+                "cwma.auto.infra.process_supervisor.start_channel_with_handler",
                 side_effect=_stub_start_channel_with_handler,
             ) as start_with_handler, mock.patch(
-                "cwma.auto.process_supervisor.start_output_pump_thread",
+                "cwma.auto.infra.process_supervisor.start_output_pump_thread",
                 side_effect=lambda channel, proc, decode_line, on_line, warn: on_line("hello"),
             ) as pump_thread, mock.patch(
-                "cwma.auto.process_supervisor.append_child_output_line"
+                "cwma.auto.infra.process_supervisor.append_child_output_line"
             ) as append_line:
                 result = start_channel(
                     channel="upload",
@@ -877,11 +877,11 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
                 captured.update(kwargs)
                 return ChannelStartResult(return_code=0, process=_Proc())  # type: ignore[arg-type]
 
-            with mock.patch("cwma.auto.process_supervisor.build_child_process_env") as env_builder, mock.patch(
-                "cwma.auto.process_supervisor.start_channel_with_handler",
+            with mock.patch("cwma.auto.infra.process_supervisor.build_child_process_env") as env_builder, mock.patch(
+                "cwma.auto.infra.process_supervisor.start_channel_with_handler",
                 side_effect=_stub_start_channel_with_handler,
             ) as start_with_handler, mock.patch(
-                "cwma.auto.process_supervisor.start_output_pump_thread"
+                "cwma.auto.infra.process_supervisor.start_output_pump_thread"
             ) as pump_thread:
                 result = start_channel(
                     channel="maintain",
@@ -904,7 +904,7 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
     def test_poll_channel_exit_preserves_running_process(self) -> None:
         proc = object()
         with mock.patch(
-            "cwma.auto.process_supervisor.poll_process_exit",
+            "cwma.auto.infra.process_supervisor.poll_process_exit",
             return_value=ProcessPollResult(exited=False, code=None),
         ) as poll_mock:
             result = poll_channel_exit(process=proc)  # type: ignore[arg-type]
@@ -917,7 +917,7 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
     def test_poll_channel_exit_normalizes_none_code_to_zero(self) -> None:
         proc = object()
         with mock.patch(
-            "cwma.auto.process_supervisor.poll_process_exit",
+            "cwma.auto.infra.process_supervisor.poll_process_exit",
             return_value=ProcessPollResult(exited=True, code=None),
         ) as poll_mock:
             result = poll_channel_exit(process=proc)  # type: ignore[arg-type]
@@ -930,3 +930,4 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

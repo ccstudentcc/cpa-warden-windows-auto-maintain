@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Callable, Protocol
 
-from ..channel_status import CHANNEL_MAINTAIN, STAGE_DEFERRED
-from ..maintain_queue import (
+from ..channel.channel_status import CHANNEL_MAINTAIN, STAGE_DEFERRED
+from ..state.maintain_queue import (
     MaintainQueueState,
     MaintainRuntimeState,
     merge_incremental_maintain_names,
     queue_maintain_request,
 )
-from ..runtime_state import (
+from ..state.runtime_state import (
     build_composed_maintain_runtime_state,
     build_maintain_queue_state,
     build_maintain_runtime_state,
@@ -20,7 +20,7 @@ from ..runtime_state import (
     unpack_maintain_runtime_state,
     unpack_upload_queue_state,
 )
-from ..upload_queue import UploadQueueState
+from ..state.upload_queue import UploadQueueState
 
 
 class StateBridgeHost(Protocol):

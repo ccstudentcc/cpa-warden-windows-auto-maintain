@@ -4,18 +4,18 @@ import os
 import unittest
 from unittest import mock
 
-from cwma.auto.channel_status import CHANNEL_UPLOAD, STATE_PENDING, STATE_RUNNING
-from cwma.auto.dashboard import apply_panel_colors, fit_panel_line, panel_border_line
-from cwma.auto.panel_render import (
+from cwma.auto.channel.channel_status import CHANNEL_UPLOAD, STATE_PENDING, STATE_RUNNING
+from cwma.auto.ui.dashboard import apply_panel_colors, fit_panel_line, panel_border_line
+from cwma.auto.ui.panel_render import (
     PanelLinesContext,
     SignatureHeartbeatGate,
     build_plain_panel_lines,
     panel_signature,
     should_skip_render_by_signature_gate,
 )
-from cwma.auto.panel_snapshot import build_panel_snapshot
-from cwma.auto.progress_parser import parse_progress_line
-from cwma.auto.ui_runtime import UiRuntime, UiRuntimeState as UiPanelRuntimeState
+from cwma.auto.ui.panel_snapshot import build_panel_snapshot
+from cwma.auto.ui.progress_parser import parse_progress_line
+from cwma.auto.ui.ui_runtime import UiRuntime, UiRuntimeState as UiPanelRuntimeState
 
 
 class AutoModuleUiTests(unittest.TestCase):
@@ -212,12 +212,12 @@ class AutoModuleUiTests(unittest.TestCase):
         )
 
     def test_fit_panel_line_truncates_with_ellipsis(self) -> None:
-        with mock.patch("cwma.auto.dashboard.shutil.get_terminal_size") as mocked_size:
+        with mock.patch("cwma.auto.ui.dashboard.shutil.get_terminal_size") as mocked_size:
             mocked_size.return_value = os.terminal_size((8, 20))
             self.assertEqual(fit_panel_line("1234567890"), "12345...")
 
     def test_panel_border_line_respects_minimum_width(self) -> None:
-        with mock.patch("cwma.auto.dashboard.shutil.get_terminal_size") as mocked_size:
+        with mock.patch("cwma.auto.ui.dashboard.shutil.get_terminal_size") as mocked_size:
             mocked_size.return_value = os.terminal_size((20, 20))
             border = panel_border_line("=")
         self.assertTrue(border.startswith("+"))
@@ -312,3 +312,4 @@ class AutoModuleUiTests(unittest.TestCase):
         self.assertEqual(snapshot.pending_incremental, 0)
         self.assertEqual(snapshot.maintain_next_batch, 0)
         self.assertEqual(snapshot.maintain_inflight_scope, "full")
+

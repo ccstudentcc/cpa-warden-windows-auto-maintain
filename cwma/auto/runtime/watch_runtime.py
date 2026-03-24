@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
-from ..watch_cycle import decide_scheduled_maintain_enqueues, decide_watch_upload_check_gate
+from ..orchestration.watch_cycle import decide_scheduled_maintain_enqueues, decide_watch_upload_check_gate
 
 StageRunner = Callable[[], int]
 

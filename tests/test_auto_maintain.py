@@ -11,10 +11,10 @@ from pathlib import Path
 from unittest import mock
 
 from auto_maintain import AutoMaintainer, Settings, load_settings
-from cwma.auto.channel_status import CHANNEL_UPLOAD
+from cwma.auto.channel.channel_status import CHANNEL_UPLOAD
 from cwma.auto.runtime.startup_runtime import StartupRuntimeResult, StartupRuntimeState
 from cwma.auto.runtime.watch_runtime import WatchRuntimeResult, WatchRuntimeState
-from cwma.auto.snapshots import compute_uploaded_baseline as compute_uploaded_baseline_rows
+from cwma.auto.state.snapshots import compute_uploaded_baseline as compute_uploaded_baseline_rows
 
 
 class _DoneProcess:
@@ -1174,3 +1174,4 @@ class AutoMaintainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

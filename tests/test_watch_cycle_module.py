@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from cwma.auto.watch_cycle import (
+from cwma.auto.orchestration.watch_cycle import (
     decide_scheduled_maintain_enqueues,
     decide_watch_upload_check_gate,
 )
@@ -80,3 +80,4 @@ class WatchCycleModuleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
