@@ -16,6 +16,29 @@ from cwma.auto.runtime.startup_runtime import StartupRuntimeResult, StartupRunti
 from cwma.auto.runtime.watch_runtime import WatchRuntimeResult, WatchRuntimeState
 from cwma.auto.state.snapshots import compute_uploaded_baseline as compute_uploaded_baseline_rows
 
+_ORIGINAL_TEMP_ENV: dict[str, str | None] = {}
+_SANDBOX_TEMP_KEYS = ("TMPDIR", "TEMP", "TMP")
+
+
+def setUpModule() -> None:
+    # Keep tempfile writes inside repository workspace for sandboxed runners.
+    sandbox_temp = (Path.cwd() / ".tmp_unittest_temp").resolve()
+    sandbox_temp.mkdir(parents=True, exist_ok=True)
+    global _ORIGINAL_TEMP_ENV
+    _ORIGINAL_TEMP_ENV = {key: os.environ.get(key) for key in _SANDBOX_TEMP_KEYS}
+    for key in _SANDBOX_TEMP_KEYS:
+        os.environ[key] = str(sandbox_temp)
+    tempfile.tempdir = str(sandbox_temp)
+
+
+def tearDownModule() -> None:
+    tempfile.tempdir = None
+    for key, value in _ORIGINAL_TEMP_ENV.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
 
 class _DoneProcess:
     def __init__(self, code: int = 0) -> None:
@@ -69,6 +92,9 @@ def _build_settings(base_dir: Path, auth_dir: Path) -> Settings:
         bandizip_path="",
         bandizip_timeout_seconds=10,
         use_windows_zip_fallback=False,
+        archive_extensions=(".zip", ".7z", ".rar"),
+        bandizip_prefer_console=True,
+        bandizip_hide_window=True,
         continue_on_command_failure=False,
         allow_multi_instance=True,
         run_once=False,
@@ -828,6 +854,9 @@ class AutoMaintainTests(unittest.TestCase):
                         "incremental_maintain_min_interval_seconds": 9,
                         "incremental_maintain_full_guard_seconds": 8,
                         "run_upload_on_start": False,
+                        "archive_extensions": [".zip", ".7z"],
+                        "bandizip_prefer_console": True,
+                        "bandizip_hide_window": True,
                     }
                 ),
                 encoding="utf-8",
@@ -845,6 +874,9 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertEqual(settings.incremental_maintain_min_interval_seconds, 9)
             self.assertEqual(settings.incremental_maintain_full_guard_seconds, 8)
             self.assertFalse(settings.run_upload_on_start)
+            self.assertEqual(settings.archive_extensions, (".zip", ".7z"))
+            self.assertTrue(settings.bandizip_prefer_console)
+            self.assertTrue(settings.bandizip_hide_window)
             self.assertEqual(settings.watch_config_path, watch_cfg)
 
     def test_load_settings_env_overrides_watch_config(self) -> None:
@@ -876,11 +908,12 @@ class AutoMaintainTests(unittest.TestCase):
                     "ADAPTIVE_UPLOAD_BATCHING": "1",
                     "UPLOAD_HIGH_BACKLOG_THRESHOLD": "44",
                     "UPLOAD_HIGH_BACKLOG_BATCH_SIZE": "55",
-                    "INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS": "77",
-                    "INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS": "88",
-                    "RUN_UPLOAD_ON_START": "1",
-                },
-                clear=True,
+                        "INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS": "77",
+                        "INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS": "88",
+                        "RUN_UPLOAD_ON_START": "1",
+                        "ARCHIVE_EXTENSIONS": ".zip,.rar",
+                    },
+                    clear=True,
             ):
                 settings = load_settings(args)
             self.assertEqual(settings.watch_interval_seconds, 11)
@@ -892,6 +925,7 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertEqual(settings.incremental_maintain_min_interval_seconds, 77)
             self.assertEqual(settings.incremental_maintain_full_guard_seconds, 88)
             self.assertTrue(settings.run_upload_on_start)
+            self.assertEqual(settings.archive_extensions, (".zip", ".rar"))
 
     def test_render_progress_snapshot_includes_queue_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -900,6 +934,10 @@ class AutoMaintainTests(unittest.TestCase):
             auth_dir.mkdir(parents=True, exist_ok=True)
             settings = _build_settings(base, auth_dir)
             maintainer = AutoMaintainer(settings)
+            maintainer.panel_enabled = False
+            maintainer.panel_color_enabled = False
+            maintainer.runtime.ui.panel_enabled = False
+            maintainer.runtime.ui.panel_color_enabled = False
 
             maintainer.progress_render_interval_seconds = 0
             maintainer.pending_upload_snapshot = [
@@ -942,6 +980,10 @@ class AutoMaintainTests(unittest.TestCase):
             auth_dir.mkdir(parents=True, exist_ok=True)
             settings = _build_settings(base, auth_dir)
             maintainer = AutoMaintainer(settings)
+            maintainer.panel_enabled = False
+            maintainer.panel_color_enabled = False
+            maintainer.runtime.ui.panel_enabled = False
+            maintainer.runtime.ui.panel_color_enabled = False
             maintainer.progress_render_interval_seconds = 0
             maintainer.progress_render_heartbeat_seconds = 999
 
