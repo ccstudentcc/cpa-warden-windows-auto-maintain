@@ -1,6 +1,7 @@
 .DS_Store
 .venv/
-.uv-cache/
+.uv_cache/
+.uv_python/
 __pycache__/
 *.pyc
 config.json
