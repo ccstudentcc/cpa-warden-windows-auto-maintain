@@ -5,7 +5,9 @@ from .maintain_scope import (
     resolve_maintain_name_scope,
     resolve_upload_name_scope,
 )
+from .maintain import run_maintain_async
 from .scan import run_scan_async
+from .upload import run_upload_async
 from .upload_scope import (
     discover_upload_files,
     select_upload_candidates,
@@ -15,9 +17,11 @@ from .upload_scope import (
 __all__ = [
     "discover_upload_files",
     "load_name_scope_file",
+    "run_maintain_async",
     "resolve_maintain_name_scope",
     "resolve_upload_name_scope",
     "run_scan_async",
+    "run_upload_async",
     "select_upload_candidates",
     "validate_and_digest_json_file",
 ]

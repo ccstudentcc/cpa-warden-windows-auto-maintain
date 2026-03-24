@@ -1111,6 +1111,52 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertIsNone(result)
             sleep_mock.assert_called_once_with(1)
 
+    def test_run_watch_cycle_and_maybe_sleep_returns_watch_exit_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+
+            with mock.patch.object(
+                maintainer,
+                "_run_watch_iteration",
+                return_value=7,
+            ) as watch_mock, mock.patch.object(
+                maintainer,
+                "_sleep_between_watch_cycles",
+                return_value=0,
+            ) as sleep_mock:
+                result = maintainer._run_watch_cycle_and_maybe_sleep()
+
+            self.assertEqual(result, 7)
+            watch_mock.assert_called_once()
+            sleep_mock.assert_not_called()
+
+    def test_run_watch_cycle_and_maybe_sleep_delegates_to_sleep_when_watch_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+
+            with mock.patch.object(
+                maintainer,
+                "_run_watch_iteration",
+                return_value=0,
+            ) as watch_mock, mock.patch.object(
+                maintainer,
+                "_sleep_between_watch_cycles",
+                return_value=None,
+            ) as sleep_mock:
+                result = maintainer._run_watch_cycle_and_maybe_sleep()
+
+            self.assertIsNone(result)
+            watch_mock.assert_called_once()
+            sleep_mock.assert_called_once()
+
     def test_resolve_stage_failure_respects_handle_failure_decision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

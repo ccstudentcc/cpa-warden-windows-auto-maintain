@@ -460,6 +460,13 @@ class AutoMaintainer:
             log=log,
         )
 
+    def _run_watch_cycle_and_maybe_sleep(self) -> int | None:
+        now = time.monotonic()
+        watch_exit = self._run_watch_iteration(now)
+        if watch_exit != 0:
+            return watch_exit
+        return self._sleep_between_watch_cycles()
+
     def run(self) -> int:
         self.ensure_paths()
         self.register_shutdown_handlers()
@@ -474,14 +481,9 @@ class AutoMaintainer:
                 return startup_exit
 
             while True:
-                now = time.monotonic()
-                watch_exit = self._run_watch_iteration(now)
-                if watch_exit != 0:
-                    return watch_exit
-
-                sleep_exit = self._sleep_between_watch_cycles()
-                if sleep_exit is not None:
-                    return sleep_exit
+                cycle_exit = self._run_watch_cycle_and_maybe_sleep()
+                if cycle_exit is not None:
+                    return cycle_exit
         finally:
             self.release_instance_lock()
 

@@ -86,7 +86,9 @@ from ..warden.services.maintain_scope import (
     resolve_maintain_name_scope as resolve_maintain_name_scope_warden,
     resolve_upload_name_scope as resolve_upload_name_scope_warden,
 )
+from ..warden.services.maintain import run_maintain_async as run_maintain_async_service_warden
 from ..warden.services.scan import run_scan_async as run_scan_async_service_warden
+from ..warden.services.upload import run_upload_async as run_upload_async_service_warden
 from ..warden.services.upload_scope import (
     discover_upload_files as discover_upload_files_warden,
     select_upload_candidates as select_upload_candidates_warden,
@@ -875,177 +877,22 @@ async def run_upload_async(
     *,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    upload_name_scope = resolve_upload_name_scope(settings)
-    LOGGER.info(
-        "开始上传认证文件: dir=%s recursive=%s workers=%s retries=%s method=%s force=%s limit=%s",
-        settings["upload_dir"],
-        settings["upload_recursive"],
-        settings["upload_workers"],
-        settings["upload_retries"],
-        settings["upload_method"],
-        settings["upload_force"],
-        limit if limit is not None else "all",
+    return await run_upload_async_service_warden(
+        conn,
+        settings,
+        limit=limit,
+        resolve_upload_name_scope=resolve_upload_name_scope,
+        discover_upload_files=discover_upload_files,
+        validate_and_digest_json_file=validate_and_digest_json_file,
+        select_upload_candidates=select_upload_candidates,
+        summarize_upload_results=summarize_upload_results,
+        fetch_remote_auth_file_names=fetch_remote_auth_file_names,
+        mark_upload_skipped_remote_exists=mark_upload_skipped_remote_exists,
+        upload_auth_file_async=upload_auth_file_async,
+        progress_log_step=progress_log_step,
+        progress_reporter_factory=ProgressReporter,
+        logger=LOGGER,
     )
-    if upload_name_scope is None:
-        LOGGER.info("上传范围: full")
-    else:
-        LOGGER.info("上传范围: incremental names=%s", len(upload_name_scope))
-    discovered_paths = discover_upload_files(settings["upload_dir"], settings["upload_recursive"])
-    if not discovered_paths:
-        LOGGER.info("未发现可上传的 .json 文件")
-        return {"results": []}
-
-    validated_files: list[dict[str, Any]] = []
-    pre_results: list[dict[str, Any]] = []
-    for path in discovered_paths:
-        try:
-            validated_files.append(validate_and_digest_json_file(path))
-        except Exception as exc:
-            pre_results.append(
-                {
-                    "file_name": path.name,
-                    "file_path": str(path),
-                    "status_code": None,
-                    "ok": False,
-                    "outcome": "validation_failed",
-                    "error": str(exc),
-                    "error_kind": "validation",
-                }
-            )
-
-    selected_candidates, skipped_local_duplicates, conflicting_names = select_upload_candidates(validated_files)
-    pre_results.extend(skipped_local_duplicates)
-    if upload_name_scope is not None:
-        selected_candidates = [
-            candidate
-            for candidate in selected_candidates
-            if candidate["file_name"] in upload_name_scope
-        ]
-        conflicting_names = {
-            name: rows
-            for name, rows in conflicting_names.items()
-            if name in upload_name_scope
-        }
-    if conflicting_names:
-        samples: list[str] = []
-        for name, rows in list(sorted(conflicting_names.items(), key=lambda item: item[0]))[:10]:
-            samples.append(f"{name}({len(rows)} paths)")
-        raise RuntimeError(
-            "检测到同名不同内容的本地文件，已停止上传: " + ", ".join(samples)
-        )
-    if not selected_candidates:
-        summarize_upload_results(
-            pre_results,
-            discovered_count=len(discovered_paths),
-            selected_count=0,
-            to_upload_count=0,
-        )
-        failed_count = sum(
-            1 for row in pre_results if row.get("outcome") in {"validation_failed", "upload_failed"}
-        )
-        if failed_count > 0:
-            raise RuntimeError(f"上传完成但存在失败文件: {failed_count}")
-        LOGGER.info("上传流程完成")
-        return {"results": pre_results}
-
-    remote_names: set[str] = set()
-    if not settings["upload_force"]:
-        remote_names = fetch_remote_auth_file_names(settings["base_url"], settings["token"], settings["timeout"])
-    upload_candidates: list[dict[str, Any]] = []
-    for candidate in selected_candidates:
-        if (not settings["upload_force"]) and candidate["file_name"] in remote_names:
-            mark_upload_skipped_remote_exists(
-                conn,
-                base_url=settings["base_url"],
-                file_name=candidate["file_name"],
-                content_sha256=candidate["content_sha256"],
-                file_path=candidate["file_path"],
-                file_size=candidate["file_size"],
-            )
-            pre_results.append(
-                {
-                    "file_name": candidate["file_name"],
-                    "file_path": candidate["file_path"],
-                    "status_code": None,
-                    "ok": True,
-                    "outcome": "skipped_remote_exists",
-                    "error": None,
-                    "error_kind": None,
-                }
-            )
-            continue
-        upload_candidates.append(candidate)
-
-    if limit is not None:
-        if limit < 0:
-            raise RuntimeError("upload limit 不能小于 0")
-        upload_candidates = upload_candidates[:limit]
-
-    if not upload_candidates:
-        results = list(pre_results)
-        summarize_upload_results(
-            results,
-            discovered_count=len(discovered_paths),
-            selected_count=len(selected_candidates),
-            to_upload_count=0,
-        )
-        failed_count = sum(1 for row in results if row.get("outcome") in {"validation_failed", "upload_failed"})
-        if failed_count > 0:
-            raise RuntimeError(f"上传完成但存在失败文件: {failed_count}")
-        LOGGER.info("上传流程完成")
-        return {"results": results}
-
-    connector = aiohttp.TCPConnector(
-        limit=max(1, settings["upload_workers"]),
-        limit_per_host=max(1, settings["upload_workers"]),
-    )
-    client_timeout = aiohttp.ClientTimeout(total=max(1, settings["timeout"]))
-    semaphore = asyncio.Semaphore(max(1, settings["upload_workers"]))
-    stop_event = asyncio.Event()
-
-    results = list(pre_results)
-    async with aiohttp.ClientSession(connector=connector, timeout=client_timeout, trust_env=True) as session:
-        tasks = [
-            asyncio.create_task(
-                upload_auth_file_async(
-                    session,
-                    semaphore,
-                    conn,
-                    settings,
-                    candidate,
-                    stop_event,
-                )
-            )
-            for candidate in upload_candidates
-        ]
-        done = 0
-        total = len(tasks)
-        report_step = progress_log_step(total)
-        next_report = report_step
-        with ProgressReporter("上传认证文件", total, debug=settings["debug"]) as progress:
-            for task in asyncio.as_completed(tasks):
-                results.append(await task)
-                done += 1
-                progress.advance()
-                if (not progress.enabled) and (done >= next_report or done == total):
-                    LOGGER.info("上传进度: %s/%s", done, total)
-                    next_report += report_step
-
-    summarize_upload_results(
-        results,
-        discovered_count=len(discovered_paths),
-        selected_count=len(selected_candidates),
-        to_upload_count=len(upload_candidates),
-    )
-
-    if any(row.get("error_kind") == "core_auth_manager_unavailable" for row in results):
-        raise RuntimeError("core auth manager unavailable")
-    failed_count = sum(1 for row in results if row.get("outcome") in {"validation_failed", "upload_failed"})
-    if failed_count > 0:
-        raise RuntimeError(f"上传完成但存在失败文件: {failed_count}")
-
-    LOGGER.info("上传流程完成")
-    return {"results": results}
 
 
 def build_wham_usage_payload(auth_index: str, user_agent: str, chatgpt_account_id: str) -> dict[str, Any]:
@@ -1552,156 +1399,23 @@ async def run_scan_async(
 
 
 async def run_maintain_async(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
-    maintain_name_scope = resolve_maintain_name_scope(settings)
-    LOGGER.info(
-        "开始维护: delete_401=%s quota_action=%s quota_disable_threshold=%s auto_reenable=%s reenable_scope=%s delete_retries=%s",
-        settings["delete_401"],
-        settings["quota_action"],
-        settings["quota_disable_threshold"],
-        settings["auto_reenable"],
-        settings["reenable_scope"],
-        settings["delete_retries"],
+    return await run_maintain_async_service_warden(
+        conn,
+        settings,
+        resolve_maintain_name_scope=resolve_maintain_name_scope,
+        run_scan_async=lambda _conn, _settings, _scope: run_scan_async(
+            _conn,
+            _settings,
+            maintain_name_scope=_scope,
+        ),
+        run_action_group_async=run_action_group_async,
+        confirm_action=confirm_action,
+        apply_action_results=apply_action_results,
+        upsert_auth_accounts=upsert_auth_accounts,
+        mark_quota_already_disabled=mark_quota_already_disabled,
+        summarize_action_results=summarize_action_results,
+        logger=LOGGER,
     )
-    if maintain_name_scope is None:
-        LOGGER.info("维护范围: full")
-    else:
-        LOGGER.info("维护范围: incremental names=%s", len(maintain_name_scope))
-    scan_result = await run_scan_async(conn, settings, maintain_name_scope=maintain_name_scope)
-
-    records_by_name = {
-        row["name"]: row
-        for row in scan_result["candidate_records"]
-        if row.get("name")
-    }
-    invalid_records = scan_result["invalid_records"]
-    quota_records = [row for row in scan_result["quota_records"] if row.get("is_invalid_401") != 1]
-    recovered_records = scan_result["recovered_records"]
-
-    delete_401_results: list[dict[str, Any]] = []
-    quota_action_results: list[dict[str, Any]] = []
-    reenable_results: list[dict[str, Any]] = []
-
-    if settings["delete_401"] and invalid_records:
-        names = [row["name"] for row in invalid_records if row.get("name")]
-        LOGGER.info("待删除 401 账号: %s", len(names))
-        if confirm_action(f"即将删除 {len(names)} 个 401 账号", settings["assume_yes"]):
-            delete_401_results = await run_action_group_async(
-                base_url=settings["base_url"],
-                token=settings["token"],
-                timeout=settings["timeout"],
-                workers=settings["action_workers"],
-                items=names,
-                fn_name="delete",
-                delete_retries=settings["delete_retries"],
-                debug=settings["debug"],
-            )
-            updated = apply_action_results(
-                records_by_name,
-                delete_401_results,
-                action="delete_401",
-                managed_reason_on_success="deleted_401",
-                disabled_value=None,
-            )
-            upsert_auth_accounts(conn, updated)
-
-    deleted_401_names = {row["name"] for row in delete_401_results if row.get("ok")}
-
-    if settings["quota_action"] == "disable":
-        already_disabled = [row for row in quota_records if row.get("name") not in deleted_401_names and row.get("disabled") == 1]
-        to_disable = [row for row in quota_records if row.get("name") not in deleted_401_names and row.get("disabled") != 1]
-        LOGGER.info("待禁用限额账号: %s", len(to_disable))
-        LOGGER.debug("已处于禁用状态的限额账号: %s", len(already_disabled))
-
-        if already_disabled:
-            upsert_auth_accounts(conn, mark_quota_already_disabled(already_disabled))
-
-        if to_disable:
-            quota_action_results = await run_action_group_async(
-                base_url=settings["base_url"],
-                token=settings["token"],
-                timeout=settings["timeout"],
-                workers=settings["action_workers"],
-                items=[row["name"] for row in to_disable if row.get("name")],
-                fn_name="toggle",
-                disabled=True,
-                debug=settings["debug"],
-            )
-            updated = apply_action_results(
-                records_by_name,
-                quota_action_results,
-                action="disable_quota",
-                managed_reason_on_success="quota_disabled",
-                disabled_value=1,
-            )
-            upsert_auth_accounts(conn, updated)
-    else:
-        quota_delete_targets = [row["name"] for row in quota_records if row.get("name") and row.get("name") not in deleted_401_names]
-        LOGGER.info("待删除限额账号: %s", len(quota_delete_targets))
-        if quota_delete_targets and confirm_action(f"即将删除 {len(quota_delete_targets)} 个限额账号", settings["assume_yes"]):
-            quota_action_results = await run_action_group_async(
-                base_url=settings["base_url"],
-                token=settings["token"],
-                timeout=settings["timeout"],
-                workers=settings["action_workers"],
-                items=quota_delete_targets,
-                fn_name="delete",
-                delete_retries=settings["delete_retries"],
-                debug=settings["debug"],
-            )
-            updated = apply_action_results(
-                records_by_name,
-                quota_action_results,
-                action="delete_quota",
-                managed_reason_on_success="quota_deleted",
-                disabled_value=None,
-            )
-            upsert_auth_accounts(conn, updated)
-
-    deleted_quota_names = {row["name"] for row in quota_action_results if row.get("ok") and settings["quota_action"] == "delete"}
-
-    if settings["auto_reenable"]:
-        recoverable_records = (
-            recovered_records
-            if settings["reenable_scope"] == "signal"
-            else [row for row in recovered_records if str(row.get("managed_reason") or "") == "quota_disabled"]
-        )
-        reenable_targets = [
-            row["name"]
-            for row in recoverable_records
-            if row.get("name") not in deleted_401_names and row.get("name") not in deleted_quota_names
-        ]
-        LOGGER.info("待恢复启用账号: %s（scope=%s）", len(reenable_targets), settings["reenable_scope"])
-        if reenable_targets:
-            reenable_results = await run_action_group_async(
-                base_url=settings["base_url"],
-                token=settings["token"],
-                timeout=settings["timeout"],
-                workers=settings["action_workers"],
-                items=reenable_targets,
-                fn_name="toggle",
-                disabled=False,
-                debug=settings["debug"],
-            )
-            updated = apply_action_results(
-                records_by_name,
-                reenable_results,
-                action="reenable_quota",
-                managed_reason_on_success=None,
-                disabled_value=0,
-            )
-            upsert_auth_accounts(conn, updated)
-
-    summarize_action_results("删除 401", delete_401_results)
-    summarize_action_results("处理限额", quota_action_results)
-    summarize_action_results("恢复启用", reenable_results)
-    LOGGER.info("维护完成")
-
-    return {
-        "scan": scan_result,
-        "delete_401_results": delete_401_results,
-        "quota_action_results": quota_action_results,
-        "reenable_results": reenable_results,
-    }
 
 
 def count_valid_accounts(records: list[dict[str, Any]]) -> int:
