@@ -12,7 +12,7 @@ import shlex
 import sqlite3
 import sys
 import urllib.parse
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -62,6 +62,13 @@ from ..warden.db.schema import (
     init_db as init_db_warden,
     init_upload_db as init_upload_db_warden,
 )
+from ..warden.exports import (
+    build_invalid_export_record as build_invalid_export_record_warden,
+    build_quota_export_record as build_quota_export_record_warden,
+    export_current_results as export_current_results_warden,
+    export_records as export_records_warden,
+    summarize_failures as summarize_failures_warden,
+)
 from ..warden.models import (
     AUTH_ACCOUNT_COLUMNS as AUTH_ACCOUNT_COLUMNS_WARDEN,
     build_auth_record as build_auth_record_warden,
@@ -87,6 +94,11 @@ from ..warden.services.maintain_scope import (
     resolve_upload_name_scope as resolve_upload_name_scope_warden,
 )
 from ..warden.services.maintain import run_maintain_async as run_maintain_async_service_warden
+from ..warden.services.refill import (
+    compute_refill_upload_count as compute_refill_upload_count_service_warden,
+    count_valid_accounts as count_valid_accounts_service_warden,
+    run_maintain_refill_async as run_maintain_refill_async_service_warden,
+)
 from ..warden.services.scan import run_scan_async as run_scan_async_service_warden
 from ..warden.services.upload import run_upload_async as run_upload_async_service_warden
 from ..warden.services.upload_scope import (
@@ -1041,117 +1053,29 @@ async def probe_accounts_async(
 
 
 def build_invalid_export_record(record: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "name": record.get("name"),
-        "account": record.get("account") or record.get("email") or "",
-        "email": record.get("email") or "",
-        "provider": record.get("provider"),
-        "source": record.get("source"),
-        "disabled": bool(record.get("disabled")),
-        "unavailable": bool(record.get("unavailable")),
-        "auth_index": record.get("auth_index"),
-        "chatgpt_account_id": record.get("chatgpt_account_id"),
-        "api_http_status": record.get("api_http_status"),
-        "api_status_code": record.get("api_status_code"),
-        "status": record.get("status"),
-        "status_message": record.get("status_message"),
-        "probe_error_kind": record.get("probe_error_kind"),
-        "probe_error_text": record.get("probe_error_text"),
-    }
+    return build_invalid_export_record_warden(record)
 
 
 def build_quota_export_record(record: dict[str, Any]) -> dict[str, Any]:
-    effective_limit_reached, effective_allowed, quota_signal_source = resolve_quota_signal(record)
-    effective_remaining_ratio, remaining_ratio_source = resolve_quota_remaining_ratio(record)
-    return {
-        "name": record.get("name"),
-        "account": record.get("account") or record.get("email") or "",
-        "email": record.get("usage_email") or record.get("email") or "",
-        "provider": record.get("provider"),
-        "source": record.get("source"),
-        "disabled": bool(record.get("disabled")),
-        "unavailable": bool(record.get("unavailable")),
-        "auth_index": record.get("auth_index"),
-        "chatgpt_account_id": record.get("chatgpt_account_id"),
-        "api_http_status": record.get("api_http_status"),
-        "api_status_code": record.get("api_status_code"),
-        "limit_reached": bool(effective_limit_reached) if effective_limit_reached is not None else None,
-        "allowed": bool(effective_allowed) if effective_allowed is not None else None,
-        "quota_signal_source": record.get("quota_signal_source") or quota_signal_source,
-        "remaining_ratio": effective_remaining_ratio,
-        "remaining_ratio_source": record.get("quota_remaining_ratio_source") or remaining_ratio_source,
-        "threshold_triggered": bool(record.get("quota_threshold_triggered")),
-        "primary_remaining_ratio": normalize_optional_ratio(record.get("usage_remaining_ratio")),
-        "spark_remaining_ratio": normalize_optional_ratio(record.get("usage_spark_remaining_ratio")),
-        "primary_limit_reached": bool(record.get("usage_limit_reached")) if record.get("usage_limit_reached") is not None else None,
-        "primary_allowed": bool(record.get("usage_allowed")) if record.get("usage_allowed") is not None else None,
-        "spark_limit_reached": bool(record.get("usage_spark_limit_reached")) if record.get("usage_spark_limit_reached") is not None else None,
-        "spark_allowed": bool(record.get("usage_spark_allowed")) if record.get("usage_spark_allowed") is not None else None,
-        "plan_type": record.get("usage_plan_type") or record.get("id_token_plan_type"),
-        "reset_at": record.get("usage_reset_at"),
-        "reset_after_seconds": record.get("usage_reset_after_seconds"),
-        "spark_reset_at": record.get("usage_spark_reset_at"),
-        "spark_reset_after_seconds": record.get("usage_spark_reset_after_seconds"),
-        "probe_error_kind": record.get("probe_error_kind"),
-        "probe_error_text": record.get("probe_error_text"),
-    }
+    return build_quota_export_record_warden(
+        record,
+        resolve_quota_signal=resolve_quota_signal,
+        resolve_quota_remaining_ratio=resolve_quota_remaining_ratio,
+        normalize_optional_ratio=normalize_optional_ratio,
+    )
 
 
 def export_records(path: str, rows: list[dict[str, Any]]) -> None:
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(rows, fh, ensure_ascii=False, indent=2)
+    export_records_warden(path, rows)
 
 
 def summarize_failures(records: list[dict[str, Any]], sample_limit: int = 3) -> None:
-    failed = [row for row in records if row.get("probe_error_kind")]
-    if not failed:
-        return
-
-    labels = {
-        "missing_auth_index": "缺少 auth_index",
-        "missing_chatgpt_account_id": "缺少 Chatgpt-Account-Id",
-        "management_api_http_4xx": "管理接口 HTTP 4xx",
-        "management_api_http_429": "管理接口 HTTP 429",
-        "management_api_http_5xx": "管理接口 HTTP 5xx",
-        "api_call_invalid_json": "api-call 返回不是 JSON",
-        "api_call_not_object": "api-call 返回不是对象",
-        "missing_status_code": "api-call 缺少 status_code",
-        "body_invalid_json": "api-call body 不是合法 JSON",
-        "body_not_object": "api-call body 不是对象",
-        "timeout": "请求超时",
-        "other": "其他异常",
-    }
-    buckets: dict[str, dict[str, Any]] = defaultdict(lambda: {"count": 0, "samples": []})
-
-    for row in failed:
-        key = str(row.get("probe_error_kind") or "other")
-        bucket = buckets[key]
-        bucket["count"] += 1
-        if len(bucket["samples"]) < sample_limit:
-            bucket["samples"].append(
-                " | ".join(
-                    [
-                        row.get("name") or "-",
-                        f"account={row.get('account') or row.get('email') or '-'}",
-                        f"auth_index={row.get('auth_index') or '-'}",
-                        f"has_account_id={'yes' if row.get('chatgpt_account_id') else 'no'}",
-                        f"api_http={row.get('api_http_status') if row.get('api_http_status') is not None else '-'}",
-                        f"status_code={row.get('api_status_code') if row.get('api_status_code') is not None else '-'}",
-                        f"error_kind={key}",
-                        f"error={compact_text(row.get('probe_error_text'), 100) or '-'}",
-                    ]
-                )
-            )
-
-    LOGGER.info("失败原因统计:")
-    for key, payload in sorted(buckets.items(), key=lambda item: (-item[1]["count"], item[0])):
-        LOGGER.info("  - %s: %s", labels.get(key, key), payload["count"])
-
-    LOGGER.debug("失败样例:")
-    for key, payload in sorted(buckets.items(), key=lambda item: (-item[1]["count"], item[0])):
-        LOGGER.debug("  [%s]", labels.get(key, key))
-        for sample in payload["samples"]:
-            LOGGER.debug("    %s", sample)
+    summarize_failures_warden(
+        records,
+        sample_limit=sample_limit,
+        compact_text=compact_text,
+        logger=LOGGER,
+    )
 
 
 async def delete_account_async(
@@ -1366,10 +1290,16 @@ def export_current_results(
     invalid_records: list[dict[str, Any]],
     quota_records: list[dict[str, Any]],
 ) -> None:
-    export_records(invalid_output, [build_invalid_export_record(row) for row in invalid_records])
-    export_records(quota_output, [build_quota_export_record(row) for row in quota_records])
-    LOGGER.info("已导出 401 列表: %s", invalid_output)
-    LOGGER.info("已导出限额列表: %s", quota_output)
+    export_current_results_warden(
+        invalid_output,
+        quota_output,
+        invalid_records,
+        quota_records,
+        export_records_fn=export_records,
+        build_invalid_export_record_fn=build_invalid_export_record,
+        build_quota_export_record_fn=build_quota_export_record,
+        logger=LOGGER,
+    )
 
 
 async def run_scan_async(
@@ -1419,27 +1349,11 @@ async def run_maintain_async(conn: sqlite3.Connection, settings: dict[str, Any])
 
 
 def count_valid_accounts(records: list[dict[str, Any]]) -> int:
-    valid = 0
-    for row in records:
-        if row_to_bool(row.get("disabled")):
-            continue
-        if int(row.get("is_invalid_401") or 0) == 1:
-            continue
-        if int(row.get("is_quota_limited") or 0) == 1:
-            continue
-        if row.get("probe_error_kind"):
-            continue
-        valid += 1
-    return valid
+    return count_valid_accounts_service_warden(records, row_to_bool=row_to_bool)
 
 
 def compute_refill_upload_count(valid_count: int, min_valid_accounts: int, strategy: str) -> int:
-    if valid_count >= min_valid_accounts:
-        return 0
-    gap = min_valid_accounts - valid_count
-    if strategy == "fixed":
-        return min_valid_accounts
-    return gap
+    return compute_refill_upload_count_service_warden(valid_count, min_valid_accounts, strategy)
 
 
 async def run_register_hook_async(settings: dict[str, Any], *, count: int) -> dict[str, Any]:
@@ -1519,67 +1433,23 @@ async def run_register_hook_async(settings: dict[str, Any], *, count: int) -> di
 
 
 async def run_maintain_refill_async(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
-    min_valid_accounts = int(settings["min_valid_accounts"])
-    refill_strategy = str(settings["refill_strategy"])
-
-    LOGGER.info(
-        "开始维护补充: min_valid_accounts=%s refill_strategy=%s auto_register=%s",
-        min_valid_accounts,
-        refill_strategy,
-        bool(settings["auto_register"]),
+    return await run_maintain_refill_async_service_warden(
+        conn,
+        settings,
+        run_maintain_async=run_maintain_async,
+        run_scan_async=run_scan_async,
+        run_upload_async=lambda _conn, _settings, _limit: run_upload_async(
+            _conn,
+            _settings,
+            limit=_limit,
+        ),
+        run_register_hook_async=lambda _settings, _count: run_register_hook_async(
+            _settings,
+            count=_count,
+        ),
+        row_to_bool=row_to_bool,
+        logger=LOGGER,
     )
-    maintain_result = await run_maintain_async(conn, settings)
-
-    after_maintain_scan = await run_scan_async(conn, settings)
-    valid_after_maintain = count_valid_accounts(after_maintain_scan["candidate_records"])
-    LOGGER.info("维护后有效账号数: %s (目标 >= %s)", valid_after_maintain, min_valid_accounts)
-
-    refill_upload_result: dict[str, Any] | None = None
-    after_refill_scan = after_maintain_scan
-    valid_after_refill = valid_after_maintain
-    refill_upload_count = compute_refill_upload_count(valid_after_maintain, min_valid_accounts, refill_strategy)
-
-    if refill_upload_count > 0:
-        LOGGER.info("触发补充上传: count=%s strategy=%s", refill_upload_count, refill_strategy)
-        refill_upload_result = await run_upload_async(conn, settings, limit=refill_upload_count)
-        after_refill_scan = await run_scan_async(conn, settings)
-        valid_after_refill = count_valid_accounts(after_refill_scan["candidate_records"])
-        LOGGER.info("补充上传后有效账号数: %s (目标 >= %s)", valid_after_refill, min_valid_accounts)
-
-    register_result: dict[str, Any] | None = None
-    register_upload_result: dict[str, Any] | None = None
-    final_scan = after_refill_scan
-    final_valid_count = valid_after_refill
-    if final_valid_count < min_valid_accounts:
-        if not settings["auto_register"]:
-            raise RuntimeError(
-                f"维护补充后有效账号不足: valid={final_valid_count}, min_required={min_valid_accounts}"
-            )
-
-        register_count = min_valid_accounts - final_valid_count
-        register_result = await run_register_hook_async(settings, count=register_count)
-        register_upload_result = await run_upload_async(conn, settings, limit=register_count)
-        final_scan = await run_scan_async(conn, settings)
-        final_valid_count = count_valid_accounts(final_scan["candidate_records"])
-        LOGGER.info("注册并上传后有效账号数: %s (目标 >= %s)", final_valid_count, min_valid_accounts)
-
-    if final_valid_count < min_valid_accounts:
-        raise RuntimeError(
-            f"最终有效账号仍不足: valid={final_valid_count}, min_required={min_valid_accounts}"
-        )
-
-    LOGGER.info("维护补充完成: final_valid=%s min_required=%s", final_valid_count, min_valid_accounts)
-    return {
-        "maintain": maintain_result,
-        "after_maintain_scan": after_maintain_scan,
-        "refill_upload_count": int(refill_upload_count),
-        "refill_upload_result": refill_upload_result,
-        "after_refill_scan": after_refill_scan,
-        "register_result": register_result,
-        "register_upload_result": register_upload_result,
-        "final_scan": final_scan,
-        "final_valid_count": int(final_valid_count),
-    }
 
 
 def prompt_string(label: str, default: str, *, secret: bool = False) -> str:
