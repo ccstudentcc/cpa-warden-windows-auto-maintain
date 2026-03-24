@@ -90,11 +90,11 @@ Allowed dependency directions:
 Ownership rule:
 - Any `cwma/auto` module change must be attributable to one primary capability owner before implementation; cross-capability changes must document why one capability cannot remain the single owner.
 
-Stage 2.6 capability-to-test modules map (current):
-1. `process/channel/infra` runtime and lifecycle seams are primarily covered by `tests/test_auto_modules_process_channel.py`.
-2. `ui` snapshot/render/progress seams are primarily covered by `tests/test_auto_modules_ui.py`.
-3. `state` queue/runtime transition seams are primarily covered by `tests/test_auto_modules_state.py`.
-4. `tests/test_auto_modules.py` remains as a transitional mixed residual suite while capability-specific coverage continues to move into split test modules.
+Stage 2.6 capability-to-test modules map (current + closeout direction):
+1. `process/channel/infra` runtime and lifecycle seams are mapped to `tests/test_auto_modules_process_channel.py` as the active destination for new coverage in this capability group.
+2. `ui` snapshot/render/progress seams are mapped to `tests/test_auto_modules_ui.py` as the active destination for new coverage in this capability.
+3. `state` queue/runtime transition seams are mapped to `tests/test_auto_modules_state.py` as the active destination for new coverage in this capability.
+4. `tests/test_auto_modules.py` is still a transitional mixed residual suite; closeout direction is to keep draining mixed cases into the capability-split modules above and retire this residual suite after remaining mixed coverage is cleared.
 
 ## Module Map
 

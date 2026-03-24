@@ -114,12 +114,12 @@ Responsibilities:
 - package import surface only
 - no capability policy logic
 
-## Stage 2.6 Test Modules Map (Current)
+## Stage 2.6 Test Modules Map (Current + Closeout Direction)
 
-1. `process/channel/infra` capability-adjacent seams are currently consolidated in `tests/test_auto_modules_process_channel.py`.
-2. `ui` capability seams are currently consolidated in `tests/test_auto_modules_ui.py`.
-3. `state` capability seams are currently consolidated in `tests/test_auto_modules_state.py`.
-4. `tests/test_auto_modules.py` is retained as a transitional mixed residual suite during ongoing modularization.
+1. `process/channel/infra` runtime and lifecycle seams are mapped to `tests/test_auto_modules_process_channel.py` as the active destination for new coverage in this capability group.
+2. `ui` snapshot/render/progress seams are mapped to `tests/test_auto_modules_ui.py` as the active destination for new coverage in this capability.
+3. `state` queue/runtime transition seams are mapped to `tests/test_auto_modules_state.py` as the active destination for new coverage in this capability.
+4. `tests/test_auto_modules.py` remains a transitional mixed residual suite; closeout direction is to keep draining mixed cases into the split modules above and retire the residual suite after remaining mixed coverage is cleared.
 
 ## Allowed Dependency Directions
 

@@ -12,3 +12,5 @@ dependencies = [
 
 [tool.uv]
 package = false
+cache-dir = ".uv_cache"
+
