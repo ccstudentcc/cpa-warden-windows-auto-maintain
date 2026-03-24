@@ -117,6 +117,7 @@ from .runtime.channel_runtime import (
     start_upload_channel,
 )
 from .runtime.channel_runtime_adapter import ChannelRuntimeAdapter
+from .runtime.host_ops_adapter import HostOpsAdapter
 from .runtime.startup_runtime import (
     StartupRuntimeDeps,
     StartupRuntimeState,
@@ -341,25 +342,13 @@ class AutoMaintainer:
             get_popen_factory=lambda: subprocess.Popen,
             log=log,
         )
+        self.host_ops_adapter = HostOpsAdapter(
+            host=self,
+            get_log=lambda: log,
+        )
 
     def ensure_paths(self) -> None:
-        if not self.cpa_script.exists():
-            raise RuntimeError(f"cpa_warden.py not found: {self.cpa_script}")
-
-        self.settings.auth_dir.mkdir(parents=True, exist_ok=True)
-        if not self.settings.auth_dir.is_dir():
-            raise RuntimeError(f"AUTH_DIR is not a directory: {self.settings.auth_dir}")
-
-        self.settings.state_dir.mkdir(parents=True, exist_ok=True)
-        if not self.settings.state_dir.is_dir():
-            raise RuntimeError(f"STATE_DIR is not a directory: {self.settings.state_dir}")
-
-        self.settings.maintain_db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.settings.upload_db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.settings.maintain_log_file.parent.mkdir(parents=True, exist_ok=True)
-        self.settings.upload_log_file.parent.mkdir(parents=True, exist_ok=True)
-        self.maintain_cmd_output_file.parent.mkdir(parents=True, exist_ok=True)
-        self.upload_cmd_output_file.parent.mkdir(parents=True, exist_ok=True)
+        self.host_ops_adapter.ensure_paths()
 
     def _apply_startup_runtime_state(self, state: StartupRuntimeState) -> None:
         self.last_json_count = state.last_json_count
@@ -515,73 +504,10 @@ class AutoMaintainer:
             self.release_instance_lock()
 
     def _settings_log_rows(self) -> list[tuple[str, str | int | Path]]:
-        return [
-            ("WATCH_CONFIG_PATH", self.settings.watch_config_path or "(none)"),
-            ("AUTH_DIR", self.settings.auth_dir),
-            ("STATE_DIR", self.settings.state_dir),
-            ("MAINTAIN_DB_PATH", self.settings.maintain_db_path),
-            ("UPLOAD_DB_PATH", self.settings.upload_db_path),
-            ("MAINTAIN_LOG_FILE", self.settings.maintain_log_file),
-            ("UPLOAD_LOG_FILE", self.settings.upload_log_file),
-            ("MAINTAIN_COMMAND_OUTPUT_FILE", self.maintain_cmd_output_file),
-            ("UPLOAD_COMMAND_OUTPUT_FILE", self.upload_cmd_output_file),
-            ("MAINTAIN_NAMES_SCOPE_FILE", self.maintain_names_file),
-            ("UPLOAD_NAMES_SCOPE_FILE", self.upload_names_file),
-            ("MAINTAIN_INTERVAL_SECONDS", self.settings.maintain_interval_seconds),
-            ("WATCH_INTERVAL_SECONDS", self.settings.watch_interval_seconds),
-            ("UPLOAD_STABLE_WAIT_SECONDS", self.settings.upload_stable_wait_seconds),
-            ("UPLOAD_BATCH_SIZE", self.settings.upload_batch_size),
-            ("SMART_SCHEDULE_ENABLED", int(self.settings.smart_schedule_enabled)),
-            ("ADAPTIVE_UPLOAD_BATCHING", int(self.settings.adaptive_upload_batching)),
-            ("UPLOAD_HIGH_BACKLOG_THRESHOLD", self.settings.upload_high_backlog_threshold),
-            ("UPLOAD_HIGH_BACKLOG_BATCH_SIZE", self.settings.upload_high_backlog_batch_size),
-            ("ADAPTIVE_MAINTAIN_BATCHING", int(self.settings.adaptive_maintain_batching)),
-            ("INCREMENTAL_MAINTAIN_BATCH_SIZE", self.settings.incremental_maintain_batch_size),
-            ("MAINTAIN_HIGH_BACKLOG_THRESHOLD", self.settings.maintain_high_backlog_threshold),
-            ("MAINTAIN_HIGH_BACKLOG_BATCH_SIZE", self.settings.maintain_high_backlog_batch_size),
-            (
-                "INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS",
-                self.settings.incremental_maintain_min_interval_seconds,
-            ),
-            (
-                "INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS",
-                self.settings.incremental_maintain_full_guard_seconds,
-            ),
-            ("RUN_MAINTAIN_ON_START", int(self.settings.run_maintain_on_start)),
-            ("RUN_UPLOAD_ON_START", int(self.settings.run_upload_on_start)),
-            ("RUN_MAINTAIN_AFTER_UPLOAD", int(self.settings.run_maintain_after_upload)),
-            ("MAINTAIN_ASSUME_YES", int(self.settings.maintain_assume_yes)),
-            (
-                "DELETE_UPLOADED_FILES_AFTER_UPLOAD",
-                int(self.settings.delete_uploaded_files_after_upload),
-            ),
-            ("INSPECT_ZIP_FILES", int(self.settings.inspect_zip_files)),
-            ("AUTO_EXTRACT_ZIP_JSON", int(self.settings.auto_extract_zip_json)),
-            ("DELETE_ZIP_AFTER_EXTRACT", int(self.settings.delete_zip_after_extract)),
-            ("BANDIZIP_PATH", self.settings.bandizip_path),
-            ("BANDIZIP_TIMEOUT_SECONDS", self.settings.bandizip_timeout_seconds),
-            ("USE_WINDOWS_ZIP_FALLBACK", int(self.settings.use_windows_zip_fallback)),
-            ("DEEP_SCAN_INTERVAL_LOOPS", self.settings.deep_scan_interval_loops),
-            ("ACTIVE_PROBE_INTERVAL_SECONDS", self.settings.active_probe_interval_seconds),
-            (
-                "ACTIVE_UPLOAD_DEEP_SCAN_INTERVAL_SECONDS",
-                self.settings.active_upload_deep_scan_interval_seconds,
-            ),
-            ("MAINTAIN_RETRY_COUNT", self.settings.maintain_retry_count),
-            ("UPLOAD_RETRY_COUNT", self.settings.upload_retry_count),
-            ("COMMAND_RETRY_DELAY_SECONDS", self.settings.command_retry_delay_seconds),
-            ("CONTINUE_ON_COMMAND_FAILURE", int(self.settings.continue_on_command_failure)),
-            ("ALLOW_MULTI_INSTANCE", int(self.settings.allow_multi_instance)),
-            ("INSTANCE_LABEL", self.instance_label()),
-            ("INSTANCE_LOCK_FILE", self.instance_lock_file),
-        ]
+        return self.host_ops_adapter.settings_log_rows()
 
     def log_settings(self) -> None:
-        log("Started auto maintenance loop.")
-        for key, value in self._settings_log_rows():
-            log(f"{key}={value}")
-        if self.instance_lock_token:
-            log(f"INSTANCE_LOCK_TOKEN={self.instance_lock_token}")
+        self.host_ops_adapter.log_settings()
 
     def instance_label(self) -> str:
         started = self.instance_started_at.strftime("%Y-%m-%d %H:%M:%S")
@@ -705,123 +631,52 @@ class AutoMaintainer:
                 )
 
     def acquire_instance_lock(self) -> None:
-        state = acquire_lock_state(
-            lock_file=self.instance_lock_file,
-            state_dir=self.settings.state_dir,
+        self.host_ops_adapter.acquire_instance_lock(
             allow_multi_instance=self.settings.allow_multi_instance,
-            log=log,
         )
-        self.instance_lock_token = state.token
-        self.instance_lock_handle = state.handle
-        self.runtime.lifecycle.instance_lock_token = self.instance_lock_token
-        self.runtime.lifecycle.instance_lock_handle = self.instance_lock_handle
 
     def acquire_instance_lock_windows(self) -> None:
         if os.name != "nt":
             raise RuntimeError("Windows lock backend unavailable (msvcrt).")
-        state = acquire_lock_state(
-            lock_file=self.instance_lock_file,
-            state_dir=self.settings.state_dir,
+        self.host_ops_adapter.acquire_instance_lock(
             allow_multi_instance=False,
-            log=log,
         )
-        self.instance_lock_token = state.token
-        self.instance_lock_handle = state.handle
-        self.runtime.lifecycle.instance_lock_token = self.instance_lock_token
-        self.runtime.lifecycle.instance_lock_handle = self.instance_lock_handle
 
     def release_instance_lock(self) -> None:
-        state = InstanceLockState(token=self.instance_lock_token, handle=self.instance_lock_handle)
-        next_state = release_lock_state(
-            lock_file=self.instance_lock_file,
-            allow_multi_instance=self.settings.allow_multi_instance,
-            state=state,
-            log=log,
-        )
-        self.instance_lock_token = next_state.token
-        self.instance_lock_handle = next_state.handle
-        self.runtime.lifecycle.instance_lock_token = self.instance_lock_token
-        self.runtime.lifecycle.instance_lock_handle = self.instance_lock_handle
+        self.host_ops_adapter.release_instance_lock()
 
     def get_json_paths(self) -> list[Path]:
-        return sorted(
-            (p for p in self.settings.auth_dir.rglob("*.json") if p.is_file()),
-            key=lambda p: str(p).lower(),
-        )
+        return self.host_ops_adapter.get_json_paths()
 
     def get_json_count(self) -> int:
-        return len(self.get_json_paths())
+        return self.host_ops_adapter.get_json_count()
 
     def get_zip_signature(self) -> tuple[str, ...]:
-        return compute_zip_signature_rows(self.settings.auth_dir, log=log)
+        return self.host_ops_adapter.get_zip_signature()
 
     def inspect_zip_archives(self) -> bool:
-        return inspect_zip_archives_rows(
-            auth_dir=self.settings.auth_dir,
-            inspect_zip_files=self.settings.inspect_zip_files,
-            auto_extract_zip_json=self.settings.auto_extract_zip_json,
-            delete_zip_after_extract=self.settings.delete_zip_after_extract,
-            processed_signatures=self.zip_extract_processed_signatures,
-            extract_zip=self.extract_zip_with_bandizip,
-            log=log,
-        )
+        return self.host_ops_adapter.inspect_zip_archives()
 
     def extract_zip_with_bandizip(self, zip_path: Path, output_dir: Path) -> int:
-        exit_code = extract_zip_with_bandizip_rows(
-            zip_path=zip_path,
-            output_dir=output_dir,
-            base_dir=self.settings.base_dir,
-            bandizip_path=self.settings.bandizip_path,
-            timeout_seconds=self.settings.bandizip_timeout_seconds,
-            log=log,
-        )
-        if exit_code == 0:
-            return 0
-
-        if self.settings.use_windows_zip_fallback:
-            log(f"Trying Windows built-in unzip fallback: {zip_path.name}")
-            return extract_zip_with_windows_builtin_rows(
-                zip_path=zip_path,
-                output_dir=output_dir,
-                base_dir=self.settings.base_dir,
-                timeout_seconds=self.settings.bandizip_timeout_seconds,
-                log=log,
-            )
-
-        return exit_code
+        return self.host_ops_adapter.extract_zip_with_bandizip(zip_path, output_dir)
 
     def snapshot_lines(self) -> list[str]:
-        return build_snapshot_lines_rows(self.get_json_paths(), log=log)
+        return self.host_ops_adapter.snapshot_lines()
 
     def write_snapshot(self, target: Path, lines: Iterable[str]) -> None:
-        write_snapshot_lines_rows(target, lines)
+        self.host_ops_adapter.write_snapshot(target, lines)
 
     def read_snapshot(self, source: Path) -> list[str]:
-        return read_snapshot_lines_rows(source)
+        return self.host_ops_adapter.read_snapshot(source)
 
     def build_snapshot(self, target: Path) -> list[str]:
-        return build_snapshot_file_rows(
-            target=target,
-            paths=self.get_json_paths(),
-            log=log,
-        )
+        return self.host_ops_adapter.build_snapshot(target)
 
     def delete_uploaded_files_from_snapshot(self, snapshot_lines: list[str]) -> None:
-        result = cleanup_uploaded_files(snapshot_lines)
-        log(
-            "Upload cleanup summary: "
-            f"deleted={result.deleted}, skipped_changed={result.skipped_changed}, "
-            f"skipped_missing={result.skipped_missing}, failed={result.failed}"
-        )
-        self.prune_empty_dirs_under_auth_dir()
+        self.host_ops_adapter.delete_uploaded_files_from_snapshot(snapshot_lines)
 
     def prune_empty_dirs_under_auth_dir(self) -> None:
-        result = prune_empty_dirs_under(self.settings.auth_dir)
-        log(
-            "Upload empty-dir cleanup summary: "
-            f"removed={result.removed}, skipped_non_empty={result.skipped_non_empty}, "
-            f"skipped_missing={result.skipped_missing}, failed={result.failed}"
-        )
+        self.host_ops_adapter.prune_empty_dirs_under_auth_dir()
 
     def command_base(self) -> list[str]:
         cmd = [sys.executable, str(self.cpa_script)]

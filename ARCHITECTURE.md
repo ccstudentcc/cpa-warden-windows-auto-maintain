@@ -16,7 +16,7 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Internal note: config loading + settings build are delegated to `cwma/warden/config.py` via app-layer compatibility wrappers
 - Internal note: maintain/upload scope and upload discovery helpers are delegated to `cwma/warden/services/*` via app-layer compatibility wrappers
 - Internal note: scan/maintain/upload/refill runtime action helpers are delegated to `cwma/warden/services/runtime_ops.py` via app-layer compatibility wrappers, keeping app host focused on CLI flow wiring
-- Test coverage status: currently validated through CLI checks, production usage, and module tests (`tests/test_warden_cli_module.py`, `tests/test_warden_interactive_module.py`, `tests/test_warden_config_module.py`, `tests/test_warden_maintain_scope_module.py`, `tests/test_warden_upload_scope_module.py`, `tests/test_warden_runtime_ops_module.py`)
+- Test coverage status: currently validated through CLI checks, production usage, and module tests (`tests/test_warden_cli_module.py`, `tests/test_warden_interactive_module.py`, `tests/test_warden_config_module.py`, `tests/test_warden_models_module.py`, `tests/test_warden_exports_module.py`, `tests/test_warden_management_api_module.py`, `tests/test_warden_usage_probe_api_module.py`, `tests/test_warden_db_schema_module.py`, `tests/test_warden_db_repository_module.py`, `tests/test_warden_maintain_scope_module.py`, `tests/test_warden_upload_scope_module.py`, `tests/test_warden_scan_service_module.py`, `tests/test_warden_maintain_service_module.py`, `tests/test_warden_upload_service_module.py`, `tests/test_warden_refill_service_module.py`, `tests/test_warden_runtime_ops_module.py`)
 
 ### `cwma/warden/cli.py`
 
@@ -39,6 +39,48 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Responsibility: centralized config parsing and settings build/validation for CPA warden modes
 - Test file: `tests/test_warden_config_module.py`
 
+### `cwma/warden/models.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py` and `cwma/warden/exports.py`
+- Public interface: `AUTH_ACCOUNT_COLUMNS`, item/record extractors, quota signal helpers, and `build_auth_record`
+- Responsibility: centralized cross-flow model normalization and shared field extraction for scan/maintain/upload/refill flows
+- Test file: `tests/test_warden_models_module.py`
+
+### `cwma/warden/exports.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `build_invalid_export_record`, `build_quota_export_record`, `export_records`, `summarize_failures`, `export_current_results`
+- Responsibility: centralized export schema shaping and failure-summary formatting reused across scan/maintain/refill
+- Test file: `tests/test_warden_exports_module.py`
+
+### `cwma/warden/api/management.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `build_management_headers`, `fetch_auth_files`, `fetch_remote_auth_file_names`, `delete_account_async`, `set_account_disabled_async`
+- Responsibility: management API HTTP boundary for auth-files listing and account action requests (including retry/backoff behavior)
+- Test file: `tests/test_warden_management_api_module.py`
+
+### `cwma/warden/api/usage_probe.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `build_wham_usage_payload`, `extract_remaining_ratio`, `find_spark_rate_limit`, `probe_wham_usage_async`
+- Responsibility: wham/usage probe API boundary and quota signal extraction helpers
+- Test file: `tests/test_warden_usage_probe_api_module.py`
+
+### `cwma/warden/db/schema.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `ensure_auth_accounts_schema`, `init_upload_db`, `init_db`
+- Responsibility: SQLite schema initialization and migration-safe table/index provisioning
+- Test file: `tests/test_warden_db_schema_module.py`
+
+### `cwma/warden/db/repository.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: scan-run lifecycle helpers, auth-account upsert, upload-state claim/attempt/success/failure helpers
+- Responsibility: SQLite persistence boundary for scan/upload runtime state and historical action metadata
+- Test file: `tests/test_warden_db_repository_module.py`
+
 ### `cwma/warden/services/maintain_scope.py`
 
 - Entry point: imported by `cwma/apps/cpa_warden.py` and `cwma/warden/services/upload_scope.py`
@@ -59,6 +101,34 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Public interface: `upload_auth_file_async`, `summarize_upload_results`, `classify_account_state`, `probe_accounts_async`, `run_action_group_async`, `apply_action_results`, `mark_quota_already_disabled`, `print_scan_summary`, `summarize_action_results`, `confirm_action`, `run_register_hook_async`
 - Responsibility: centralized runtime action/probe/upload/register helper logic for scan/maintain/upload/refill flows, leaving app layer as compatibility host and dependency wiring
 - Test file: `tests/test_warden_runtime_ops_module.py`
+
+### `cwma/warden/services/scan.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `run_scan_async`
+- Responsibility: scan-flow orchestration (inventory load, filter/probe pipeline, scan-run accounting, export/summary dispatch)
+- Test file: `tests/test_warden_scan_service_module.py`
+
+### `cwma/warden/services/maintain.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `run_maintain_async`
+- Responsibility: maintain-flow orchestration (delete 401, quota action, re-enable sequencing and DB writeback)
+- Test file: `tests/test_warden_maintain_service_module.py`
+
+### `cwma/warden/services/upload.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `run_upload_async`
+- Responsibility: upload-flow orchestration (discovery/validation/selection, remote existence checks, dispatch and summary/failure gates)
+- Test file: `tests/test_warden_upload_service_module.py`
+
+### `cwma/warden/services/refill.py`
+
+- Entry point: imported by `cwma/apps/cpa_warden.py`
+- Public interface: `count_valid_accounts`, `compute_refill_upload_count`, `run_maintain_refill_async`
+- Responsibility: maintain-refill orchestration (valid-threshold decision, optional register hook, refill upload/scan closure)
+- Test file: `tests/test_warden_refill_service_module.py`
 
 ### `cwma/auto/app.py`
 
@@ -85,6 +155,7 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Internal note: top-level `run()` loop now delegates one watch-cycle step through `_run_watch_cycle_and_maybe_sleep(...)` to centralize watch-exit vs sleep-exit control flow
 - Internal note: startup/watch runtime invocation now shares `_run_runtime_cycle(...)` template for cycle execution, state apply, and exit-code propagation symmetry
 - Internal note: channel/upload runtime adapters (`channel_runtime_adapter`, `upload_runtime_adapter`) now carry most callback orchestration complexity, materially reducing host branch density in `app.py`
+- Internal note: host utility seams (path/bootstrap checks, lock lifecycle, snapshot/zip/cleanup IO, settings log rows) are now delegated to `cwma/auto/runtime/host_ops_adapter.py`, keeping host methods as compatibility-friendly forwarding entrypoints
 - Internal note: startup configuration log emission is centralized through `_settings_log_rows(...)` to reduce duplicated output wiring
 - Internal note: upload cleanup core logic is extracted to `cwma/auto/upload_cleanup.py`; app-layer methods now focus on orchestration + logging
 - Internal note: progress panel rendering now uses `cwma/auto/panel_render.py` pure helpers, with `render_progress_snapshot` split into snapshot build, line composition, and signature-gate steps
@@ -243,6 +314,12 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Entry point: imported by `cwma/auto/app.py`
 - Public interface: `ChannelRuntimeAdapter`
 - Responsibility: host adapter that assembles maintain/upload channel start-error/start/poll/post-success orchestration while reusing runtime policy modules
+
+### `cwma/auto/runtime/host_ops_adapter.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `HostOpsAdapter`
+- Responsibility: host adapter that encapsulates path/bootstrap validation, lock acquire/release wiring, snapshot/zip/cleanup IO seams, and settings-log row assembly
 
 ### `cwma/auto/runtime/shutdown_runtime.py`
 
