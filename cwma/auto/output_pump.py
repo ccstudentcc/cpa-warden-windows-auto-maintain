@@ -1,48 +1,6 @@
-from __future__ import annotations
+"""Compatibility wrapper; canonical module moved to subpackage."""
 
-import threading
-from collections.abc import Callable
-from pathlib import Path
-from subprocess import Popen
+from importlib import import_module as _import_module
+import sys as _sys
 
-
-def append_child_output_line(*, target: Path, line: str) -> None:
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8", errors="replace") as fp:
-            fp.write(line)
-            if not line.endswith("\n"):
-                fp.write("\n")
-    except OSError:
-        return
-
-
-def start_output_pump_thread(
-    *,
-    channel: str,
-    proc: Popen,
-    decode_line: Callable[[bytes | str], str],
-    on_line: Callable[[str], None],
-    warn: Callable[[str], None],
-    thread_factory: Callable[..., threading.Thread] = threading.Thread,
-) -> threading.Thread | None:
-    stream = getattr(proc, "stdout", None)
-    if stream is None:
-        return None
-
-    def _pump() -> None:
-        try:
-            for raw_line in iter(stream.readline, b""):
-                line = decode_line(raw_line)
-                on_line(line)
-        except Exception as exc:
-            warn(f"[WARN] output pump failed ({channel}): {exc}")
-        finally:
-            try:
-                stream.close()
-            except Exception:
-                pass
-
-    thread = thread_factory(target=_pump, name=f"{channel}-output-pump", daemon=True)
-    thread.start()
-    return thread
+_sys.modules[__name__] = _import_module("cwma.auto.infra.output_pump")

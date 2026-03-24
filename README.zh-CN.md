@@ -87,6 +87,7 @@
 
 - `cwma/apps/cpa_warden.py`：兼容上游的扫描/维护/上传 CLI 实现
 - `cwma/auto/app.py`：面向 Windows 的调度与目录监听主编排入口
+- `cwma/auto/{orchestration,channel,state,infra,ui}/*`：按能力分组的 auto 规范实现目录（顶层 `cwma/auto/*.py` 保留为兼容导入层）
 - `cwma/apps/auto_maintain.py`：保留历史包路径的兼容适配层
 - `cwma/scheduler/smart_scheduler.py`：上传/维护批次决策的调度策略模型
 - `cwma/common/config_parsing.py` + `cwma/auto/config.py`：公共配置解析工具与 watcher 设置加载/模型模块

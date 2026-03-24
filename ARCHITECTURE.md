@@ -74,11 +74,14 @@ Reference map:
 - `cwma/auto/BOUNDARY_MAP.md` is the canonical capability ownership map for `cwma/auto` and `cwma/auto/runtime`.
 
 Capability ownership:
-1. `orchestration`: run-loop/stage sequencing and runtime dependency wiring (`app.py`, startup/watch runtime adapters).
-2. `channel`: maintain/upload lifecycle policy and channel feedback (`channel_*`, channel runtime adapters).
-3. `state`: queue/runtime/snapshot transitions and pure decision transforms (`*_queue.py`, `runtime_state.py`, `state_models.py`, snapshot/cadence/probe/postprocess helpers).
-4. `infra`: process/zip/lock/config/shutdown side-effect boundaries (`process_*`, `zip_intake.py`, `locking.py`, `upload_cleanup.py`, lifecycle/host ops adapters).
-5. `ui`: progress parsing, panel snapshot/render cadence and terminal presentation (`ui_runtime.py`, `panel_*`, `dashboard.py`, `progress_parser.py`).
+1. `orchestration`: run-loop/stage sequencing and runtime dependency wiring (`cwma/auto/app.py`, `cwma/auto/orchestration/*`, startup/watch runtime adapters).
+2. `channel`: maintain/upload lifecycle policy and channel feedback (`cwma/auto/channel/*`, channel runtime adapters).
+3. `state`: queue/runtime/snapshot transitions and pure decision transforms (`cwma/auto/state/*`, snapshot/cadence/probe/postprocess helpers).
+4. `infra`: process/zip/lock/config/shutdown side-effect boundaries (`cwma/auto/infra/*`, lifecycle/host ops adapters).
+5. `ui`: progress parsing, panel snapshot/render cadence and terminal presentation (`cwma/auto/ui/*`, panel runtime adapters).
+
+Compatibility note:
+- Top-level modules under `cwma/auto/*.py` remain as compatibility wrappers, aliasing canonical implementations in the capability subpackages above.
 
 Allowed dependency directions:
 1. `orchestration -> channel|state|infra|ui`.
@@ -97,6 +100,10 @@ Stage 2.6 capability-to-test modules map (closeout completed):
 4. Transitional residual suite `tests/test_auto_modules.py` has been retired after capability coverage drain; new stage-2.6 module coverage should continue in the three split suites above.
 
 ## Module Map
+
+Auto package compatibility note:
+- For `cwma/auto`, top-level modules are compatibility import paths.
+- Canonical implementations for capability-owned modules are located under `cwma/auto/orchestration/`, `cwma/auto/channel/`, `cwma/auto/state/`, `cwma/auto/infra/`, and `cwma/auto/ui/`.
 
 ### `cwma/apps/cpa_warden.py`
 

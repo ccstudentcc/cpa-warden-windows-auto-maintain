@@ -1,10 +1,6 @@
-from __future__ import annotations
+"""Compatibility wrapper; canonical module moved to subpackage."""
 
-from pathlib import Path
+from importlib import import_module as _import_module
+import sys as _sys
 
-
-def write_scope_names(target: Path, names: set[str]) -> Path:
-    sorted_names = sorted(name for name in names if name.strip())
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("\n".join(sorted_names), encoding="utf-8")
-    return target
+_sys.modules[__name__] = _import_module("cwma.auto.state.scope_files")

@@ -87,6 +87,7 @@ Compared with the baseline derivative commit (`f3778f4`), current watcher behavi
 
 - `cwma/apps/cpa_warden.py`: upstream-compatible CPA scanner / maintainer / uploader CLI implementation
 - `cwma/auto/app.py`: Windows-oriented scheduler and watcher orchestrator host
+- `cwma/auto/{orchestration,channel,state,infra,ui}/*`: canonical capability-grouped auto modules (top-level `cwma/auto/*.py` remains compatibility import surface)
 - `cwma/apps/auto_maintain.py`: compatibility adapter for legacy package import paths
 - `cwma/scheduler/smart_scheduler.py`: scheduling policy model for upload/maintain batch decisions
 - `cwma/common/config_parsing.py` + `cwma/auto/config.py`: shared config parsing utilities plus watcher settings loader/model
