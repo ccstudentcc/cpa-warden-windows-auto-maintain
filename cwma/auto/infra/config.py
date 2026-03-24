@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -51,6 +52,9 @@ class Settings:
     bandizip_path: str
     bandizip_timeout_seconds: int
     use_windows_zip_fallback: bool
+    archive_extensions: tuple[str, ...]
+    bandizip_prefer_console: bool
+    bandizip_hide_window: bool
     continue_on_command_failure: bool
     allow_multi_instance: bool
     run_once: bool
@@ -61,6 +65,43 @@ def load_watch_config(path: Path) -> dict[str, object]:
         return load_json_object(path, encoding="utf-8-sig")
     except ValueError as exc:
         raise ValueError(f"Invalid watch config JSON: {path}") from exc
+
+
+def parse_archive_extensions(name: str, raw: object) -> tuple[str, ...]:
+    def _normalize(value: object) -> str | None:
+        text = str(value).strip().lower()
+        if not text:
+            return None
+        if not text.startswith("."):
+            text = f".{text}"
+        if any(ch.isspace() for ch in text):
+            raise ValueError(f"{name} contains invalid extension token: {value}")
+        return text
+
+    tokens: list[str] = []
+    if isinstance(raw, str):
+        for item in raw.replace(";", ",").split(","):
+            normalized = _normalize(item)
+            if normalized is not None:
+                tokens.append(normalized)
+    elif isinstance(raw, Iterable):
+        for item in raw:
+            normalized = _normalize(item)
+            if normalized is not None:
+                tokens.append(normalized)
+    else:
+        raise ValueError(f"{name} must be a comma-separated string or array, got: {raw}")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if token in seen:
+            continue
+        deduped.append(token)
+        seen.add(token)
+    if not deduped:
+        raise ValueError(f"{name} cannot be empty.")
+    return tuple(deduped)
 
 
 def load_settings(
@@ -341,6 +382,33 @@ def load_settings(
         use_windows_zip_fallback=parse_bool_value(
             "USE_WINDOWS_ZIP_FALLBACK",
             pick_setting("USE_WINDOWS_ZIP_FALLBACK", watch_config_data, "use_windows_zip_fallback", True),
+        ),
+        archive_extensions=parse_archive_extensions(
+            "ARCHIVE_EXTENSIONS",
+            pick_setting(
+                "ARCHIVE_EXTENSIONS",
+                watch_config_data,
+                "archive_extensions",
+                ".zip,.7z,.rar",
+            ),
+        ),
+        bandizip_prefer_console=parse_bool_value(
+            "BANDIZIP_PREFER_CONSOLE",
+            pick_setting(
+                "BANDIZIP_PREFER_CONSOLE",
+                watch_config_data,
+                "bandizip_prefer_console",
+                True,
+            ),
+        ),
+        bandizip_hide_window=parse_bool_value(
+            "BANDIZIP_HIDE_WINDOW",
+            pick_setting(
+                "BANDIZIP_HIDE_WINDOW",
+                watch_config_data,
+                "bandizip_hide_window",
+                True,
+            ),
         ),
         continue_on_command_failure=parse_bool_value(
             "CONTINUE_ON_COMMAND_FAILURE",

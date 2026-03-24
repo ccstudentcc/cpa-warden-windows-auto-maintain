@@ -69,9 +69,78 @@ from cwma.auto.state.upload_queue import (
     merge_pending_upload_snapshot,
 )
 from cwma.auto.state.upload_scan_cadence import decide_upload_deep_scan
+from cwma.scheduler.smart_scheduler import SmartSchedulerConfig, SmartSchedulerPolicy
 
 
 class AutoModuleStateTests(unittest.TestCase):
+    @staticmethod
+    def _build_scheduler_policy() -> SmartSchedulerPolicy:
+        return SmartSchedulerPolicy(
+            SmartSchedulerConfig(
+                enabled=True,
+                adaptive_upload_batching=True,
+                base_upload_batch_size=100,
+                upload_high_backlog_threshold=400,
+                upload_high_backlog_batch_size=300,
+                adaptive_maintain_batching=True,
+                base_incremental_maintain_batch_size=120,
+                maintain_high_backlog_threshold=300,
+                maintain_high_backlog_batch_size=220,
+                incremental_maintain_min_interval_seconds=20,
+                incremental_maintain_full_guard_seconds=90,
+            )
+        )
+
+    def test_smart_scheduler_upload_realtime_mode_under_maintain_pressure(self) -> None:
+        policy = self._build_scheduler_policy()
+        batch_size = policy.choose_upload_batch_size(
+            pending_count=150,
+            maintain_pressure=True,
+        )
+        self.assertEqual(batch_size, 50)
+
+    def test_smart_scheduler_upload_throughput_mode_on_high_backlog(self) -> None:
+        policy = self._build_scheduler_policy()
+        batch_size = policy.choose_upload_batch_size(
+            pending_count=600,
+            maintain_pressure=True,
+        )
+        self.assertEqual(batch_size, 300)
+
+    def test_smart_scheduler_incremental_realtime_mode_under_upload_pressure(self) -> None:
+        policy = self._build_scheduler_policy()
+        batch_size = policy.choose_incremental_maintain_batch_size(
+            pending_count=200,
+            upload_pressure=True,
+        )
+        self.assertEqual(batch_size, 60)
+
+    def test_smart_scheduler_defers_incremental_when_upload_backlog_priority_active(self) -> None:
+        policy = self._build_scheduler_policy()
+        deferred, reason = policy.should_defer_incremental_maintain(
+            now_monotonic=100.0,
+            last_incremental_started_at=90.0,
+            next_full_maintain_due_at=500.0,
+            has_pending_full_maintain=False,
+            pending_upload_count=450,
+            upload_running=True,
+        )
+        self.assertTrue(deferred)
+        self.assertEqual(reason, "upload backlog priority mode")
+
+    def test_smart_scheduler_upload_backlog_priority_skips_first_incremental_start(self) -> None:
+        policy = self._build_scheduler_policy()
+        deferred, reason = policy.should_defer_incremental_maintain(
+            now_monotonic=100.0,
+            last_incremental_started_at=0.0,
+            next_full_maintain_due_at=500.0,
+            has_pending_full_maintain=False,
+            pending_upload_count=450,
+            upload_running=True,
+        )
+        self.assertFalse(deferred)
+        self.assertEqual(reason, "")
+
     def test_snapshot_file_helpers_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

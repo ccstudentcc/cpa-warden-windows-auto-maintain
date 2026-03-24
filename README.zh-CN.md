@@ -6,7 +6,7 @@
 
 [English](README.md)
 
-`cpa-warden-windows-auto-maintain` 是一个面向 Windows 的 CPA 自动化维护项目。
+`cpa-warden-windows-auto-maintain` 是一个面向 Windows 的 CPA 长运行自动化维护项目。
 它基于 [`fantasticjoe/cpa-warden`](https://github.com/fantasticjoe/cpa-warden) 二次开发，并保持对上游 `cpa_warden.py` 工作流的兼容。
 
 ## 上游归属声明
@@ -15,105 +15,82 @@
 
 - 上游项目：`fantasticjoe/cpa-warden`
 - 本仓库衍生基线提交：`f3778f4334f443fd822c25935c1d2a1ee26c144b`
-- 基线之后的提交重点在 Windows 自动化编排、调度和运行稳定性增强。
+- 基线之后的提交重点在 Windows 自动化编排、通道调度安全性与运行稳定性增强
 
 详细说明见 [NOTICE](NOTICE)。
 
-## 项目重点
+## 项目最新状态（2026-03-24）
 
-这个项目的目标不是替代 `cpa_warden.py`，而是把它在 Windows 场景中稳定编排起来：
+- `cwma/auto` 已按能力分组：`orchestration`、`channel`、`state`、`infra`、`ui`，并通过 `runtime` 适配层装配
+- Stage-2.6 的能力拆分测试映射已收敛为：
+  - `tests/test_auto_modules_process_channel.py`
+  - `tests/test_auto_modules_state.py`
+  - `tests/test_auto_modules_ui.py`
+- 旧的 `cwma/auto/*.py` 顶层兼容包装模块已移除，当前以子包路径为准
 
-- 监听 `auth_files`，在文件稳定后触发上传
-- 维护任务按计划执行，不再被长时间上传批次阻塞
-- 维护与上传使用分离的 DB/日志路径
-- 支持 ZIP 入口（Bandizip + Windows 回退解压）
-  - 对 ZIP 内嵌套子目录中的 JSON 也会递归识别
-- 上传后清理源文件，并清理空子目录
-- 终端面板会输出上传/维护双通道状态，并展示各自等待队列/积压信息
-- 支持无人值守运行，默认失败即停，重试策略显式可控
+## 文档架构（避免冗余）
 
-## 改进特性总览
+为降低文档漂移，每份文档只承担一个主职责：
 
-相对衍生基线提交（`f3778f4`），当前 watcher 的关键增强包括：
+| 文档 | 主职责 | 何时更新 |
+| --- | --- | --- |
+| `README.md` | 英文操作入口、运行行为摘要、核心命令 | 启动流程、运行行为、用户命令发生变化 |
+| `README.zh-CN.md` | 中文镜像（语义与 `README.md` 对齐） | `README.md` 语义发生变化 |
+| `ARCHITECTURE.md` | 当前模块边界、依赖规则、数据/并发/失败模型 | 包结构、状态模型、编排契约变化 |
+| `cwma/auto/BOUNDARY_MAP.md` | `cwma/auto` 与 `cwma/auto/runtime` 的能力归属图 | 归属边界或依赖方向规则变化 |
+| `CONTRIBUTING.md` | 贡献流程、验证要求、文档同步规则 | 协作流程、CI 验证、文档政策变化 |
+| `CHANGELOG.md` | 版本层面的变更历史 | 有用户可见或维护价值明显的变更落地 |
 
-1. `upload` 与 `maintain` 并发调度，维护不再被长上传批次阻塞。
-   - 定时维护（`MAINTAIN_INTERVAL_SECONDS`）是全量维护。
-   - 上传后维护改为按本次上传名称集合执行增量维护。
-2. 上传队列支持按批次切分（`UPLOAD_BATCH_SIZE`），并通过 `--upload-names-file` 做每批精准上传。
-   - 单批上传更快结束。
-   - 已上传批次可更早触发增量维护。
-3. 新增智能调度策略层（`smart_scheduler.py`），兼顾低频与高频场景：
-   - 高积压时自适应放大上传批次；
-   - 根据积压和并行压力自适应调整增量维护批次大小；
-   - 增量维护冷却间隔，避免高频下维护抖动；
-   - 全量维护临近保护，避免全量前再启动一轮增量维护。
-4. 维护/上传运行状态彻底拆分：`MAINTAIN_DB_PATH` + `UPLOAD_DB_PATH`，日志也拆分为 `MAINTAIN_LOG_FILE` + `UPLOAD_LOG_FILE`。
-5. 上传基线一致性修复：部分批次成功时，会与历史已上传基线合并，而不是覆盖。
-6. 快照扫描增强：对扫描期间文件瞬时消失/替换等文件系统竞态更稳健。
-7. 上传完成后，若检测到基线外文件，会自动排队下一批上传。
-8. ZIP 变更检测升级为签名比对（路径/大小/mtime），不再只看 ZIP 数量。
-9. 上传清理后会继续清理 `auth_dir` 下空目录。
-10. 默认失败即停（fail-fast），并保留上传/维护独立重试策略；`--once` 语义更严格。
-11. 新增 `MAINTAIN_ASSUME_YES`，便于无人值守维护。
-12. 单实例锁由 Python 侧统一仲裁，降低重复 watcher 并发风险。
-13. 终端面板支持双通道队列可视化（`queue_files`、`queue_batches`、`queue_full`、`queue_incremental`、重试等待、下次全量维护等待）。
-14. 上传批次运行期间，watcher 仍会做轻量 JSON/ZIP 变化探测，并在该批次结束后立即触发一次强制深度上传检查。
-15. 运行时仪表盘支持固定面板重绘、通道分隔与可选颜色，降低并行上传/维护时的进度输出抖动。
-16. Windows 下单实例保护采用双层机制：
-   - `auto_maintain.bat` 启动器锁文件（`auto_maintain_launcher.lock`）；
-   - `auto_maintain.py` 运行时锁文件（`auto_maintain.lock`）+ `msvcrt` 文件锁。
+## 这个项目解决什么问题
 
-## 执行逻辑（Watcher）
+项目目标不是替换 `cpa_warden.py`，而是在 Windows 下把它稳定地“长期跑起来”：
 
-`auto_maintain.py` 主循环行为如下：
+- 监听 `auth_files`，在文件稳定后排队上传
+- `upload` 与 `maintain` 两个通道独立调度
+- 支持定时全量维护 + 上传后增量维护
+- 上传/增量维护调度可根据积压自动在“实时并行”与“吞吐清队列”模式间切换
+- 维护/上传运行数据库与日志分离
+- 支持归档入口（`.zip/.7z/.rar`，Bandizip 优先，`.zip` 可回退 Windows 内置解压）
+- 上传后清理文件并清理空目录
+- 双层单实例保护（启动器锁 + Python 运行时锁）
+- 默认失败即停，重试策略显式可控
 
-1. 建立初始快照，若无历史基线则初始化 `last_uploaded_snapshot`。
-2. 可选执行 ZIP 巡检；若解压产生 JSON 变化，会立即进入上传检查。
-3. 按启动参数决定是否排队首轮维护/上传。
-4. 当各自通道空闲时，维护与上传独立启动，互不阻塞。
-   - 上传通道按 `UPLOAD_BATCH_SIZE` 串行消费待上传队列。
-   - 每批上传通过 `--upload-names-file` 约束命令侧上传范围。
-5. 独立轮询两个子进程退出状态：
-   - 上传进程运行期间，watcher 会持续做轻量 JSON 数量/ZIP 签名探测，并按间隔执行深度队列刷新；
-   - 上传成功会更新快照/基线，并按配置删除已上传源文件；
-   - 维护成功会清理维护重试状态。
-6. 上传成功后可选排队“上传后维护”。
-   - 若上传运行期间探测到源变化，会先执行一次强制深扫上传检查（`force_deep_scan=True`），再进入后续流程。
-   - 上传后维护通过 `--maintain-names-file` 仅处理“刚完成这一批上传”的账号名称集合。
-7. 上传与维护失败分别进入各自重试窗口，互不干扰。
-8. `--once` 模式下，只有运行中和排队任务都完成才退出；失败返回非零码。
+## 当前组件布局
 
-## 核心组件
+- `cwma/apps/cpa_warden.py`：兼容上游的 CPA 扫描/维护/上传 CLI 宿主
+- `cwma/auto/app.py`：watcher 宿主与主编排入口
+- `cwma/auto/orchestration/*`：启动与 watch 循环编排
+- `cwma/auto/channel/*`：维护/上传通道命令与生命周期策略
+- `cwma/auto/state/*`：队列/快照/状态转换与纯决策
+- `cwma/auto/infra/*`：进程/归档/锁/配置/清理等副作用边界
+- `cwma/auto/ui/*`：进度解析与终端仪表盘渲染
+- `cwma/auto/runtime/*`：宿主适配层，装配 orchestration/state/infra/ui
+- `cwma/warden/*`：CLI/config/services/api/db/models/exports 的领域拆分模块
+- `cwma/scheduler/smart_scheduler.py`：自适应调度策略
+- `cwma/common/config_parsing.py`：共享严格配置解析与路径处理
+- `auto_maintain.py` / `cpa_warden.py` / `smart_scheduler.py`：仓库根目录兼容入口
 
-- `cwma/apps/cpa_warden.py`：兼容上游的扫描/维护/上传 CLI 实现
-- `cwma/auto/app.py`：面向 Windows 的调度与目录监听主编排入口
-- `cwma/auto/{orchestration,channel,state,infra,ui}/*`：按能力分组的 auto 规范实现目录
-- `cwma/apps/auto_maintain.py`：保留历史包路径的兼容适配层
-- `cwma/scheduler/smart_scheduler.py`：上传/维护批次决策的调度策略模型
-- `cwma/common/config_parsing.py` + `cwma/auto/config.py`：公共配置解析工具与 watcher 设置加载/模型模块
-- `cwma/auto/snapshots.py`：从运行编排中抽出的纯快照逻辑模块
-- `cwma/auto/locking.py`：从 watcher 运行时抽出的单实例锁模块（含 Windows 文件锁行为）
-- `cwma/auto/dashboard.py`：从 watcher 中抽出的终端仪表盘格式化与着色纯函数模块
-- `cwma/auto/process_output.py`：从 watcher 中抽出的子进程输出解码/告警过滤/环境变量构建模块
-- `cwma/auto/progress_parser.py`：从 watcher 中抽出的子进程日志到进度状态的解析规则模块
-- `cwma/auto/output_pump.py`：从 watcher 中抽出的子进程输出写入与泵线程启动模块
-- `cwma/auto/zip_intake.py`：从 watcher 中抽出的 ZIP 路径/签名探测与解压后端模块
-- `cwma/auto/process_runner.py`：从 watcher 中抽出的子进程启动/终止编排辅助模块
-- `auto_maintain.py` / `cpa_warden.py` / `smart_scheduler.py`：根目录兼容入口（保持现有脚本/命令可用）
-- `auto_maintain.bat`：`uv -> python` 回退启动器
-- `start_auto_maintain_optimized.bat`：生产化参数模板
-- `auto_maintain.config.example.json`：watcher 配置模板
-- `tests/test_auto_maintain.py`：调度与文件生命周期回归测试
-- `tests/test_auto_modules_process_channel.py`：process/channel/infra 边界模块级测试（`config` / `locking` / `process_output` / `output_pump` / `zip_intake` / `process_runner` / channel 生命周期辅助）
-- `tests/test_auto_modules_state.py`：state 边界模块级测试（`maintain_queue` / `upload_queue` / `runtime_state` / `state_models` / `snapshots` / `scope_files` / cadence/postprocess 辅助）
-- `tests/test_auto_modules_ui.py`：ui 边界模块级测试（`dashboard` / `progress_parser` / `panel_snapshot` / `panel_render` / `ui_runtime`）
+更深层的模块归属和依赖规则，见 [ARCHITECTURE.md](ARCHITECTURE.md) 与 [`cwma/auto/BOUNDARY_MAP.md`](cwma/auto/BOUNDARY_MAP.md)。
+
+## Watcher 执行流程
+
+`auto_maintain.py` 主循环：
+
+1. 加载配置（`环境变量 > --watch-config JSON > 默认值`）并初始化运行时状态。
+2. 构建快照与已上传基线。
+3. 可选巡检归档（`.zip/.7z/.rar`），并把解压出的 JSON 变化并入同一上传管线。
+4. 按配置排队首轮维护/上传检查。
+5. 在各自通道空闲时独立启动 `upload` 与 `maintain`。
+6. 子进程运行期间执行主动探测，并按通道独立轮询/重试。
+7. 上传成功后更新基线、执行清理，并按配置排队上传后增量维护。
+8. `--once` 模式仅在运行中与排队任务都收敛后退出；未恢复失败返回非零。
 
 ## 环境要求
 
 - Windows 10/11
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)（推荐）
-- Bandizip（可选，ZIP 输入量大时推荐）
+- Bandizip（可选，归档输入量大时建议安装）
 
 ## 快速开始
 
@@ -123,7 +100,7 @@
 uv sync
 ```
 
-2. 准备配置文件。
+2. 准备 CPA 配置文件。
 
 ```bash
 copy config.example.json config.json
@@ -140,10 +117,10 @@ copy config.example.json config.json
 copy auto_maintain.config.example.json auto_maintain.config.json
 ```
 
-4. 保持 `auth_files` 作为输入目录占位。
+4. 保留 `auth_files` 作为输入目录占位。
 
 - 仓库只跟踪 `auth_files/.gitkeep`
-- `auth_files` 下运行期 JSON/ZIP 文件均被 git 忽略
+- `auth_files` 下运行期 JSON/归档文件均被 git 忽略
 
 5. 启动优化配置。
 
@@ -156,99 +133,36 @@ start_auto_maintain_optimized.bat
 - `.auto_maintain_state/` 仅用于运行时状态，已被 git 忽略
 - `auth_files/*` 被忽略，仅放行 `auth_files/.gitkeep`
 - `auto_maintain.config.json` 是本地运行配置，已被 git 忽略
-- 建议不纳入提交的运行产物：
-- `.auto_maintain_state/cpa_warden_maintain.sqlite3`
-- `.auto_maintain_state/cpa_warden_upload.sqlite3`
-- `.auto_maintain_state/cpa_warden_maintain.log`
-- `.auto_maintain_state/cpa_warden_upload.log`
-- `.auto_maintain_state/maintain_command_output.log`
-- `.auto_maintain_state/upload_command_output.log`
-- `.auto_maintain_state/maintain_names_scope.txt`
-- `.auto_maintain_state/upload_names_scope.txt`
-- `.auto_maintain_state/last_uploaded_snapshot.txt`
-- `.auto_maintain_state/current_snapshot.txt`
-- `.auto_maintain_state/stable_snapshot.txt`
+- `*.sqlite3`、`*.log`、导出 JSON 等运行产物不应提交
 
-## 优化启动脚本默认策略
-
-`start_auto_maintain_optimized.bat` 现在会读取 `auto_maintain.config.json`（首次运行若不存在，会从 `auto_maintain.config.example.json` 生成）。
-
-当前模板默认值（`auto_maintain.config.example.json`）：
+## 默认配置（来自 `auto_maintain.config.example.json`）
 
 - 维护周期：`2400s`
 - 监听周期：`15s`
 - 上传稳定等待：`5s`
 - 上传批次大小：`100`
-- 智能调度：开启
-- 自适应上传批次：开启
-- 高积压阈值：`400`
-- 高积压批次大小：`300`
-- 增量维护冷却：`20s`
-- 全量维护临近保护：`90s`
-- 深度扫描间隔：`120` 次循环
-- 上传完成后触发维护：开启
+- 智能调度与自适应批处理：开启
+- 上传后维护：开启
 - 上传成功后删除源 JSON：开启
-- ZIP 检测和自动解压：开启
+- 归档检测与自动解压：开启
 - 单实例锁：开启
 - 命令失败即停：开启
 
-并且所有 watcher 配置都支持环境变量覆盖。
+## 关键 Watcher 配置项
 
-## Watcher 配置参数说明
+完整配置请以 `auto_maintain.config.example.json` 为准。常用项：
 
-`auto_maintain.config.json` 的参数含义如下：
+- 路径：`auth_dir`、`config_path`、`state_dir`、`maintain_db_path`、`upload_db_path`
+- 轮询节奏：`maintain_interval_seconds`、`watch_interval_seconds`、`upload_stable_wait_seconds`
+- 上传调度：`upload_batch_size`、`adaptive_upload_batching`、`upload_high_backlog_*`
+- 维护调度：`adaptive_maintain_batching`、`incremental_maintain_*`、`maintain_high_backlog_*`
+  - 调度模式切换规则：低积压偏小批次，提升上传/维护交错实时性；高积压偏大批次，加速队列清空
+- 运行行为：`run_maintain_on_start`、`run_upload_on_start`、`run_maintain_after_upload`
+- 失败策略：`maintain_retry_count`、`upload_retry_count`、`command_retry_delay_seconds`、`continue_on_command_failure`
+- 安全策略：`allow_multi_instance`、`maintain_assume_yes`
+- 归档入口：`inspect_zip_files`、`auto_extract_zip_json`、`delete_zip_after_extract`、`archive_extensions`、`bandizip_*`、`use_windows_zip_fallback`
 
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `auth_dir` | `./auth_files` | 上传监听目录，JSON/ZIP 输入都从这里读取。 |
-| `config_path` | `./config.json` | `cpa_warden.py` 使用的配置文件路径。 |
-| `state_dir` | `./.auto_maintain_state` | 运行状态目录（锁、快照、日志、数据库）。 |
-| `maintain_db_path` | `./.auto_maintain_state/cpa_warden_maintain.sqlite3` | 维护通道 SQLite 路径。 |
-| `upload_db_path` | `./.auto_maintain_state/cpa_warden_upload.sqlite3` | 上传通道 SQLite 路径。 |
-| `maintain_log_file` | `./.auto_maintain_state/cpa_warden_maintain.log` | 维护通道日志路径。 |
-| `upload_log_file` | `./.auto_maintain_state/cpa_warden_upload.log` | 上传通道日志路径。 |
-| `maintain_interval_seconds` | `2400` | 定时全量维护周期（秒）。 |
-| `watch_interval_seconds` | `15` | watcher 主循环轮询间隔（秒）。 |
-| `upload_stable_wait_seconds` | `5` | 检测到变化后，上传前稳定等待时长（秒）。 |
-| `upload_batch_size` | `100` | 单次 upload 命令最多处理的 JSON 数量；剩余文件进入下一批串行上传。 |
-| `smart_schedule_enabled` | `true` | 是否启用智能调度策略层。 |
-| `adaptive_upload_batching` | `true` | 是否在高积压时自动扩批上传。 |
-| `upload_high_backlog_threshold` | `400` | 待上传数量达到该值时进入高积压上传策略。 |
-| `upload_high_backlog_batch_size` | `300` | 高积压策略下目标上传批次大小。 |
-| `adaptive_maintain_batching` | `true` | 是否启用增量维护批次的自适应调度。 |
-| `incremental_maintain_batch_size` | `120` | 单次增量维护的基础批次大小。 |
-| `maintain_high_backlog_threshold` | `300` | 增量维护积压达到该值时启用高积压批次策略。 |
-| `maintain_high_backlog_batch_size` | `220` | 增量维护高积压模式下的目标批次大小。 |
-| `incremental_maintain_min_interval_seconds` | `20` | 两次增量维护启动之间的最小间隔（秒）。 |
-| `incremental_maintain_full_guard_seconds` | `90` | 若全量维护将在该窗口内到期，则延后增量维护。 |
-| `deep_scan_interval_loops` | `120` | 无明显变化时，每 N 轮强制做一次深度扫描。 |
-| `active_probe_interval_seconds` | `2` | 上传/维护运行中使用的快速探测间隔（秒）。 |
-| `active_upload_deep_scan_interval_seconds` | `2` | 上传运行期间两次深度队列刷新之间的最小间隔（秒）。 |
-| `run_maintain_on_start` | `true` | 启动时是否先排队一次维护。 |
-| `run_upload_on_start` | `true` | 启动时是否先做一次上传变化检查。 |
-| `run_maintain_after_upload` | `true` | 上传后是否排队维护（增量范围）。 |
-| `maintain_assume_yes` | `true` | 维护命令是否自动带 `--yes`（无人值守）。 |
-| `delete_uploaded_files_after_upload` | `true` | 上传成功后是否删除源 JSON 文件。 |
-| `maintain_retry_count` | `1` | 维护命令失败重试次数。 |
-| `upload_retry_count` | `1` | 上传命令失败重试次数。 |
-| `command_retry_delay_seconds` | `20` | 命令失败后重试等待时长（秒）。 |
-| `continue_on_command_failure` | `false` | `true` 时命令失败后继续循环；`false` 为失败即停。 |
-| `allow_multi_instance` | `false` | `true` 允许同一状态目录多实例运行；`false` 启用单实例保护。 |
-| `inspect_zip_files` | `true` | 是否启用 ZIP 检测。 |
-| `auto_extract_zip_json` | `true` | 是否自动解压 ZIP 中 JSON。 |
-| `delete_zip_after_extract` | `true` | 解压成功后是否删除 ZIP 原文件。 |
-| `bandizip_path` | `D:\\Bandizp\\Bandizip.exe` | Bandizip 可执行文件路径。 |
-| `bandizip_timeout_seconds` | `120` | 单次 Bandizip 解压超时（秒）。 |
-| `use_windows_zip_fallback` | `true` | Bandizip 不可用/失败时是否使用 Windows 内置解压回退。 |
-
-说明：
-
-- `maintain_interval_seconds` 只控制定时全量维护。
-- 上传后维护按“每个已完成上传批次”的名称集合执行增量维护。
-- 智能调度默认值优先保证低频响应，同时降低高频抖动和重复维护成本。
-- 路径参数支持相对路径（相对仓库根目录解析）。
-
-## 常用环境变量
+## 环境变量
 
 `auto_maintain.py` 主要读取：
 
@@ -256,37 +170,20 @@ start_auto_maintain_optimized.bat
 - `AUTH_DIR`、`CONFIG_PATH`、`STATE_DIR`
 - `MAINTAIN_DB_PATH`、`UPLOAD_DB_PATH`
 - `MAINTAIN_LOG_FILE`、`UPLOAD_LOG_FILE`
-- `MAINTAIN_INTERVAL_SECONDS`、`WATCH_INTERVAL_SECONDS`
-- `UPLOAD_STABLE_WAIT_SECONDS`、`UPLOAD_BATCH_SIZE`、`DEEP_SCAN_INTERVAL_LOOPS`
-- `SMART_SCHEDULE_ENABLED`、`ADAPTIVE_UPLOAD_BATCHING`
-- `UPLOAD_HIGH_BACKLOG_THRESHOLD`、`UPLOAD_HIGH_BACKLOG_BATCH_SIZE`
-- `ADAPTIVE_MAINTAIN_BATCHING`
-- `INCREMENTAL_MAINTAIN_BATCH_SIZE`、`MAINTAIN_HIGH_BACKLOG_THRESHOLD`、`MAINTAIN_HIGH_BACKLOG_BATCH_SIZE`
-- `INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS`、`INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS`
-- `ACTIVE_PROBE_INTERVAL_SECONDS`、`ACTIVE_UPLOAD_DEEP_SCAN_INTERVAL_SECONDS`
-- `RUN_MAINTAIN_ON_START`、`RUN_UPLOAD_ON_START`、`RUN_MAINTAIN_AFTER_UPLOAD`
-- `MAINTAIN_ASSUME_YES`
-- `MAINTAIN_RETRY_COUNT`、`UPLOAD_RETRY_COUNT`、`COMMAND_RETRY_DELAY_SECONDS`
-- `CONTINUE_ON_COMMAND_FAILURE`、`ALLOW_MULTI_INSTANCE`
-- `INSPECT_ZIP_FILES`、`AUTO_EXTRACT_ZIP_JSON`、`DELETE_ZIP_AFTER_EXTRACT`
-- `BANDIZIP_PATH`、`BANDIZIP_TIMEOUT_SECONDS`、`USE_WINDOWS_ZIP_FALLBACK`
-- `AUTO_MAINTAIN_FIXED_PANEL`、`AUTO_MAINTAIN_PANEL_COLOR`（终端仪表盘渲染开关）
+- 调度和节奏控制（`*_INTERVAL_*`、`*_BATCH_*`、`*_BACKLOG_*`）
+- 行为开关（`RUN_*`、`ALLOW_MULTI_INSTANCE`、`CONTINUE_ON_COMMAND_FAILURE`、`MAINTAIN_ASSUME_YES`）
+- 归档控制（`INSPECT_ZIP_FILES`、`AUTO_EXTRACT_ZIP_JSON`、`ARCHIVE_EXTENSIONS`、`BANDIZIP_*`、`USE_WINDOWS_ZIP_FALLBACK`）
+- 面板开关（`AUTO_MAINTAIN_FIXED_PANEL`、`AUTO_MAINTAIN_PANEL_COLOR`）
 
 优先级：
 
-- 环境变量
-- `--watch-config` / `WATCH_CONFIG_PATH` 指定的 JSON 文件
-- 内置默认值
-
-单轮自检运行：
-
-```bash
-uv run python auto_maintain.py --watch-config ./auto_maintain.config.json --once
-```
+1. 环境变量
+2. `--watch-config` / `WATCH_CONFIG_PATH` JSON
+3. 内置默认值
 
 ## 核心 CLI 兼容性
 
-`cpa_warden.py` 行为保持与上游兼容，常用命令示例：
+`cpa_warden.py` 行为保持与上游兼容。常用命令：
 
 ```bash
 uv run python cpa_warden.py --mode scan
@@ -295,13 +192,27 @@ uv run python cpa_warden.py --mode upload --upload-dir ./auth_files --upload-rec
 uv run python cpa_warden.py --mode maintain-refill --min-valid-accounts 200 --upload-dir ./auth_files
 ```
 
-## 验证命令
+单轮自检：
+
+```bash
+uv run python auto_maintain.py --watch-config ./auto_maintain.config.json --once
+```
+
+## 验证
+
+CI 基线命令：
 
 ```bash
 uv run python -m py_compile cpa_warden.py auto_maintain.py clean_codex_accounts.py
 uv run python cpa_warden.py --help
 uv run python auto_maintain.py --help
 uv run python -m unittest -v tests/test_auto_maintain.py
+```
+
+本地可选全量测试：
+
+```bash
+uv run python -m unittest discover -s tests -p "test_*.py"
 ```
 
 ## 参与贡献

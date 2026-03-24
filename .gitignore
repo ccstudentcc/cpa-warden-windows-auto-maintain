@@ -2,6 +2,7 @@
 .venv/
 .uv_cache/
 .uv_python/
+.tmp_unittest_temp/
 __pycache__/
 *.pyc
 config.json

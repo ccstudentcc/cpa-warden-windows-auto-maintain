@@ -26,6 +26,7 @@ from ..state.upload_queue import UploadQueueState
 class StateBridgeHost(Protocol):
     runtime: Any
     scheduler_policy: Any
+    upload_process: Any
     pending_upload_snapshot: list[str] | None
     pending_upload_reason: str | None
     pending_upload_retry: bool
@@ -168,6 +169,8 @@ class StateBridgeAdapter:
             has_pending_full_maintain=(
                 self.host.pending_maintain and self.host.pending_maintain_names is None
             ),
+            pending_upload_count=len(self.host.pending_upload_snapshot or []),
+            upload_running=self.host.upload_process is not None,
         )
         if not defer_incremental:
             return False

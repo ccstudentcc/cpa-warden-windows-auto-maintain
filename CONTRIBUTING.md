@@ -25,7 +25,7 @@ uv run python -m unittest -v tests/test_auto_maintain.py
 
 - Keep changes small and incremental.
 - Do not hardcode secrets. Use environment variables and local ignored config files.
-- If behavior changes, update `README.md`, `README.zh-CN.md`, and `CHANGELOG.md` in the same PR.
+- If behavior changes, update related docs and `CHANGELOG.md` in the same PR.
 - Keep production output concise and keep deep detail in log files.
 - Prefer explicit error handling. Avoid silent exception swallowing.
 - Avoid broad refactors unless required for the concrete change.
@@ -69,13 +69,19 @@ Validation rule for this repository:
 
 ## Documentation Consistency
 
-`README.md` and `README.zh-CN.md` should remain aligned in meaning.
+Keep docs single-purpose and avoid copy-paste drift:
 
-When scheduler/watcher behavior changes, update these sections explicitly:
+- `README.md`: operator-facing usage and command examples
+- `README.zh-CN.md`: Chinese mirror of `README.md` (same meaning)
+- `ARCHITECTURE.md`: module boundaries, runtime flow, state/concurrency/failure contracts
+- `cwma/auto/BOUNDARY_MAP.md`: `cwma/auto` capability ownership and dependency directions
+- `CONTRIBUTING.md`: workflow and validation expectations
 
-- "Improvement Highlights / 改进特性总览"
-- "Execution Logic / 执行逻辑（Watcher）"
-- `ARCHITECTURE.md` concurrency/snapshot/failure model sections
+Update rules:
+
+1. Operator-visible behavior change: update `README.md`, `README.zh-CN.md`, and `CHANGELOG.md`.
+2. Boundary/state/failure model change: update `ARCHITECTURE.md` (and `cwma/auto/BOUNDARY_MAP.md` when ownership/directions change).
+3. Keep Chinese and English README aligned in meaning (not necessarily sentence-by-sentence literal translation).
 
 ## Security
 

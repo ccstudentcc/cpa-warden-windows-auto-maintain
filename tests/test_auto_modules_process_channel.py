@@ -593,6 +593,20 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
         self.assertEqual(len(sig), 1)
         self.assertIn(str(zip_path), sig[0])
 
+    def test_list_zip_paths_supports_multi_archive_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            auth_dir = Path(tmp)
+            zip_path = auth_dir / "a.zip"
+            seven_z_path = auth_dir / "b.7z"
+            rar_path = auth_dir / "c.rar"
+            zip_path.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+            seven_z_path.write_bytes(b"7z")
+            rar_path.write_bytes(b"Rar!")
+            paths = list_zip_paths(auth_dir)
+            sig = compute_zip_signature(auth_dir, log=lambda _msg: None)
+        self.assertEqual(paths, [zip_path, seven_z_path, rar_path])
+        self.assertEqual(len(sig), 3)
+
     def test_list_zip_json_entries_supports_nested_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             zip_path = Path(tmp) / "nested.zip"
@@ -620,6 +634,46 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
                 )
         self.assertEqual(code, 1)
         self.assertTrue(any("Bandizip not found" in item for item in logs))
+
+    def test_extract_zip_with_bandizip_prefers_bz_console_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            zip_path = base_dir / "x.zip"
+            zip_path.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+            commands: list[list[str]] = []
+
+            def _which(name: str) -> str | None:
+                mapping = {
+                    "bz.exe": r"C:\\Program Files\\Bandizip\\bz.exe",
+                    "Bandizip.exe": r"C:\\Program Files\\Bandizip\\Bandizip.exe",
+                }
+                return mapping.get(name)
+
+            def _run(cmd: list[str], **kwargs: object) -> mock.Mock:
+                commands.append(cmd)
+                result = mock.Mock()
+                result.returncode = 0
+                result.stdout = ""
+                result.stderr = ""
+                return result
+
+            with mock.patch("cwma.auto.infra.zip_intake.shutil.which", side_effect=_which), mock.patch(
+                "cwma.auto.infra.zip_intake.subprocess.run",
+                side_effect=_run,
+            ):
+                code = extract_zip_with_bandizip(
+                    zip_path=zip_path,
+                    output_dir=base_dir,
+                    base_dir=base_dir,
+                    bandizip_path="",
+                    timeout_seconds=5,
+                    prefer_console=True,
+                    hide_window=False,
+                    log=lambda _msg: None,
+                )
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(len(commands), 1)
+        self.assertTrue(commands[0][0].lower().endswith("bz.exe"))
 
     def test_extract_zip_with_windows_builtin_returns_one_when_shell_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -697,6 +751,46 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertFalse(zip_path.exists())
+
+    def test_inspect_zip_archives_supports_non_zip_archive_with_idempotency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            auth_dir = Path(tmp)
+            seven_z_path = auth_dir / "bundle.7z"
+            seven_z_path.write_bytes(b"7z")
+
+            processed: dict[str, str] = {}
+            extracted: list[str] = []
+
+            def _extract(path: Path, output_dir: Path) -> int:
+                extracted.append(f"{path.name}->{output_dir}")
+                return 0
+
+            with mock.patch(
+                "cwma.auto.infra.zip_intake.list_non_zip_json_entries_with_bandizip",
+                return_value=None,
+            ):
+                changed_first = inspect_zip_archives(
+                    auth_dir=auth_dir,
+                    inspect_zip_files=True,
+                    auto_extract_zip_json=True,
+                    delete_zip_after_extract=False,
+                    processed_signatures=processed,
+                    extract_zip=_extract,
+                    log=lambda _msg: None,
+                )
+                changed_second = inspect_zip_archives(
+                    auth_dir=auth_dir,
+                    inspect_zip_files=True,
+                    auto_extract_zip_json=True,
+                    delete_zip_after_extract=False,
+                    processed_signatures=processed,
+                    extract_zip=_extract,
+                    log=lambda _msg: None,
+                )
+
+        self.assertTrue(changed_first)
+        self.assertFalse(changed_second)
+        self.assertEqual(len(extracted), 1)
 
     def test_launch_child_command_uses_factory_and_env(self) -> None:
         captured: dict[str, object] = {}

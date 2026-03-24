@@ -116,6 +116,9 @@ class HostOpsAdapter:
             ("BANDIZIP_PATH", self.host.settings.bandizip_path),
             ("BANDIZIP_TIMEOUT_SECONDS", self.host.settings.bandizip_timeout_seconds),
             ("USE_WINDOWS_ZIP_FALLBACK", int(self.host.settings.use_windows_zip_fallback)),
+            ("ARCHIVE_EXTENSIONS", ",".join(self.host.settings.archive_extensions)),
+            ("BANDIZIP_PREFER_CONSOLE", int(self.host.settings.bandizip_prefer_console)),
+            ("BANDIZIP_HIDE_WINDOW", int(self.host.settings.bandizip_hide_window)),
             ("DEEP_SCAN_INTERVAL_LOOPS", self.host.settings.deep_scan_interval_loops),
             ("ACTIVE_PROBE_INTERVAL_SECONDS", self.host.settings.active_probe_interval_seconds),
             (
@@ -174,7 +177,11 @@ class HostOpsAdapter:
         return len(self.get_json_paths())
 
     def get_zip_signature(self) -> tuple[str, ...]:
-        return compute_zip_signature_rows(self.host.settings.auth_dir, log=self.get_log())
+        return compute_zip_signature_rows(
+            self.host.settings.auth_dir,
+            log=self.get_log(),
+            archive_extensions=self.host.settings.archive_extensions,
+        )
 
     def extract_zip_with_bandizip(self, zip_path: Path, output_dir: Path) -> int:
         exit_code = extract_zip_with_bandizip_rows(
@@ -183,6 +190,8 @@ class HostOpsAdapter:
             base_dir=self.host.settings.base_dir,
             bandizip_path=self.host.settings.bandizip_path,
             timeout_seconds=self.host.settings.bandizip_timeout_seconds,
+            prefer_console=self.host.settings.bandizip_prefer_console,
+            hide_window=self.host.settings.bandizip_hide_window,
             log=self.get_log(),
         )
         if exit_code == 0:
@@ -195,6 +204,7 @@ class HostOpsAdapter:
                 output_dir=output_dir,
                 base_dir=self.host.settings.base_dir,
                 timeout_seconds=self.host.settings.bandizip_timeout_seconds,
+                hide_window=self.host.settings.bandizip_hide_window,
                 log=self.get_log(),
             )
 
@@ -209,6 +219,11 @@ class HostOpsAdapter:
             processed_signatures=self.host.zip_extract_processed_signatures,
             extract_zip=self.host.extract_zip_with_bandizip,
             log=self.get_log(),
+            archive_extensions=self.host.settings.archive_extensions,
+            bandizip_path=self.host.settings.bandizip_path,
+            bandizip_timeout_seconds=self.host.settings.bandizip_timeout_seconds,
+            bandizip_prefer_console=self.host.settings.bandizip_prefer_console,
+            bandizip_hide_window=self.host.settings.bandizip_hide_window,
         )
 
     def snapshot_lines(self) -> list[str]:

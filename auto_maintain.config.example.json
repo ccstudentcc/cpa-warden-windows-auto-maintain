@@ -36,7 +36,10 @@
   "inspect_zip_files": true,
   "auto_extract_zip_json": true,
   "delete_zip_after_extract": true,
+  "archive_extensions": [".zip", ".7z", ".rar"],
   "bandizip_path": "D:\\Bandizp\\Bandizip.exe",
   "bandizip_timeout_seconds": 120,
-  "use_windows_zip_fallback": true
+  "use_windows_zip_fallback": true,
+  "bandizip_prefer_console": true,
+  "bandizip_hide_window": true
 }

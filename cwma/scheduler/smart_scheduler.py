@@ -22,6 +22,12 @@ class SmartSchedulerPolicy:
     def __init__(self, config: SmartSchedulerConfig) -> None:
         self.config = config
 
+    def _upload_realtime_backlog_threshold(self) -> int:
+        return max(1, self.config.base_upload_batch_size * 2)
+
+    def _maintain_realtime_backlog_threshold(self) -> int:
+        return max(1, self.config.base_incremental_maintain_batch_size * 2)
+
     def choose_upload_batch_size(
         self,
         *,
@@ -35,25 +41,31 @@ class SmartSchedulerPolicy:
         if not self.config.enabled or not self.config.adaptive_upload_batching:
             return max(1, base_size)
 
-        if pending_count >= self.config.upload_high_backlog_threshold:
-            high_size = max(
-                self.config.base_upload_batch_size,
-                self.config.upload_high_backlog_batch_size,
-            )
-            if not maintain_pressure:
-                # Keep some headroom for incremental maintain chances in low-pressure periods.
-                high_size = max(
-                    self.config.base_upload_batch_size,
-                    high_size // 2,
-                )
+        realtime_threshold = self._upload_realtime_backlog_threshold()
+        throughput_threshold = max(
+            self.config.upload_high_backlog_threshold,
+            realtime_threshold + 1,
+        )
+        high_size = max(
+            self.config.base_upload_batch_size,
+            self.config.upload_high_backlog_batch_size,
+        )
+
+        if pending_count >= throughput_threshold:
             return min(max(1, high_size), pending_count)
 
-        if maintain_pressure and pending_count > self.config.base_upload_batch_size:
-            expanded = max(
+        if maintain_pressure and pending_count <= realtime_threshold:
+            # Favor faster upload/maintain interleaving when backlog is still manageable.
+            realtime_size = max(1, (self.config.base_upload_batch_size + 1) // 2)
+            return min(realtime_size, pending_count)
+
+        if not maintain_pressure and pending_count > self.config.base_upload_batch_size:
+            # With maintain idle, opportunistically increase throughput a bit.
+            burst_size = max(
                 self.config.base_upload_batch_size,
-                int(self.config.base_upload_batch_size * 1.5),
+                int(self.config.base_upload_batch_size * 1.25),
             )
-            return min(max(1, expanded), pending_count)
+            return min(max(1, min(burst_size, high_size)), pending_count)
 
         return max(1, base_size)
 
@@ -70,23 +82,30 @@ class SmartSchedulerPolicy:
         if not self.config.enabled or not self.config.adaptive_maintain_batching:
             return max(1, base_size)
 
-        if pending_count >= self.config.maintain_high_backlog_threshold:
-            high_size = max(
-                self.config.base_incremental_maintain_batch_size,
-                self.config.maintain_high_backlog_batch_size,
-            )
-            if upload_pressure:
-                # Keep maintain channel responsive but avoid starving upload under contention.
-                high_size = max(
-                    self.config.base_incremental_maintain_batch_size,
-                    high_size // 2,
-                )
+        realtime_threshold = self._maintain_realtime_backlog_threshold()
+        throughput_threshold = max(
+            self.config.maintain_high_backlog_threshold,
+            realtime_threshold + 1,
+        )
+        high_size = max(
+            self.config.base_incremental_maintain_batch_size,
+            self.config.maintain_high_backlog_batch_size,
+        )
+
+        if pending_count >= throughput_threshold and not upload_pressure:
             return min(max(1, high_size), pending_count)
 
-        if upload_pressure and pending_count > self.config.base_incremental_maintain_batch_size:
-            # Under contention, prefer shorter incremental maintain slices for faster interleaving.
-            reduced = max(1, self.config.base_incremental_maintain_batch_size // 2)
-            return min(reduced, pending_count)
+        if upload_pressure and pending_count <= realtime_threshold:
+            # Keep maintain responsive under upload pressure with smaller slices.
+            realtime_size = max(1, (self.config.base_incremental_maintain_batch_size + 1) // 2)
+            return min(realtime_size, pending_count)
+
+        if not upload_pressure and pending_count > self.config.base_incremental_maintain_batch_size:
+            burst_size = max(
+                self.config.base_incremental_maintain_batch_size,
+                int(self.config.base_incremental_maintain_batch_size * 1.25),
+            )
+            return min(max(1, min(burst_size, high_size)), pending_count)
 
         return max(1, base_size)
 
@@ -97,12 +116,24 @@ class SmartSchedulerPolicy:
         last_incremental_started_at: float,
         next_full_maintain_due_at: float | None,
         has_pending_full_maintain: bool,
+        pending_upload_count: int = 0,
+        upload_running: bool = False,
     ) -> tuple[bool, str]:
         if not self.config.enabled:
             return False, ""
 
         if has_pending_full_maintain:
             return True, "full maintain already pending"
+
+        # Under high upload backlog, keep incremental maintain from starting too frequently.
+        if upload_running and pending_upload_count >= self.config.upload_high_backlog_threshold:
+            backlog_cooldown = max(self.config.incremental_maintain_min_interval_seconds, 15)
+            if (
+                backlog_cooldown > 0
+                and last_incremental_started_at > 0
+                and (now_monotonic - last_incremental_started_at) < backlog_cooldown
+            ):
+                return True, "upload backlog priority mode"
 
         guard_seconds = self.config.incremental_maintain_full_guard_seconds
         if (
