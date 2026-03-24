@@ -50,6 +50,23 @@ If you share logs for debugging, sanitize tokens, account identifiers, and sensi
 - Update docs and changelog when user-facing behavior changes.
 - Keep examples and screenshots sanitized.
 
+## Test Runner Interruptions (Known Behavior In Constrained Environments)
+
+When tests are executed in constrained runner environments (for example sandboxed agent sessions), commands may be interrupted by an external signal even if assertions themselves are healthy.
+
+Typical symptoms:
+
+- `KeyboardInterrupt` in test output
+- non-zero process exit like `130` / `137`
+- partial output that may still include passing test lines before interruption
+
+Validation rule for this repository:
+
+1. Treat `KeyboardInterrupt` / `130` / `137` as **interrupted run**, not as a reliable pass/fail signal.
+2. Re-run the same validation commands **serially** (one command at a time).
+3. Only accept the validation result when the final rerun exits cleanly and covers the intended test set.
+4. Avoid running multiple `uv run ... unittest ...` commands in parallel during final PR validation.
+
 ## Documentation Consistency
 
 `README.md` and `README.zh-CN.md` should remain aligned in meaning.
