@@ -77,6 +77,7 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Internal note: startup/watch multi-stage execution now reuses `_run_stage_sequence(...)` for consistent ordered execution and fail-fast short-circuiting
 - Internal note: startup/watch runtime invocation now keeps `_run_startup_phase` / `_run_watch_iteration` thin by isolating runtime state/dependency assembly into dedicated `_build_*_runtime_state/deps` helpers
 - Internal note: top-level `run()` loop now delegates one watch-cycle step through `_run_watch_cycle_and_maybe_sleep(...)` to centralize watch-exit vs sleep-exit control flow
+- Internal note: startup/watch runtime invocation now shares `_run_runtime_cycle(...)` template for cycle execution, state apply, and exit-code propagation symmetry
 - Internal note: startup configuration log emission is centralized through `_settings_log_rows(...)` to reduce duplicated output wiring
 - Internal note: upload cleanup core logic is extracted to `cwma/auto/upload_cleanup.py`; app-layer methods now focus on orchestration + logging
 - Internal note: progress panel rendering now uses `cwma/auto/panel_render.py` pure helpers, with `render_progress_snapshot` split into snapshot build, line composition, and signature-gate steps

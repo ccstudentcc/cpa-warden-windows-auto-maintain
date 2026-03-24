@@ -408,22 +408,34 @@ class AutoMaintainer:
             render_progress_snapshot=self.render_progress_snapshot,
         )
 
+    def _run_runtime_cycle(
+        self,
+        *,
+        run_cycle: Callable[[], object],
+        apply_state: Callable[[object], None],
+    ) -> int:
+        result = run_cycle()
+        apply_state(getattr(result, "state"))
+        return int(getattr(result, "exit_code"))
+
     def _run_startup_phase(self) -> int:
-        result = run_startup_cycle(
-            state=self._build_startup_runtime_state(),
-            deps=self._build_startup_runtime_deps(),
+        return self._run_runtime_cycle(
+            run_cycle=lambda: run_startup_cycle(
+                state=self._build_startup_runtime_state(),
+                deps=self._build_startup_runtime_deps(),
+            ),
+            apply_state=lambda state: self._apply_startup_runtime_state(state),
         )
-        self._apply_startup_runtime_state(result.state)
-        return result.exit_code
 
     def _run_watch_iteration(self, now: float) -> int:
-        result = run_watch_iteration(
-            now_monotonic=now,
-            state=self._build_watch_runtime_state(),
-            deps=self._build_watch_runtime_deps(),
+        return self._run_runtime_cycle(
+            run_cycle=lambda: run_watch_iteration(
+                now_monotonic=now,
+                state=self._build_watch_runtime_state(),
+                deps=self._build_watch_runtime_deps(),
+            ),
+            apply_state=lambda state: self._apply_watch_runtime_state(state),
         )
-        self._apply_watch_runtime_state(result.state)
-        return result.exit_code
 
     def _run_stage_sequence(self, stages: Iterable[tuple[str, Callable[[], int]]]) -> int:
         for stage, runner in stages:
