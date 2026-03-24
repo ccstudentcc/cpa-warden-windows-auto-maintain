@@ -45,6 +45,23 @@ from ..warden.api.usage_probe import (
     find_spark_rate_limit as find_spark_rate_limit_warden,
     probe_wham_usage_async as probe_wham_usage_async_warden,
 )
+from ..warden.db.repository import (
+    claim_upload_slot as claim_upload_slot_warden,
+    connect_db as connect_db_warden,
+    finish_scan_run as finish_scan_run_warden,
+    load_existing_state as load_existing_state_warden,
+    mark_upload_attempt as mark_upload_attempt_warden,
+    mark_upload_failure as mark_upload_failure_warden,
+    mark_upload_skipped_remote_exists as mark_upload_skipped_remote_exists_warden,
+    mark_upload_success as mark_upload_success_warden,
+    start_scan_run as start_scan_run_warden,
+    upsert_auth_accounts as upsert_auth_accounts_warden,
+)
+from ..warden.db.schema import (
+    ensure_auth_accounts_schema as ensure_auth_accounts_schema_warden,
+    init_db as init_db_warden,
+    init_upload_db as init_upload_db_warden,
+)
 from ..warden.models import (
     AUTH_ACCOUNT_COLUMNS as AUTH_ACCOUNT_COLUMNS_WARDEN,
     build_auth_record as build_auth_record_warden,
@@ -69,6 +86,7 @@ from ..warden.services.maintain_scope import (
     resolve_maintain_name_scope as resolve_maintain_name_scope_warden,
     resolve_upload_name_scope as resolve_upload_name_scope_warden,
 )
+from ..warden.services.scan import run_scan_async as run_scan_async_service_warden
 from ..warden.services.upload_scope import (
     discover_upload_files as discover_upload_files_warden,
     select_upload_candidates as select_upload_candidates_warden,
@@ -332,163 +350,27 @@ def build_settings(args: argparse.Namespace, conf: dict[str, Any]) -> dict[str, 
 
 
 def connect_db(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_db_warden(db_path)
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS auth_accounts (
-            name TEXT PRIMARY KEY,
-            disabled INTEGER NOT NULL,
-            id_token_json TEXT,
-            email TEXT,
-            provider TEXT,
-            source TEXT,
-            unavailable INTEGER NOT NULL,
-            auth_index TEXT,
-            account TEXT,
-            type TEXT,
-            runtime_only INTEGER NOT NULL,
-            status TEXT,
-            status_message TEXT,
-            chatgpt_account_id TEXT,
-            id_token_plan_type TEXT,
-            auth_updated_at TEXT,
-            auth_modtime TEXT,
-            auth_last_refresh TEXT,
-            api_http_status INTEGER,
-            api_status_code INTEGER,
-            usage_allowed INTEGER,
-            usage_limit_reached INTEGER,
-            usage_plan_type TEXT,
-            usage_email TEXT,
-            usage_reset_at INTEGER,
-            usage_reset_after_seconds INTEGER,
-            usage_spark_allowed INTEGER,
-            usage_spark_limit_reached INTEGER,
-            usage_spark_reset_at INTEGER,
-            usage_spark_reset_after_seconds INTEGER,
-            quota_signal_source TEXT,
-            is_invalid_401 INTEGER NOT NULL DEFAULT 0,
-            is_quota_limited INTEGER NOT NULL DEFAULT 0,
-            is_recovered INTEGER NOT NULL DEFAULT 0,
-            probe_error_kind TEXT,
-            probe_error_text TEXT,
-            managed_reason TEXT,
-            last_action TEXT,
-            last_action_status TEXT,
-            last_action_error TEXT,
-            last_seen_at TEXT NOT NULL,
-            last_probed_at TEXT,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS scan_runs (
-            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            mode TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            finished_at TEXT,
-            status TEXT NOT NULL,
-            total_files INTEGER NOT NULL,
-            filtered_files INTEGER NOT NULL,
-            probed_files INTEGER NOT NULL,
-            invalid_401_count INTEGER NOT NULL,
-            quota_limited_count INTEGER NOT NULL,
-            recovered_count INTEGER NOT NULL,
-            delete_401 INTEGER NOT NULL,
-            quota_action TEXT NOT NULL,
-            probe_workers INTEGER NOT NULL,
-            action_workers INTEGER NOT NULL,
-            timeout_seconds INTEGER NOT NULL,
-            retries INTEGER NOT NULL
-        );
-        """
-    )
-    ensure_auth_accounts_schema(conn)
-    conn.commit()
-    init_upload_db(conn)
+    init_db_warden(conn)
 
 
 def ensure_auth_accounts_schema(conn: sqlite3.Connection) -> None:
-    required_columns = {
-        "usage_spark_allowed": "INTEGER",
-        "usage_spark_limit_reached": "INTEGER",
-        "usage_spark_reset_at": "INTEGER",
-        "usage_spark_reset_after_seconds": "INTEGER",
-        "quota_signal_source": "TEXT",
-    }
-    rows = conn.execute("PRAGMA table_info(auth_accounts)").fetchall()
-    existing_columns = {str(row[1]) for row in rows}
-    added = False
-    for column, column_type in required_columns.items():
-        if column in existing_columns:
-            continue
-        conn.execute(f"ALTER TABLE auth_accounts ADD COLUMN {column} {column_type}")
-        added = True
-    if added:
-        conn.commit()
+    ensure_auth_accounts_schema_warden(conn)
 
 
 def init_upload_db(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS auth_file_uploads (
-            base_url TEXT NOT NULL,
-            file_name TEXT NOT NULL,
-            content_sha256 TEXT NOT NULL,
-            file_path TEXT NOT NULL,
-            file_size INTEGER NOT NULL,
-            status TEXT NOT NULL,
-            attempt_count INTEGER NOT NULL DEFAULT 0,
-            first_seen_at TEXT NOT NULL,
-            last_attempt_at TEXT,
-            uploaded_at TEXT,
-            last_http_status INTEGER,
-            last_error TEXT,
-            last_response TEXT,
-            PRIMARY KEY (base_url, file_name, content_sha256)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_auth_file_uploads_status
-            ON auth_file_uploads(status);
-
-        CREATE INDEX IF NOT EXISTS idx_auth_file_uploads_file_name
-            ON auth_file_uploads(file_name);
-        """
-    )
-    conn.commit()
+    init_upload_db_warden(conn)
 
 
 def load_existing_state(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
-    rows = conn.execute("SELECT * FROM auth_accounts").fetchall()
-    return {str(row["name"]): dict(row) for row in rows}
+    return load_existing_state_warden(conn)
 
 
 def start_scan_run(conn: sqlite3.Connection, settings: dict[str, Any]) -> int:
-    cur = conn.execute(
-        """
-        INSERT INTO scan_runs (
-            mode, started_at, finished_at, status, total_files, filtered_files, probed_files,
-            invalid_401_count, quota_limited_count, recovered_count, delete_401, quota_action,
-            probe_workers, action_workers, timeout_seconds, retries
-        ) VALUES (?, ?, NULL, 'running', 0, 0, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            settings["mode"],
-            utc_now_iso(),
-            int(bool(settings["delete_401"])),
-            settings["quota_action"],
-            settings["probe_workers"],
-            settings["action_workers"],
-            settings["timeout"],
-            settings["retries"],
-        ),
-    )
-    conn.commit()
-    return int(cur.lastrowid)
+    return start_scan_run_warden(conn, settings, now_iso=utc_now_iso)
 
 
 def finish_scan_run(
@@ -503,48 +385,22 @@ def finish_scan_run(
     quota_limited_count: int,
     recovered_count: int,
 ) -> None:
-    conn.execute(
-        """
-        UPDATE scan_runs
-        SET finished_at = ?, status = ?, total_files = ?, filtered_files = ?, probed_files = ?,
-            invalid_401_count = ?, quota_limited_count = ?, recovered_count = ?
-        WHERE run_id = ?
-        """,
-        (
-            utc_now_iso(),
-            status,
-            int(total_files),
-            int(filtered_files),
-            int(probed_files),
-            int(invalid_401_count),
-            int(quota_limited_count),
-            int(recovered_count),
-            int(run_id),
-        ),
+    finish_scan_run_warden(
+        conn,
+        run_id,
+        status=status,
+        total_files=total_files,
+        filtered_files=filtered_files,
+        probed_files=probed_files,
+        invalid_401_count=invalid_401_count,
+        quota_limited_count=quota_limited_count,
+        recovered_count=recovered_count,
+        now_iso=utc_now_iso,
     )
-    conn.commit()
 
 
 def upsert_auth_accounts(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        return
-    columns_sql = ", ".join(AUTH_ACCOUNT_COLUMNS)
-    placeholders = ", ".join(f":{column}" for column in AUTH_ACCOUNT_COLUMNS)
-    updates = ", ".join(
-        f"{column} = excluded.{column}"
-        for column in AUTH_ACCOUNT_COLUMNS
-        if column != "name"
-    )
-    conn.executemany(
-        f"""
-        INSERT INTO auth_accounts ({columns_sql})
-        VALUES ({placeholders})
-        ON CONFLICT(name) DO UPDATE SET
-            {updates}
-        """,
-        rows,
-    )
-    conn.commit()
+    upsert_auth_accounts_warden(conn, rows, auth_account_columns=AUTH_ACCOUNT_COLUMNS)
 
 
 def row_to_bool(value: Any) -> bool:
@@ -622,35 +478,15 @@ def mark_upload_skipped_remote_exists(
     file_path: str,
     file_size: int,
 ) -> None:
-    now_iso = utc_now_iso()
-    conn.execute(
-        """
-        INSERT INTO auth_file_uploads (
-            base_url, file_name, content_sha256, file_path, file_size, status,
-            attempt_count, first_seen_at, last_attempt_at, uploaded_at, last_http_status, last_error, last_response
-        ) VALUES (?, ?, ?, ?, ?, 'skipped_remote_exists', 0, ?, ?, ?, NULL, NULL, NULL)
-        ON CONFLICT(base_url, file_name, content_sha256) DO UPDATE SET
-            file_path = excluded.file_path,
-            file_size = excluded.file_size,
-            status = 'skipped_remote_exists',
-            last_attempt_at = excluded.last_attempt_at,
-            uploaded_at = excluded.uploaded_at,
-            last_http_status = NULL,
-            last_error = NULL,
-            last_response = NULL
-        """,
-        (
-            base_url,
-            file_name,
-            content_sha256,
-            file_path,
-            int(file_size),
-            now_iso,
-            now_iso,
-            now_iso,
-        ),
+    mark_upload_skipped_remote_exists_warden(
+        conn,
+        base_url=base_url,
+        file_name=file_name,
+        content_sha256=content_sha256,
+        file_path=file_path,
+        file_size=file_size,
+        now_iso=utc_now_iso,
     )
-    conn.commit()
 
 
 def claim_upload_slot(
@@ -662,56 +498,15 @@ def claim_upload_slot(
     file_path: str,
     file_size: int,
 ) -> str:
-    now_iso = utc_now_iso()
-    cur = conn.execute(
-        """
-        INSERT INTO auth_file_uploads (
-            base_url, file_name, content_sha256, file_path, file_size, status,
-            attempt_count, first_seen_at, last_attempt_at, uploaded_at, last_http_status, last_error, last_response
-        ) VALUES (?, ?, ?, ?, ?, 'uploading', 0, ?, NULL, NULL, NULL, NULL, NULL)
-        ON CONFLICT(base_url, file_name, content_sha256) DO NOTHING
-        """,
-        (base_url, file_name, content_sha256, file_path, int(file_size), now_iso),
+    return claim_upload_slot_warden(
+        conn,
+        base_url=base_url,
+        file_name=file_name,
+        content_sha256=content_sha256,
+        file_path=file_path,
+        file_size=file_size,
+        now_iso=utc_now_iso,
     )
-    conn.commit()
-    if cur.rowcount == 1:
-        return "claimed_new"
-
-    row = conn.execute(
-        """
-        SELECT status
-        FROM auth_file_uploads
-        WHERE base_url = ? AND file_name = ? AND content_sha256 = ?
-        """,
-        (base_url, file_name, content_sha256),
-    ).fetchone()
-    if row is None:
-        return "claimed_new"
-
-    status = str(row["status"] or "").strip()
-    if status in {"success", "skipped_remote_exists"}:
-        return "skipped_done"
-    if status == "uploading":
-        return "skipped_in_progress"
-    if status == "failed":
-        takeover = conn.execute(
-            """
-            UPDATE auth_file_uploads
-            SET status = 'uploading',
-                file_path = ?,
-                file_size = ?,
-                last_error = NULL,
-                last_response = NULL,
-                last_http_status = NULL
-            WHERE base_url = ? AND file_name = ? AND content_sha256 = ? AND status = 'failed'
-            """,
-            (file_path, int(file_size), base_url, file_name, content_sha256),
-        )
-        conn.commit()
-        if takeover.rowcount == 1:
-            return "claimed_retry"
-        return "skipped_in_progress"
-    return "skipped_done"
 
 
 def mark_upload_attempt(
@@ -721,17 +516,13 @@ def mark_upload_attempt(
     file_name: str,
     content_sha256: str,
 ) -> None:
-    conn.execute(
-        """
-        UPDATE auth_file_uploads
-        SET attempt_count = attempt_count + 1,
-            last_attempt_at = ?,
-            status = 'uploading'
-        WHERE base_url = ? AND file_name = ? AND content_sha256 = ?
-        """,
-        (utc_now_iso(), base_url, file_name, content_sha256),
+    mark_upload_attempt_warden(
+        conn,
+        base_url=base_url,
+        file_name=file_name,
+        content_sha256=content_sha256,
+        now_iso=utc_now_iso,
     )
-    conn.commit()
 
 
 def mark_upload_success(
@@ -743,26 +534,16 @@ def mark_upload_success(
     http_status: int | None,
     response_text: str | None,
 ) -> None:
-    conn.execute(
-        """
-        UPDATE auth_file_uploads
-        SET status = 'success',
-            uploaded_at = ?,
-            last_http_status = ?,
-            last_error = NULL,
-            last_response = ?
-        WHERE base_url = ? AND file_name = ? AND content_sha256 = ?
-        """,
-        (
-            utc_now_iso(),
-            http_status,
-            compact_text(response_text, 2000),
-            base_url,
-            file_name,
-            content_sha256,
-        ),
+    mark_upload_success_warden(
+        conn,
+        base_url=base_url,
+        file_name=file_name,
+        content_sha256=content_sha256,
+        http_status=http_status,
+        response_text=response_text,
+        now_iso=utc_now_iso,
+        compact_text=compact_text,
     )
-    conn.commit()
 
 
 def mark_upload_failure(
@@ -775,26 +556,16 @@ def mark_upload_failure(
     error_text: str,
     response_text: str | None,
 ) -> None:
-    conn.execute(
-        """
-        UPDATE auth_file_uploads
-        SET status = 'failed',
-            uploaded_at = NULL,
-            last_http_status = ?,
-            last_error = ?,
-            last_response = ?
-        WHERE base_url = ? AND file_name = ? AND content_sha256 = ?
-        """,
-        (
-            http_status,
-            compact_text(error_text, 600),
-            compact_text(response_text, 2000),
-            base_url,
-            file_name,
-            content_sha256,
-        ),
+    mark_upload_failure_warden(
+        conn,
+        base_url=base_url,
+        file_name=file_name,
+        content_sha256=content_sha256,
+        http_status=http_status,
+        error_text=error_text,
+        response_text=response_text,
+        compact_text=compact_text,
     )
-    conn.commit()
 
 
 async def upload_auth_file_async(
@@ -1759,111 +1530,25 @@ async def run_scan_async(
     settings: dict[str, Any],
     maintain_name_scope: set[str] | None = None,
 ) -> dict[str, Any]:
-    run_id = start_scan_run(conn, settings)
-    LOGGER.info(
-        "开始扫描: mode=%s db=%s log=%s quota_disable_threshold=%s",
-        settings["mode"],
-        settings["db_path"],
-        settings["log_file"],
-        settings["quota_disable_threshold"],
+    return await run_scan_async_service_warden(
+        conn,
+        settings,
+        maintain_name_scope=maintain_name_scope,
+        start_scan_run=start_scan_run,
+        finish_scan_run=finish_scan_run,
+        utc_now_iso=utc_now_iso,
+        fetch_auth_files=fetch_auth_files,
+        load_existing_state=load_existing_state,
+        get_item_name=get_item_name,
+        build_auth_record=build_auth_record,
+        upsert_auth_accounts=upsert_auth_accounts,
+        matches_filters=matches_filters,
+        probe_accounts_async=probe_accounts_async,
+        print_scan_summary=print_scan_summary,
+        summarize_failures=summarize_failures,
+        export_current_results=export_current_results,
+        logger=LOGGER,
     )
-    try:
-        now_iso = utc_now_iso()
-        files = fetch_auth_files(settings["base_url"], settings["token"], settings["timeout"])
-        existing_state = load_existing_state(conn)
-
-        inventory_records = []
-        for item in files:
-            name = get_item_name(item)
-            if not name:
-                continue
-            inventory_records.append(build_auth_record(item, existing_state.get(name), now_iso))
-
-        upsert_auth_accounts(conn, inventory_records)
-
-        candidate_records = [
-            record
-            for record in inventory_records
-            if matches_filters(record, settings["target_type"], settings["provider"])
-        ]
-        if maintain_name_scope is not None:
-            candidate_records = [
-                record
-                for record in candidate_records
-                if str(record.get("name") or "") in maintain_name_scope
-            ]
-        probed_records = await probe_accounts_async(
-            candidate_records,
-            base_url=settings["base_url"],
-            token=settings["token"],
-            timeout=settings["timeout"],
-            retries=settings["retries"],
-            user_agent=settings["user_agent"],
-            probe_workers=settings["probe_workers"],
-            quota_disable_threshold=settings["quota_disable_threshold"],
-            debug=settings["debug"],
-        )
-        probed_map = {record["name"]: record for record in probed_records}
-
-        for record in inventory_records:
-            if record["name"] in probed_map:
-                record.update(probed_map[record["name"]])
-                record["updated_at"] = utc_now_iso()
-
-        upsert_auth_accounts(conn, inventory_records)
-
-        current_candidates = [record for record in inventory_records if matches_filters(record, settings["target_type"], settings["provider"])]
-        invalid_records = [row for row in current_candidates if row.get("is_invalid_401") == 1]
-        quota_records = [row for row in current_candidates if row.get("is_quota_limited") == 1]
-        recovered_records = [row for row in current_candidates if row.get("is_recovered") == 1]
-        failure_records = [row for row in current_candidates if row.get("probe_error_kind")]
-        probed_files = sum(1 for row in current_candidates if row.get("last_probed_at"))
-
-        finish_scan_run(
-            conn,
-            run_id,
-            status="success",
-            total_files=len(files),
-            filtered_files=len(current_candidates),
-            probed_files=probed_files,
-            invalid_401_count=len(invalid_records),
-            quota_limited_count=len(quota_records),
-            recovered_count=len(recovered_records),
-        )
-
-        print_scan_summary(
-            total_files=len(files),
-            candidate_records=current_candidates,
-            invalid_records=invalid_records,
-            quota_records=quota_records,
-            recovered_records=recovered_records,
-        )
-        if failure_records:
-            summarize_failures(failure_records)
-        export_current_results(settings["invalid_output"], settings["quota_output"], invalid_records, quota_records)
-        LOGGER.info("扫描完成")
-
-        return {
-            "run_id": run_id,
-            "all_records": inventory_records,
-            "candidate_records": current_candidates,
-            "invalid_records": invalid_records,
-            "quota_records": quota_records,
-            "recovered_records": recovered_records,
-        }
-    except Exception:
-        finish_scan_run(
-            conn,
-            run_id,
-            status="failed",
-            total_files=0,
-            filtered_files=0,
-            probed_files=0,
-            invalid_401_count=0,
-            quota_limited_count=0,
-            recovered_count=0,
-        )
-        raise
 
 
 async def run_maintain_async(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
