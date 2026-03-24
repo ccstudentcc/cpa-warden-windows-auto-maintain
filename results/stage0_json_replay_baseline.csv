@@ -1,0 +1,4 @@
+scenario,events_total,files_processed,simulation_seconds,throughput_files_per_second,upload_queue_wait_p95_seconds,stability_wait_reset_count,retry_rate_percent,batches_started,batches_retried
+burst,1200,1200,30.200,39.735,24.949,1199,0.00,8,0
+sustained,1800,1800,612.000,2.941,575.933,1799,11.11,9,1
+mixed,1860,1860,429.250,4.333,328.709,1853,3.12,32,1
