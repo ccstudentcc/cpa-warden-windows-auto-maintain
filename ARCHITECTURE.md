@@ -68,6 +68,28 @@ This repository provides a Windows-first automation layer on top of the CPA main
 5. Completion rule
    - Stage 4 can be marked complete only when all `S4-C01..S4-C07` assertions pass.
 
+## Stage 2.6 Auto Boundary Contract (Capability-Oriented)
+
+Reference map:
+- `cwma/auto/BOUNDARY_MAP.md` is the canonical capability ownership map for `cwma/auto` and `cwma/auto/runtime`.
+
+Capability ownership:
+1. `orchestration`: run-loop/stage sequencing and runtime dependency wiring (`app.py`, startup/watch runtime adapters).
+2. `channel`: maintain/upload lifecycle policy and channel feedback (`channel_*`, channel runtime adapters).
+3. `state`: queue/runtime/snapshot transitions and pure decision transforms (`*_queue.py`, `runtime_state.py`, `state_models.py`, snapshot/cadence/probe/postprocess helpers).
+4. `infra`: process/zip/lock/config/shutdown side-effect boundaries (`process_*`, `zip_intake.py`, `locking.py`, `upload_cleanup.py`, lifecycle/host ops adapters).
+5. `ui`: progress parsing, panel snapshot/render cadence and terminal presentation (`ui_runtime.py`, `panel_*`, `dashboard.py`, `progress_parser.py`).
+
+Allowed dependency directions:
+1. `orchestration -> channel|state|infra|ui`.
+2. `channel -> state|infra` (no orchestration imports).
+3. `state -> state-local pure helpers only` (no orchestration/channel runtime adapter imports).
+4. `infra -> infra-local modules only` (no orchestration/channel policy imports).
+5. `ui -> state|ui-local helpers` (no orchestration/channel policy imports).
+
+Ownership rule:
+- Any `cwma/auto` module change must be attributable to one primary capability owner before implementation; cross-capability changes must document why one capability cannot remain the single owner.
+
 ## Module Map
 
 ### `cwma/apps/cpa_warden.py`
