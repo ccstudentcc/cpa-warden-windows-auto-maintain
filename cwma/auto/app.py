@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Iterable, TextIO
 
 from .config import Settings, load_settings as load_auto_settings
-from .active_probe import ActiveUploadProbeDecision, ActiveUploadProbeState, decide_active_upload_probe
+from .active_probe import ActiveUploadProbeState, decide_active_upload_probe
 from .channel_status import (
     CHANNEL_MAINTAIN,
     CHANNEL_UPLOAD,
@@ -29,6 +29,7 @@ from .channel_status import (
     STATE_IDLE,
     STATE_PENDING,
     STATE_RUNNING,
+    STATUS_FAILED,
     STATUS_RETRY,
     STATUS_SHUTDOWN,
     STATUS_SUCCESS,
@@ -51,13 +52,10 @@ from .channel_lifecycle import (
     decide_upload_start_error,
 )
 from .channel_start_prep import (
-    MaintainStartPrep,
-    UploadStartPrep,
     prepare_maintain_start,
     prepare_upload_start,
 )
 from .process_supervisor import (
-    poll_channel_exit,
     terminate_channel,
 )
 from .dashboard import (
@@ -83,10 +81,7 @@ from .output_pump import (
 )
 from .panel_render import (
     PanelLinesContext,
-    SignatureHeartbeatGate,
     build_plain_panel_lines,
-    panel_signature,
-    should_skip_render_by_signature_gate,
 )
 from .panel_snapshot import PanelSnapshot, build_panel_snapshot
 from .process_output import (
@@ -136,6 +131,7 @@ from .runtime.watch_runtime import (
     WatchRuntimeState,
     run_watch_iteration,
 )
+from .ui_runtime import UiRuntime
 from .scope_files import write_scope_names
 from .snapshots import (
     build_snapshot_file as build_snapshot_file_rows,
@@ -311,6 +307,24 @@ class AutoMaintainer:
                 windows_console_handler=self._windows_console_handler,
                 next_maintain_due_at=self.next_maintain_due_at,
             ),
+        )
+        self.ui_runtime = UiRuntime(
+            state=self.runtime.ui,
+            monotonic=lambda: time.monotonic(),
+            build_panel_snapshot=self._build_progress_panel_snapshot,
+            build_panel_lines=self._build_progress_panel_lines,
+            apply_panel_colors=lambda lines, upload_state, maintain_state, upload_stage, maintain_stage: (
+                apply_dashboard_panel_colors(
+                    lines,
+                    enabled=self.panel_color_enabled,
+                    upload_state=upload_state,
+                    maintain_state=maintain_state,
+                    upload_stage=upload_stage,
+                    maintain_stage=maintain_stage,
+                )
+            ),
+            render_panel=self.render_fixed_panel,
+            output_lock_factory=lambda: self.output_lock,
         )
 
     def ensure_paths(self) -> None:
@@ -783,17 +797,15 @@ class AutoMaintainer:
         total: int | None = None,
         force_render: bool = False,
     ) -> None:
-        with self.output_lock:
-            state = self.upload_progress_state if name == CHANNEL_UPLOAD else self.maintain_progress_state
-            if stage is not None:
-                state["stage"] = stage
-            if done is not None:
-                state["done"] = max(0, int(done))
-            if total is not None:
-                state["total"] = max(0, int(total))
-            self.runtime.ui.upload_progress_state = dict(self.upload_progress_state)
-            self.runtime.ui.maintain_progress_state = dict(self.maintain_progress_state)
-        self.render_progress_snapshot(force=force_render)
+        self._sync_ui_runtime_inputs()
+        self.ui_runtime.on_stage_update(
+            name,
+            stage=stage,
+            done=done,
+            total=total,
+            force_render=force_render,
+        )
+        self._sync_ui_runtime_outputs()
 
     def mark_channel_running(self, name: str) -> None:
         self.update_channel_progress(name, stage=STAGE_RUNNING, force_render=True)
@@ -876,41 +888,24 @@ class AutoMaintainer:
             border_line=dashboard_border_line,
         )
 
-    def _should_skip_progress_render(self, *, force: bool, signature: str, now_monotonic: float) -> bool:
-        return should_skip_render_by_signature_gate(
-            SignatureHeartbeatGate(
-                force=force,
-                signature_unchanged=(signature == self.last_progress_signature),
-                now_monotonic=now_monotonic,
-                last_render_at=self.last_progress_render_at,
-                heartbeat_seconds=self.progress_render_heartbeat_seconds,
-            )
-        )
-
     def render_progress_snapshot(self, *, force: bool = False) -> None:
-        now = time.monotonic()
-        with self.output_lock:
-            if (not force) and (now - self.last_progress_render_at < self.progress_render_interval_seconds):
-                return
-            panel_snapshot = self._build_progress_panel_snapshot(now_monotonic=now)
-            panel_lines_plain = self._build_progress_panel_lines(panel_snapshot=panel_snapshot)
-            signature = panel_signature(panel_lines_plain)
-            if self._should_skip_progress_render(force=force, signature=signature, now_monotonic=now):
-                return
-            self.last_progress_render_at = now
-            self.last_progress_signature = signature
-            self.runtime.ui.last_progress_render_at = self.last_progress_render_at
-            self.runtime.ui.last_progress_signature = self.last_progress_signature
+        self._sync_ui_runtime_inputs()
+        self.ui_runtime.render_if_needed(force=force)
+        self._sync_ui_runtime_outputs()
 
-        panel_lines = apply_dashboard_panel_colors(
-            panel_lines_plain,
-            enabled=self.panel_color_enabled,
-            upload_state=panel_snapshot.upload_state,
-            maintain_state=panel_snapshot.maintain_state,
-            upload_stage=panel_snapshot.upload_stage,
-            maintain_stage=panel_snapshot.maintain_stage,
-        )
-        self.render_fixed_panel(panel_lines)
+    def _sync_ui_runtime_inputs(self) -> None:
+        self.runtime.ui.upload_progress_state = self.upload_progress_state
+        self.runtime.ui.maintain_progress_state = self.maintain_progress_state
+        self.runtime.ui.last_progress_render_at = self.last_progress_render_at
+        self.runtime.ui.progress_render_interval_seconds = self.progress_render_interval_seconds
+        self.runtime.ui.progress_render_heartbeat_seconds = self.progress_render_heartbeat_seconds
+        self.runtime.ui.last_progress_signature = self.last_progress_signature
+
+    def _sync_ui_runtime_outputs(self) -> None:
+        self.upload_progress_state = self.runtime.ui.upload_progress_state
+        self.maintain_progress_state = self.runtime.ui.maintain_progress_state
+        self.last_progress_render_at = self.runtime.ui.last_progress_render_at
+        self.last_progress_signature = self.runtime.ui.last_progress_signature
 
     def parse_child_progress_line(self, name: str, line: str) -> None:
         text = line.strip()
@@ -1146,40 +1141,6 @@ class AutoMaintainer:
             self.update_channel_progress(CHANNEL_MAINTAIN, stage=STAGE_DEFERRED, force_render=True)
         return True
 
-    def _compute_maintain_batch_size(self) -> int:
-        if self.pending_maintain_names is None:
-            return 0
-        return self.scheduler_policy.choose_incremental_maintain_batch_size(
-            pending_count=len(self.pending_maintain_names),
-            upload_pressure=(self.upload_process is not None) or bool(self.pending_upload_snapshot),
-        )
-
-    def _decide_maintain_start_scope(self, batch_size: int):
-        decision = decide_maintain_start_scope(
-            state=self._maintain_queue_state(),
-            batch_size=batch_size,
-        )
-        self._apply_maintain_queue_state(decision.state)
-        return decision
-
-    def _prepare_maintain_start(self, *, reason: str, max_attempts: int, scope_names: set[str] | None) -> MaintainStartPrep:
-        return prepare_maintain_start(
-            reason=reason,
-            attempt=self.maintain_attempt,
-            max_attempts=max_attempts,
-            scope_names=scope_names,
-            write_scope_file=lambda names: write_scope_names(self.maintain_names_file, names),
-            build_command=self.build_maintain_command,
-            format_start_message=lambda attempt, max_attempts, reason, scope_names: (
-                format_maintain_start_message_rows(
-                    attempt=attempt,
-                    max_attempts=max_attempts,
-                    reason=reason,
-                    maintain_scope_names=scope_names,
-                )
-            ),
-        )
-
     def _apply_channel_start_flow_feedback(
         self,
         *,
@@ -1203,98 +1164,174 @@ class AutoMaintainer:
             self.update_channel_progress(channel, stage=STAGE_RETRY_WAIT, force_render=True)
         return return_code
 
-    def _start_maintain_process(self, *, prep: MaintainStartPrep, now: float) -> int:
-        log(prep.log_message)
-        if prep.started_incremental:
-            self.last_incremental_maintain_started_at = now
-        self.inflight_maintain_names = prep.scope_names
-        start_flow = start_maintain_channel(
-            command=prep.command,
+    def _finalize_channel_start_flow(
+        self,
+        *,
+        channel: str,
+        process: subprocess.Popen | None,
+        status: str,
+        start_exception: Exception | None,
+        return_code: int,
+        apply_state: Callable[[], None],
+    ) -> int:
+        apply_state()
+        if channel == CHANNEL_MAINTAIN:
+            self._set_maintain_process(process)
+        else:
+            self._set_upload_process(process)
+        return self._apply_channel_start_flow_feedback(
+            channel=channel,
+            status=status,
+            start_exception=start_exception,
+            return_code=return_code,
+        )
+
+    def _set_maintain_process(self, process: subprocess.Popen | None) -> None:
+        self.maintain_process = process
+        self.runtime.lifecycle.maintain_process = self.maintain_process
+
+    def _set_upload_process(self, process: subprocess.Popen | None) -> None:
+        self.upload_process = process
+        self.runtime.lifecycle.upload_process = self.upload_process
+
+    def _start_and_finalize_channel_flow(
+        self,
+        *,
+        channel: str,
+        command: list[str],
+        state: object,
+        retry_count: int,
+        output_file: Path,
+        start_channel: Callable[..., object],
+        apply_state_from_flow: Callable[[object], None],
+    ) -> int:
+        start_flow = start_channel(
+            command=command,
             cwd=self.settings.base_dir,
-            state=self._maintain_runtime_state(),
-            retry_count=self.settings.maintain_retry_count,
+            state=state,
+            retry_count=retry_count,
             retry_delay_seconds=self.settings.command_retry_delay_seconds,
             env=build_child_process_env(),
-            output_file=self.maintain_cmd_output_file,
-            on_output_line=lambda line: self.parse_child_progress_line(CHANNEL_MAINTAIN, line),
+            output_file=output_file,
+            on_output_line=lambda line: self.parse_child_progress_line(channel, line),
             log=log,
             mark_channel_running=self.mark_channel_running,
             now_monotonic=time.monotonic(),
             popen_factory=subprocess.Popen,
         )
-        self._apply_maintain_runtime_state(start_flow.state)
-        self.maintain_process = start_flow.process
-        self.runtime.lifecycle.maintain_process = self.maintain_process
-        return self._apply_channel_start_flow_feedback(
-            channel=CHANNEL_MAINTAIN,
-            status=start_flow.status,
-            start_exception=start_flow.start_exception,
-            return_code=start_flow.return_code,
+        return self._finalize_channel_start_flow(
+            channel=channel,
+            process=getattr(start_flow, "process"),
+            status=getattr(start_flow, "status"),
+            start_exception=getattr(start_flow, "start_exception"),
+            return_code=getattr(start_flow, "return_code"),
+            apply_state=lambda: apply_state_from_flow(start_flow),
         )
-
-    def _can_attempt_maintain_start(self, *, now: float) -> bool:
-        if self.maintain_process is not None:
-            return False
-        if not self.pending_maintain:
-            return False
-        if now < self.maintain_retry_due_at:
-            return False
-        if self._defer_incremental_maintain_if_needed(now):
-            return False
-        self.last_incremental_defer_reason = None
-        return True
-
-    def _handle_maintain_start_scope_skip(self, *, skip_reason: str) -> int:
-        self.maintain_attempt = 0
-        self.maintain_retry_due_at = 0.0
-        log(f"Skipped maintain start: {skip_reason}.")
-        return 0
 
     def maybe_start_maintain(self) -> int:
         now = time.monotonic()
-        if not self._can_attempt_maintain_start(now=now):
+        if self.maintain_process is not None:
             return 0
+        if not self.pending_maintain:
+            return 0
+        if now < self.maintain_retry_due_at:
+            return 0
+        if self._defer_incremental_maintain_if_needed(now):
+            return 0
+        self.last_incremental_defer_reason = None
+
         self.maintain_attempt += 1
         max_attempts = self.settings.maintain_retry_count + 1
         reason = self.pending_maintain_reason or "unspecified"
-        batch_size = self._compute_maintain_batch_size()
-        decision = self._decide_maintain_start_scope(batch_size)
+        if self.pending_maintain_names is None:
+            batch_size = 0
+        else:
+            batch_size = self.scheduler_policy.choose_incremental_maintain_batch_size(
+                pending_count=len(self.pending_maintain_names),
+                upload_pressure=(self.upload_process is not None) or bool(self.pending_upload_snapshot),
+            )
+        decision = decide_maintain_start_scope(
+            state=self._maintain_queue_state(),
+            batch_size=batch_size,
+        )
+        self._apply_maintain_queue_state(decision.state)
         if decision.skip_reason:
-            return self._handle_maintain_start_scope_skip(skip_reason=decision.skip_reason)
+            self.maintain_attempt = 0
+            self.maintain_retry_due_at = 0.0
+            log(f"Skipped maintain start: {decision.skip_reason}.")
+            return 0
         if not decision.should_start:
             return 0
-        prep = self._prepare_maintain_start(
+        prep = prepare_maintain_start(
             reason=reason,
+            attempt=self.maintain_attempt,
             max_attempts=max_attempts,
             scope_names=decision.scope_names,
+            write_scope_file=lambda names: write_scope_names(self.maintain_names_file, names),
+            build_command=self.build_maintain_command,
+            format_start_message=lambda attempt, max_attempts, reason, scope_names: (
+                format_maintain_start_message_rows(
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    reason=reason,
+                    maintain_scope_names=scope_names,
+                )
+            ),
         )
-        return self._start_maintain_process(prep=prep, now=now)
+        log(prep.log_message)
+        if prep.started_incremental:
+            self.last_incremental_maintain_started_at = now
+        self.inflight_maintain_names = prep.scope_names
+        return self._start_and_finalize_channel_flow(
+            channel=CHANNEL_MAINTAIN,
+            command=prep.command,
+            state=self._maintain_runtime_state(),
+            retry_count=self.settings.maintain_retry_count,
+            output_file=self.maintain_cmd_output_file,
+            start_channel=start_maintain_channel,
+            apply_state_from_flow=lambda flow: self._apply_maintain_runtime_state(
+                getattr(flow, "state")
+            ),
+        )
 
-    def _compute_upload_batch_size(self, state: UploadQueueState) -> int:
+    def maybe_start_upload(self) -> int:
+        if self.upload_process is not None:
+            return 0
+
+        state = self._upload_queue_state()
+        if state.pending_snapshot is None:
+            return 0
+
+        now = time.monotonic()
         if state.pending_retry and state.inflight_snapshot is not None:
-            return 1
-        pending_total = len(state.pending_snapshot or [])
-        maintain_pressure = self.maintain_process is not None or self.pending_maintain
-        return self.scheduler_policy.choose_upload_batch_size(
-            pending_count=pending_total,
-            maintain_pressure=maintain_pressure,
-        )
+            batch_size = 1
+        else:
+            pending_total = len(state.pending_snapshot or [])
+            maintain_pressure = self.maintain_process is not None or self.pending_maintain
+            batch_size = self.scheduler_policy.choose_upload_batch_size(
+                pending_count=pending_total,
+                maintain_pressure=maintain_pressure,
+            )
 
-    def _decide_upload_start(self, *, state: UploadQueueState, now: float, batch_size: int):
         decision = decide_upload_start(
             state=state,
             now_monotonic=now,
             batch_size=batch_size,
         )
         self._apply_upload_queue_state(decision.state)
-        return decision
+        if decision.waiting_retry:
+            return 0
+        if not decision.can_start:
+            return 0
 
-    def _prepare_upload_start(self, *, reason: str, max_attempts: int, batch: list[str]) -> UploadStartPrep:
-        return prepare_upload_start(
+        self.upload_attempt += 1
+        max_attempts = self.settings.upload_retry_count + 1
+        reason = self.pending_upload_reason or "detected changes"
+        prep = prepare_upload_start(
             reason=reason,
             attempt=self.upload_attempt,
             max_attempts=max_attempts,
-            batch=batch,
+            batch=decision.batch,
             pending_total=len(self.pending_upload_snapshot or []),
             extract_scope_names=extract_names_from_snapshot_rows,
             write_scope_file=lambda names: write_scope_names(self.upload_names_file, names),
@@ -1309,68 +1346,22 @@ class AutoMaintainer:
                 )
             ),
         )
-
-    def _start_upload_process(self, *, prep: UploadStartPrep) -> int:
         log(prep.log_message)
         self.inflight_upload_snapshot = list(prep.batch)
-        start_flow = start_upload_channel(
+        return self._start_and_finalize_channel_flow(
+            channel=CHANNEL_UPLOAD,
             command=prep.command,
-            cwd=self.settings.base_dir,
             state=self._upload_queue_state(),
             retry_count=self.settings.upload_retry_count,
-            retry_delay_seconds=self.settings.command_retry_delay_seconds,
-            env=build_child_process_env(),
             output_file=self.upload_cmd_output_file,
-            on_output_line=lambda line: self.parse_child_progress_line(CHANNEL_UPLOAD, line),
-            log=log,
-            mark_channel_running=self.mark_channel_running,
-            now_monotonic=time.monotonic(),
-            popen_factory=subprocess.Popen,
+            start_channel=start_upload_channel,
+            apply_state_from_flow=lambda flow: self._apply_upload_queue_state(
+                getattr(flow, "state")
+            ),
         )
-        self._apply_upload_queue_state(start_flow.state)
-        self.upload_process = start_flow.process
-        self.runtime.lifecycle.upload_process = self.upload_process
-        return self._apply_channel_start_flow_feedback(
-            channel=CHANNEL_UPLOAD,
-            status=start_flow.status,
-            start_exception=start_flow.start_exception,
-            return_code=start_flow.return_code,
-        )
-
-    def maybe_start_upload(self) -> int:
-        if self.upload_process is not None:
-            return 0
-
-        state = self._upload_queue_state()
-        if state.pending_snapshot is None:
-            return 0
-
-        now = time.monotonic()
-        batch_size = self._compute_upload_batch_size(state)
-        decision = self._decide_upload_start(
-            state=state,
-            now=now,
-            batch_size=batch_size,
-        )
-        if decision.waiting_retry:
-            return 0
-        if not decision.can_start:
-            return 0
-
-        self.upload_attempt += 1
-        max_attempts = self.settings.upload_retry_count + 1
-        reason = self.pending_upload_reason or "detected changes"
-        prep = self._prepare_upload_start(
-            reason=reason,
-            max_attempts=max_attempts,
-            batch=decision.batch,
-        )
-        return self._start_upload_process(prep=prep)
 
     def handle_command_start_error(self, name: str, exc: Exception) -> int:
         # Kept for compatibility with tests/hooks that may invoke this path directly.
-        log(format_command_start_failed_message(name, exc))
-        self.update_channel_progress(name, stage=STAGE_START_FAILED, force_render=True)
         if name == CHANNEL_MAINTAIN:
             decision = decide_maintain_start_error(
                 state=self._maintain_runtime_state(),
@@ -1389,11 +1380,12 @@ class AutoMaintainer:
             )
             self._apply_upload_queue_state(decision.state)
             should_retry = decision.should_retry
-        if should_retry:
-            log(format_command_start_retry_message(name, self.settings.command_retry_delay_seconds))
-            self.update_channel_progress(name, stage=STAGE_RETRY_WAIT, force_render=True)
-            return 0
-        return 1
+        return self._apply_channel_start_flow_feedback(
+            channel=name,
+            status=STATUS_RETRY if should_retry else STATUS_FAILED,
+            start_exception=exc,
+            return_code=0 if should_retry else 1,
+        )
 
     def _handle_maintain_success(self) -> None:
         log(format_command_completed_message(CHANNEL_MAINTAIN))
@@ -1468,160 +1460,167 @@ class AutoMaintainer:
         self._queue_post_upload_maintain_if_enabled(uploaded_names=postprocess.uploaded_names)
         return return_code
 
-    def _apply_non_success_process_exit_feedback(
+    def _finalize_polled_channel_flow(
         self,
         *,
         channel: str,
-        status: str,
-        code: int,
-    ) -> None:
+        exited: bool,
+        status: str | None,
+        exit_code: int | None,
+        return_code: int,
+        apply_state: Callable[[], None],
+        on_success: Callable[[], int],
+        on_non_success: Callable[[], None] | None = None,
+    ) -> int:
+        if not exited:
+            return 0
+        apply_state()
+        if status == STATUS_SUCCESS:
+            return on_success()
+        if status == STATUS_SHUTDOWN:
+            return return_code
         feedback = build_non_success_exit_feedback(
             channel=channel,
-            status=status,
-            code=code,
+            status=str(status),
+            code=int(exit_code or 0),
             retry_delay_seconds=self.settings.command_retry_delay_seconds,
         )
         if feedback.message:
             log(feedback.message)
         if feedback.stage is not None:
             self.update_channel_progress(channel, stage=feedback.stage, force_render=True)
+        if on_non_success is not None:
+            on_non_success()
+        return return_code
 
-    def _collect_exited_process_code(self, *, channel: str) -> int | None:
-        proc = self.maintain_process if channel == CHANNEL_MAINTAIN else self.upload_process
-        poll_result = poll_channel_exit(process=proc)
-        if not poll_result.exited:
-            return None
-        if channel == CHANNEL_MAINTAIN:
-            self.maintain_process = poll_result.process
-            self.runtime.lifecycle.maintain_process = self.maintain_process
-        else:
-            self.upload_process = poll_result.process
-            self.runtime.lifecycle.upload_process = self.upload_process
-        return int(poll_result.code or 0)
-
-    def poll_maintain_process(self) -> int:
-        flow = poll_maintain_channel(
-            process=self.maintain_process,
-            state=self._maintain_runtime_state(),
+    def _poll_and_finalize_channel_flow(
+        self,
+        *,
+        channel: str,
+        process: subprocess.Popen | None,
+        state: object,
+        retry_count: int,
+        poll_channel: Callable[..., object],
+        apply_state_from_flow: Callable[[object], None],
+        set_process: Callable[[subprocess.Popen | None], None],
+        on_success_from_flow: Callable[[object], int],
+        on_non_success: Callable[[], None] | None = None,
+    ) -> int:
+        flow = poll_channel(
+            process=process,
+            state=state,
             shutdown_requested=self.shutdown_requested,
-            retry_count=self.settings.maintain_retry_count,
+            retry_count=retry_count,
             retry_delay_seconds=self.settings.command_retry_delay_seconds,
             now_monotonic=time.monotonic(),
         )
-        self.maintain_process = flow.process
-        self.runtime.lifecycle.maintain_process = self.maintain_process
-        if not flow.exited:
-            return 0
-        self._apply_maintain_runtime_state(flow.state)
-        code = int(flow.exit_code or 0)
-        if flow.status == STATUS_SUCCESS:
-            self._handle_maintain_success()
-            return flow.return_code
-        if flow.status == STATUS_SHUTDOWN:
-            return flow.return_code
-        self._apply_non_success_process_exit_feedback(
-            channel=CHANNEL_MAINTAIN,
-            status=str(flow.status),
-            code=code,
+        set_process(getattr(flow, "process"))
+        return self._finalize_polled_channel_flow(
+            channel=channel,
+            exited=getattr(flow, "exited"),
+            status=getattr(flow, "status"),
+            exit_code=getattr(flow, "exit_code"),
+            return_code=getattr(flow, "return_code"),
+            apply_state=lambda: apply_state_from_flow(flow),
+            on_success=lambda: on_success_from_flow(flow),
+            on_non_success=on_non_success,
         )
-        return flow.return_code
+
+    def poll_maintain_process(self) -> int:
+        return self._poll_and_finalize_channel_flow(
+            channel=CHANNEL_MAINTAIN,
+            process=self.maintain_process,
+            state=self._maintain_runtime_state(),
+            retry_count=self.settings.maintain_retry_count,
+            poll_channel=poll_maintain_channel,
+            apply_state_from_flow=lambda flow: self._apply_maintain_runtime_state(getattr(flow, "state")),
+            set_process=self._set_maintain_process,
+            on_success_from_flow=lambda flow: (
+                self._handle_maintain_success() or getattr(flow, "return_code")
+            ),
+        )
 
     def poll_upload_process(self) -> int:
         uploaded_snapshot = self.inflight_upload_snapshot or []
-        flow = poll_upload_channel(
+        return self._poll_and_finalize_channel_flow(
+            channel=CHANNEL_UPLOAD,
             process=self.upload_process,
             state=self._upload_queue_state(),
-            shutdown_requested=self.shutdown_requested,
             retry_count=self.settings.upload_retry_count,
-            retry_delay_seconds=self.settings.command_retry_delay_seconds,
-            now_monotonic=time.monotonic(),
-        )
-        self.upload_process = flow.process
-        self.runtime.lifecycle.upload_process = self.upload_process
-        if not flow.exited:
-            return 0
-        self._apply_upload_queue_state(flow.state)
-        code = int(flow.exit_code or 0)
-        if flow.status == STATUS_SUCCESS:
-            return self._handle_upload_success(
+            poll_channel=poll_upload_channel,
+            apply_state_from_flow=lambda flow: self._apply_upload_queue_state(getattr(flow, "state")),
+            set_process=self._set_upload_process,
+            on_success_from_flow=lambda flow: self._handle_upload_success(
                 uploaded_snapshot=uploaded_snapshot,
-                return_code=flow.return_code,
-            )
-        if flow.status == STATUS_SHUTDOWN:
-            return flow.return_code
-        self._apply_non_success_process_exit_feedback(
-            channel=CHANNEL_UPLOAD,
-            status=str(flow.status),
-            code=code,
-        )
-        self.pending_source_changes_during_upload = False
-        return flow.return_code
-
-    def _collect_active_upload_probe_inputs(self) -> tuple[int, tuple[str, ...] | None, float]:
-        current_json_count = self.get_json_count()
-        current_zip_signature: tuple[str, ...] | None = None
-        if self.settings.inspect_zip_files:
-            current_zip_signature = self.get_zip_signature()
-        return current_json_count, current_zip_signature, time.monotonic()
-
-    def _decide_active_upload_probe(
-        self,
-        *,
-        current_json_count: int,
-        current_zip_signature: tuple[str, ...] | None,
-        now_monotonic: float,
-    ) -> ActiveUploadProbeDecision:
-        return decide_active_upload_probe(
-            state=ActiveUploadProbeState(
-                pending_source_changes=self.pending_source_changes_during_upload,
-                last_json_count=self.last_json_count,
-                last_zip_signature=self.last_zip_signature,
-                last_deep_scan_at=self.last_active_upload_deep_scan_at,
+                return_code=getattr(flow, "return_code"),
             ),
-            upload_running=True,
-            current_json_count=current_json_count,
-            inspect_zip_files=self.settings.inspect_zip_files,
-            current_zip_signature=current_zip_signature,
-            now_monotonic=now_monotonic,
-            deep_scan_interval_seconds=self.settings.active_upload_deep_scan_interval_seconds,
-        )
-
-    def _apply_active_upload_probe_state(self, *, decision: ActiveUploadProbeDecision) -> None:
-        self.pending_source_changes_during_upload = decision.state.pending_source_changes
-        self.last_json_count = decision.state.last_json_count
-        self.last_zip_signature = decision.state.last_zip_signature
-        self.last_active_upload_deep_scan_at = decision.state.last_deep_scan_at
-        self.runtime.upload.pending_source_changes_during_upload = self.pending_source_changes_during_upload
-        self.runtime.upload.last_active_upload_deep_scan_at = self.last_active_upload_deep_scan_at
-        self.runtime.snapshot.last_json_count = self.last_json_count
-        self.runtime.snapshot.last_zip_signature = self.last_zip_signature
-
-    def _log_active_upload_source_change_if_needed(self, *, decision: ActiveUploadProbeDecision) -> None:
-        if not decision.should_log_detection:
-            return
-        log(
-            "Detected source changes during active upload ("
-            + ",".join(decision.changed_reasons)
-            + "). Will trigger immediate deep upload check after batch completion."
-        )
-
-    def _refresh_upload_queue_during_active_upload(self) -> int:
-        log("Refreshing upload queue immediately during active upload.")
-        return self.check_and_maybe_upload(
-            force_deep_scan=True,
-            preserve_retry_state=True,
-            skip_stability_wait=True,
-            queue_reason="active-upload source changes",
+            on_non_success=lambda: setattr(self, "pending_source_changes_during_upload", False),
         )
 
     def probe_changes_during_active_upload(self) -> int:
+        def _collect_inputs() -> tuple[int, tuple[str, ...] | None, float]:
+            current_json_count = self.get_json_count()
+            current_zip_signature: tuple[str, ...] | None = None
+            if self.settings.inspect_zip_files:
+                current_zip_signature = self.get_zip_signature()
+            return current_json_count, current_zip_signature, time.monotonic()
+
+        def _decide(
+            *,
+            current_json_count: int,
+            current_zip_signature: tuple[str, ...] | None,
+            now_monotonic: float,
+        ):
+            return decide_active_upload_probe(
+                state=ActiveUploadProbeState(
+                    pending_source_changes=self.pending_source_changes_during_upload,
+                    last_json_count=self.last_json_count,
+                    last_zip_signature=self.last_zip_signature,
+                    last_deep_scan_at=self.last_active_upload_deep_scan_at,
+                ),
+                upload_running=True,
+                current_json_count=current_json_count,
+                inspect_zip_files=self.settings.inspect_zip_files,
+                current_zip_signature=current_zip_signature,
+                now_monotonic=now_monotonic,
+                deep_scan_interval_seconds=self.settings.active_upload_deep_scan_interval_seconds,
+            )
+
+        def _apply_state(*, decision) -> None:
+            self.pending_source_changes_during_upload = decision.state.pending_source_changes
+            self.last_json_count = decision.state.last_json_count
+            self.last_zip_signature = decision.state.last_zip_signature
+            self.last_active_upload_deep_scan_at = decision.state.last_deep_scan_at
+            self.runtime.upload.pending_source_changes_during_upload = self.pending_source_changes_during_upload
+            self.runtime.upload.last_active_upload_deep_scan_at = self.last_active_upload_deep_scan_at
+            self.runtime.snapshot.last_json_count = self.last_json_count
+            self.runtime.snapshot.last_zip_signature = self.last_zip_signature
+
+        def _log_if_needed(*, decision) -> None:
+            if not decision.should_log_detection:
+                return
+            log(
+                "Detected source changes during active upload ("
+                + ",".join(decision.changed_reasons)
+                + "). Will trigger immediate deep upload check after batch completion."
+            )
+
+        def _refresh_queue() -> int:
+            log("Refreshing upload queue immediately during active upload.")
+            return self.check_and_maybe_upload(
+                force_deep_scan=True,
+                preserve_retry_state=True,
+                skip_stability_wait=True,
+                queue_reason="active-upload source changes",
+            )
+
         return run_active_upload_probe_cycle(
             upload_running=self.upload_process is not None,
-            collect_active_upload_probe_inputs=self._collect_active_upload_probe_inputs,
-            decide_active_upload_probe=self._decide_active_upload_probe,
-            apply_active_upload_probe_state=self._apply_active_upload_probe_state,
-            log_active_upload_source_change_if_needed=self._log_active_upload_source_change_if_needed,
-            refresh_upload_queue_during_active_upload=self._refresh_upload_queue_during_active_upload,
+            collect_active_upload_probe_inputs=_collect_inputs,
+            decide_active_upload_probe=_decide,
+            apply_active_upload_probe_state=_apply_state,
+            log_active_upload_source_change_if_needed=_log_if_needed,
+            refresh_upload_queue_during_active_upload=_refresh_queue,
         )
 
     def handle_failure(self, stage: str, code: int) -> bool:
@@ -1634,136 +1633,6 @@ class AutoMaintainer:
             return True
         return False
 
-    def _current_upload_scan_inputs(self) -> tuple[int, tuple[str, ...]]:
-        current_json_count = self.get_json_count()
-        current_zip_signature = self.get_zip_signature() if self.settings.inspect_zip_files else tuple()
-        return current_json_count, current_zip_signature
-
-    def _should_run_upload_deep_scan(
-        self,
-        *,
-        force_deep_scan: bool,
-        current_json_count: int,
-        current_zip_signature: tuple[str, ...],
-    ) -> bool:
-        cadence = decide_upload_deep_scan(
-            force_deep_scan=force_deep_scan,
-            pending_upload_retry=self.pending_upload_retry,
-            current_json_count=current_json_count,
-            last_json_count=self.last_json_count,
-            inspect_zip_files=self.settings.inspect_zip_files,
-            current_zip_signature=current_zip_signature,
-            last_zip_signature=self.last_zip_signature,
-            deep_scan_counter=self.deep_scan_counter,
-            deep_scan_interval_loops=self.settings.deep_scan_interval_loops,
-        )
-        self.deep_scan_counter = cadence.next_deep_scan_counter
-        self.runtime.upload.deep_scan_counter = self.deep_scan_counter
-        return cadence.should_deep_scan
-
-    def _refresh_upload_scan_inputs_after_zip_if_needed(
-        self,
-        *,
-        current_json_count: int,
-        current_zip_signature: tuple[str, ...],
-    ) -> tuple[int, tuple[str, ...]]:
-        if not self.settings.inspect_zip_files:
-            return current_json_count, current_zip_signature
-        zip_changed = self.inspect_zip_archives()
-        if not zip_changed:
-            return current_json_count, current_zip_signature
-        return self.get_json_count(), self.get_zip_signature()
-
-    def _resolve_stable_upload_snapshot(
-        self,
-        *,
-        current_snapshot: list[str],
-        skip_stability_wait: bool,
-    ) -> tuple[int, list[str] | None]:
-        if skip_stability_wait:
-            return 0, current_snapshot
-        log(f"Detected JSON changes. Waiting {self.settings.upload_stable_wait_seconds}s for stability...")
-        stable_wait_exit, stable_snapshot = self.wait_for_stable_snapshot(current_snapshot)
-        if stable_wait_exit != 0:
-            return stable_wait_exit, None
-        if stable_snapshot is None:
-            return 130, None
-        return 0, stable_snapshot
-
-    def _record_upload_scan_baseline(
-        self,
-        *,
-        snapshot: list[str],
-        json_count: int,
-        zip_signature: tuple[str, ...],
-    ) -> None:
-        self.write_snapshot(self.stable_snapshot_file, snapshot)
-        self.last_json_count = json_count
-        if self.settings.inspect_zip_files:
-            self.last_zip_signature = zip_signature
-        self.runtime.snapshot.last_json_count = self.last_json_count
-        self.runtime.snapshot.last_zip_signature = self.last_zip_signature
-
-    def _handle_upload_no_changes_detected(
-        self,
-        *,
-        current_snapshot: list[str],
-        current_json_count: int,
-        current_zip_signature: tuple[str, ...],
-        preserve_retry_state: bool,
-    ) -> int:
-        self._record_upload_scan_baseline(
-            snapshot=current_snapshot,
-            json_count=current_json_count,
-            zip_signature=current_zip_signature,
-        )
-        state = mark_upload_no_changes(
-            state=self._upload_queue_state(),
-            preserve_retry_state=preserve_retry_state,
-        )
-        self._apply_upload_queue_state(state)
-        return 0
-
-    def _handle_upload_no_pending_discovered(
-        self,
-        *,
-        stable_snapshot: list[str],
-        current_zip_signature: tuple[str, ...],
-        preserve_retry_state: bool,
-    ) -> int:
-        state = mark_upload_no_pending_discovered(
-            state=self._upload_queue_state(),
-            preserve_retry_state=preserve_retry_state,
-        )
-        self._apply_upload_queue_state(state)
-        self._record_upload_scan_baseline(
-            snapshot=stable_snapshot,
-            json_count=len(stable_snapshot),
-            zip_signature=current_zip_signature,
-        )
-        if self.pending_upload_snapshot is None:
-            self.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_IDLE, done=0, total=0, force_render=True)
-        return 0
-
-    def _queue_pending_upload_snapshot(
-        self,
-        *,
-        pending_snapshot: list[str],
-        queue_reason: str,
-        preserve_retry_state: bool,
-    ) -> int:
-        merge_result = merge_pending_upload_snapshot(
-            state=self._upload_queue_state(),
-            discovered_pending_snapshot=pending_snapshot,
-            queue_reason=queue_reason,
-            preserve_retry_state=preserve_retry_state,
-        )
-        self._apply_upload_queue_state(merge_result.state)
-        merged_pending = merge_result.merged_pending_snapshot
-        log(f"Upload batch queued. pending={len(merged_pending)}")
-        self.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_PENDING, force_render=True)
-        return 0
-
     def check_and_maybe_upload(
         self,
         force_deep_scan: bool = False,
@@ -1772,21 +1641,144 @@ class AutoMaintainer:
         skip_stability_wait: bool = False,
         queue_reason: str = "detected JSON changes",
     ) -> int:
+        def _current_upload_scan_inputs() -> tuple[int, tuple[str, ...]]:
+            current_json_count = self.get_json_count()
+            current_zip_signature = self.get_zip_signature() if self.settings.inspect_zip_files else tuple()
+            return current_json_count, current_zip_signature
+
+        def _should_run_upload_deep_scan(
+            *,
+            force_deep_scan: bool,
+            current_json_count: int,
+            current_zip_signature: tuple[str, ...],
+        ) -> bool:
+            cadence = decide_upload_deep_scan(
+                force_deep_scan=force_deep_scan,
+                pending_upload_retry=self.pending_upload_retry,
+                current_json_count=current_json_count,
+                last_json_count=self.last_json_count,
+                inspect_zip_files=self.settings.inspect_zip_files,
+                current_zip_signature=current_zip_signature,
+                last_zip_signature=self.last_zip_signature,
+                deep_scan_counter=self.deep_scan_counter,
+                deep_scan_interval_loops=self.settings.deep_scan_interval_loops,
+            )
+            self.deep_scan_counter = cadence.next_deep_scan_counter
+            self.runtime.upload.deep_scan_counter = self.deep_scan_counter
+            return cadence.should_deep_scan
+
+        def _refresh_upload_scan_inputs_after_zip_if_needed(
+            *,
+            current_json_count: int,
+            current_zip_signature: tuple[str, ...],
+        ) -> tuple[int, tuple[str, ...]]:
+            if not self.settings.inspect_zip_files:
+                return current_json_count, current_zip_signature
+            zip_changed = self.inspect_zip_archives()
+            if not zip_changed:
+                return current_json_count, current_zip_signature
+            return self.get_json_count(), self.get_zip_signature()
+
+        def _resolve_stable_upload_snapshot(
+            *,
+            current_snapshot: list[str],
+            skip_stability_wait: bool,
+        ) -> tuple[int, list[str] | None]:
+            if skip_stability_wait:
+                return 0, current_snapshot
+            log(f"Detected JSON changes. Waiting {self.settings.upload_stable_wait_seconds}s for stability...")
+            stable_wait_exit, stable_snapshot = self.wait_for_stable_snapshot(current_snapshot)
+            if stable_wait_exit != 0:
+                return stable_wait_exit, None
+            if stable_snapshot is None:
+                return 130, None
+            return 0, stable_snapshot
+
+        def _record_upload_scan_baseline(
+            *,
+            snapshot: list[str],
+            json_count: int,
+            zip_signature: tuple[str, ...],
+        ) -> None:
+            self.write_snapshot(self.stable_snapshot_file, snapshot)
+            self.last_json_count = json_count
+            if self.settings.inspect_zip_files:
+                self.last_zip_signature = zip_signature
+            self.runtime.snapshot.last_json_count = self.last_json_count
+            self.runtime.snapshot.last_zip_signature = self.last_zip_signature
+
+        def _handle_upload_no_changes_detected(
+            *,
+            current_snapshot: list[str],
+            current_json_count: int,
+            current_zip_signature: tuple[str, ...],
+            preserve_retry_state: bool,
+        ) -> int:
+            _record_upload_scan_baseline(
+                snapshot=current_snapshot,
+                json_count=current_json_count,
+                zip_signature=current_zip_signature,
+            )
+            state = mark_upload_no_changes(
+                state=self._upload_queue_state(),
+                preserve_retry_state=preserve_retry_state,
+            )
+            self._apply_upload_queue_state(state)
+            return 0
+
+        def _handle_upload_no_pending_discovered(
+            *,
+            stable_snapshot: list[str],
+            current_zip_signature: tuple[str, ...],
+            preserve_retry_state: bool,
+        ) -> int:
+            state = mark_upload_no_pending_discovered(
+                state=self._upload_queue_state(),
+                preserve_retry_state=preserve_retry_state,
+            )
+            self._apply_upload_queue_state(state)
+            _record_upload_scan_baseline(
+                snapshot=stable_snapshot,
+                json_count=len(stable_snapshot),
+                zip_signature=current_zip_signature,
+            )
+            if self.pending_upload_snapshot is None:
+                self.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_IDLE, done=0, total=0, force_render=True)
+            return 0
+
+        def _queue_pending_upload_snapshot(
+            *,
+            pending_snapshot: list[str],
+            queue_reason: str,
+            preserve_retry_state: bool,
+        ) -> int:
+            merge_result = merge_pending_upload_snapshot(
+                state=self._upload_queue_state(),
+                discovered_pending_snapshot=pending_snapshot,
+                queue_reason=queue_reason,
+                preserve_retry_state=preserve_retry_state,
+            )
+            self._apply_upload_queue_state(merge_result.state)
+            merged_pending = merge_result.merged_pending_snapshot
+            log(f"Upload batch queued. pending={len(merged_pending)}")
+            self.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_PENDING, force_render=True)
+            return 0
+
         return run_upload_scan_cycle(
             force_deep_scan=force_deep_scan,
             preserve_retry_state=preserve_retry_state,
             skip_stability_wait=skip_stability_wait,
             queue_reason=queue_reason,
-            current_upload_scan_inputs=self._current_upload_scan_inputs,
-            should_run_upload_deep_scan=self._should_run_upload_deep_scan,
-            refresh_upload_scan_inputs_after_zip_if_needed=self._refresh_upload_scan_inputs_after_zip_if_needed,
+            current_upload_scan_inputs=_current_upload_scan_inputs,
+            should_run_upload_deep_scan=_should_run_upload_deep_scan,
+            refresh_upload_scan_inputs_after_zip_if_needed=_refresh_upload_scan_inputs_after_zip_if_needed,
             build_current_snapshot=lambda: self.build_snapshot(self.current_snapshot_file),
             read_last_uploaded_snapshot=lambda: self.read_snapshot(self.last_uploaded_snapshot_file),
-            handle_upload_no_changes_detected=self._handle_upload_no_changes_detected,
-            resolve_stable_upload_snapshot=self._resolve_stable_upload_snapshot,
+            handle_upload_no_changes_detected=_handle_upload_no_changes_detected,
+            resolve_stable_upload_snapshot=_resolve_stable_upload_snapshot,
             compute_pending_upload_snapshot=compute_pending_upload_snapshot_rows,
-            handle_upload_no_pending_discovered=self._handle_upload_no_pending_discovered,
-            queue_pending_upload_snapshot=self._queue_pending_upload_snapshot,
+            handle_upload_no_pending_discovered=_handle_upload_no_pending_discovered,
+            queue_pending_upload_snapshot=_queue_pending_upload_snapshot,
         )
 
 

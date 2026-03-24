@@ -128,6 +128,7 @@ from cwma.auto.upload_postprocess import (
 )
 from cwma.auto.upload_cleanup import cleanup_uploaded_files, prune_empty_dirs_under
 from cwma.auto.upload_scan_cadence import decide_upload_deep_scan
+from cwma.auto.ui_runtime import UiRuntime, UiRuntimeState as UiPanelRuntimeState
 from cwma.auto.channel_status import (
     CHANNEL_MAINTAIN,
     CHANNEL_UPLOAD,
@@ -154,6 +155,64 @@ from cwma.auto.zip_intake import (
 
 
 class AutoModuleTests(unittest.TestCase):
+    def test_ui_runtime_on_stage_update_updates_progress_and_renders(self) -> None:
+        rendered: list[list[str]] = []
+        state = UiPanelRuntimeState()
+        ui = UiRuntime(
+            state=state,
+            monotonic=lambda: 100.0,
+            build_panel_snapshot=lambda **_: mock.Mock(
+                upload_state="idle",
+                maintain_state="idle",
+                upload_stage="idle",
+                maintain_stage="idle",
+            ),
+            build_panel_lines=lambda **_: ["line-1", "line-2"],
+            apply_panel_colors=lambda lines, **_: lines,
+            render_panel=lambda lines: rendered.append(lines),
+        )
+
+        ui.on_stage_update(
+            CHANNEL_UPLOAD,
+            stage="upload",
+            done=3,
+            total=10,
+            force_render=True,
+        )
+
+        self.assertEqual(state.upload_progress_state["stage"], "upload")
+        self.assertEqual(state.upload_progress_state["done"], 3)
+        self.assertEqual(state.upload_progress_state["total"], 10)
+        self.assertEqual(len(rendered), 1)
+
+    def test_ui_runtime_render_if_needed_respects_interval_and_force(self) -> None:
+        rendered: list[list[str]] = []
+        ticks = iter([0.0, 0.05, 0.10])
+        state = UiPanelRuntimeState(
+            progress_render_interval_seconds=0.2,
+            progress_render_heartbeat_seconds=9.0,
+        )
+        ui = UiRuntime(
+            state=state,
+            monotonic=lambda: next(ticks),
+            build_panel_snapshot=lambda **_: mock.Mock(
+                upload_state="idle",
+                maintain_state="idle",
+                upload_stage="idle",
+                maintain_stage="idle",
+            ),
+            build_panel_lines=lambda **_: ["same"],
+            apply_panel_colors=lambda lines, **_: lines,
+            render_panel=lambda lines: rendered.append(lines),
+        )
+
+        ui.render_if_needed(force=True)
+        ui.render_if_needed(force=False)
+        ui.render_if_needed(force=True)
+
+        self.assertEqual(len(rendered), 2)
+        self.assertEqual(state.last_progress_signature, "same")
+
     def test_cleanup_uploaded_files_tracks_expected_counters(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

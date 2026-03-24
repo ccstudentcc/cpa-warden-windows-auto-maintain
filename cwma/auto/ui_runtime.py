@@ -37,6 +37,15 @@ class ApplyPanelColors(Protocol):
     ) -> list[str]: ...
 
 
+class UiStateLike(Protocol):
+    upload_progress_state: ProgressState
+    maintain_progress_state: ProgressState
+    last_progress_render_at: float
+    progress_render_interval_seconds: float
+    progress_render_heartbeat_seconds: float
+    last_progress_signature: str
+
+
 ProgressState = dict[str, int | str]
 
 
@@ -58,7 +67,7 @@ class UiRuntime:
     def __init__(
         self,
         *,
-        state: UiRuntimeState,
+        state: UiStateLike,
         monotonic: Callable[[], float],
         build_panel_snapshot: BuildPanelSnapshot,
         build_panel_lines: BuildPanelLines,

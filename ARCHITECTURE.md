@@ -64,21 +64,21 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Internal note: channel-specific success side effects are routed through dedicated handlers (`_handle_maintain_success` / `_handle_upload_success`) to isolate post-success orchestration
 - Internal note: startup/watch/upload-scan/shutdown core orchestration has begun delegating into `cwma/auto/runtime/*` adapters, and process launch/poll/terminate paths now route through `cwma/auto/process_supervisor.py`
 - Internal note: low-value host pass-through wrappers continue to be removed in small batches (ZIP/scope/snapshot helper seams now prefer direct module wiring where compatibility hooks are not needed)
-- Internal note: upload start path is decomposed into dedicated helper steps (batch sizing, start decision, start payload prep, process launch) to keep channel lifecycle branches small and testable
-- Internal note: non-success process-exit feedback application is deduplicated through `_apply_non_success_process_exit_feedback(...)` for maintain/upload poll paths
-- Internal note: maintain/upload poll prelude now uses `_collect_exited_process_code(...)` to standardize exited-process collection + process-handle clearing
+- Internal note: maintain/upload start orchestration now reuses `_start_and_finalize_channel_flow(...)` so channel launch, runtime-state apply, and feedback dispatch stay symmetric
+- Internal note: maintain/upload poll orchestration now reuses `_poll_and_finalize_channel_flow(...)` + `_finalize_polled_channel_flow(...)` to keep process-writeback and non-success feedback handling centralized
+- Internal note: maintain/upload process lifecycle (start-error + poll exit decisions) is now primarily delegated through `cwma/auto/runtime/channel_runtime.py`, with host methods focused on state writeback and channel-specific side effects
 - Internal note: upload-success postprocess path is decomposed into dedicated helper steps (snapshot sync, queue/progress apply, follow-up deep check, post-upload maintain queueing)
-- Internal note: maintain/upload poll lifecycle decision apply paths are deduplicated through `_decide_maintain_process_exit(...)` and `_decide_upload_process_exit(...)`
-- Internal note: upload deep-scan path (`check_and_maybe_upload`) is decomposed into dedicated helper steps for scan inputs, cadence gate, stability resolve, and queue/no-change state transitions
-- Internal note: active-upload source probe path is decomposed into dedicated helper steps for probe input capture, decision, state apply, and refresh dispatch
-- Internal note: maintain/upload poll decision dispatch is decomposed into dedicated helper methods (`_handle_maintain_poll_decision` / `_handle_upload_poll_decision`) for consistent success/shutdown/non-success routing
+- Internal note: host poll handlers keep only status-dispatch responsibilities after runtime poll delegation (`success` / `shutdown` / `retry/failed` feedback)
+- Internal note: upload deep-scan path (`check_and_maybe_upload`) now keeps thin-host callback closures for scan inputs, cadence gate, stability resolve, and queue/no-change state transitions
+- Internal note: active-upload source probe path now keeps thin-host callback closures for probe input capture, decision, state apply, and refresh dispatch
 - Internal note: maintain/upload start-error lifecycle now routes through dedicated decision + retry-feedback helpers to keep channel failure paths symmetric
-- Internal note: maintain/upload subprocess launch wiring is centralized via `_start_channel_process(...)`; maintain pre-start guards/skip handling are split into focused helpers
-- Internal note: upload deep-scan no-change/no-pending branches now share `_record_upload_scan_baseline(...)` to keep snapshot/count/signature updates consistent
+- Internal note: maintain/upload subprocess launch now routes through runtime channel start adapters (`start_maintain_channel` / `start_upload_channel`) backed by `process_supervisor`
+- Internal note: upload deep-scan no-change/no-pending branches share a single baseline-write callback inside `check_and_maybe_upload(...)` to keep snapshot/count/signature updates consistent
 - Internal note: startup/watch multi-stage execution now reuses `_run_stage_sequence(...)` for consistent ordered execution and fail-fast short-circuiting
 - Internal note: startup configuration log emission is centralized through `_settings_log_rows(...)` to reduce duplicated output wiring
 - Internal note: upload cleanup core logic is extracted to `cwma/auto/upload_cleanup.py`; app-layer methods now focus on orchestration + logging
 - Internal note: progress panel rendering now uses `cwma/auto/panel_render.py` pure helpers, with `render_progress_snapshot` split into snapshot build, line composition, and signature-gate steps
+- Internal note: `cwma/auto/ui_runtime.py` now handles progress-stage update and render cadence/signature gating through host delegation wrappers; remaining thin-host work is channel/watch/upload orchestration branches
 - Internal note: startup bootstrap decisions are extracted to `cwma/auto/startup_flow.py` (`seed`, `zip follow-up`, `startup action plan`) with `_run_startup_phase` focused on orchestration
 - Internal note: watch-cycle due-maintain advancement and upload-check gating are extracted to `cwma/auto/watch_cycle.py` for pure decision logic reuse
 - Test file: `tests/test_auto_maintain.py`

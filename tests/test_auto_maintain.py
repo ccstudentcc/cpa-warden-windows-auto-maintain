@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from auto_maintain import AutoMaintainer, Settings, load_settings
+from cwma.auto.channel_status import CHANNEL_UPLOAD
 from cwma.auto.runtime.startup_runtime import StartupRuntimeResult, StartupRuntimeState
 from cwma.auto.runtime.watch_runtime import WatchRuntimeResult, WatchRuntimeState
 from cwma.auto.snapshots import compute_uploaded_baseline as compute_uploaded_baseline_rows
@@ -23,11 +24,6 @@ class _DoneProcess:
 
     def poll(self) -> int:
         return self._code
-
-
-class _RunningProcess:
-    def poll(self) -> None:
-        return None
 
 
 def _build_settings(base_dir: Path, auth_dir: Path) -> Settings:
@@ -80,35 +76,6 @@ def _build_settings(base_dir: Path, auth_dir: Path) -> Settings:
 
 
 class AutoMaintainTests(unittest.TestCase):
-    def test_collect_exited_process_code_returns_none_when_running(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            auth_dir = base / "auth"
-            auth_dir.mkdir(parents=True, exist_ok=True)
-            maintainer = AutoMaintainer(_build_settings(base, auth_dir))
-
-            running = _RunningProcess()
-            maintainer.upload_process = running  # type: ignore[assignment]
-
-            code = maintainer._collect_exited_process_code(channel="upload")
-
-            self.assertIsNone(code)
-            self.assertIs(maintainer.upload_process, running)
-
-    def test_collect_exited_process_code_clears_process_on_exit(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            auth_dir = base / "auth"
-            auth_dir.mkdir(parents=True, exist_ok=True)
-            maintainer = AutoMaintainer(_build_settings(base, auth_dir))
-
-            maintainer.maintain_process = _DoneProcess(7)  # type: ignore[assignment]
-
-            code = maintainer._collect_exited_process_code(channel="maintain")
-
-            self.assertEqual(code, 7)
-            self.assertIsNone(maintainer.maintain_process)
-
     def test_run_startup_phase_applies_runtime_result_state_writeback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -985,6 +952,69 @@ class AutoMaintainTests(unittest.TestCase):
 
             self.assertEqual(first_count, maintainer.panel_height)
             self.assertEqual(log_mock.call_count, maintainer.panel_height)
+
+    def test_update_channel_progress_triggers_render_and_syncs_runtime_ui(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+
+            with mock.patch.object(
+                maintainer.ui_runtime,
+                "on_stage_update",
+                wraps=maintainer.ui_runtime.on_stage_update,
+            ) as on_stage_update:
+                maintainer.update_channel_progress(
+                    CHANNEL_UPLOAD,
+                    stage="upload",
+                    done=5,
+                    total=12,
+                    force_render=True,
+                )
+
+            on_stage_update.assert_called_once_with(
+                CHANNEL_UPLOAD,
+                stage="upload",
+                done=5,
+                total=12,
+                force_render=True,
+            )
+            self.assertEqual(maintainer.upload_progress_state["stage"], "upload")
+            self.assertEqual(maintainer.upload_progress_state["done"], 5)
+            self.assertEqual(maintainer.upload_progress_state["total"], 12)
+            self.assertEqual(maintainer.runtime.ui.upload_progress_state["stage"], "upload")
+            self.assertEqual(maintainer.runtime.ui.upload_progress_state["done"], 5)
+            self.assertEqual(maintainer.runtime.ui.upload_progress_state["total"], 12)
+
+    def test_render_progress_snapshot_syncs_runtime_ui_signature_and_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+            maintainer.progress_render_interval_seconds = 0
+
+            with mock.patch("auto_maintain.log"), mock.patch(
+                "auto_maintain.time.monotonic",
+                return_value=321.0,
+            ), mock.patch.object(
+                maintainer.ui_runtime,
+                "render_if_needed",
+                wraps=maintainer.ui_runtime.render_if_needed,
+            ) as render_if_needed:
+                maintainer.render_progress_snapshot(force=True)
+
+            render_if_needed.assert_called_once_with(force=True)
+            self.assertEqual(maintainer.last_progress_render_at, 321.0)
+            self.assertEqual(maintainer.runtime.ui.last_progress_render_at, 321.0)
+            self.assertEqual(
+                maintainer.runtime.ui.last_progress_signature,
+                maintainer.last_progress_signature,
+            )
+            self.assertNotEqual(maintainer.last_progress_signature, "")
 
     def test_parse_child_progress_line_upload_candidate_and_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
