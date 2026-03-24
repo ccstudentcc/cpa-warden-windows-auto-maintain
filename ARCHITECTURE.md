@@ -12,6 +12,62 @@ This repository provides a Windows-first automation layer on top of the CPA main
   - `uv run python auto_maintain.py --help` passed.
   - `uv run python -m unittest -q tests.test_warden_runtime_ops_module tests.test_warden_exports_module tests.test_warden_refill_service_module tests.test_warden_maintain_service_module tests.test_warden_upload_service_module tests.test_warden_scan_service_module tests.test_warden_db_schema_module tests.test_warden_db_repository_module tests.test_warden_management_api_module tests.test_warden_usage_probe_api_module tests.test_warden_models_module tests.test_warden_config_module tests.test_warden_cli_module tests.test_warden_interactive_module tests.test_warden_maintain_scope_module tests.test_warden_upload_scope_module` passed (`Ran 83 tests ... OK`).
 
+## Stage 4 Integration Hardening Contracts (AI-Executable)
+
+### Contract Matrix
+
+1. S4-C01 Channel lifecycle contract
+   - Allowed transitions: `pending -> running -> idle|retry|failed|shutdown`.
+   - Observable fields per transition: `channel`, `reason`, `attempt`, `scope`.
+   - Failure condition: unknown transition or missing transition log.
+
+2. S4-C02 Upload-to-maintain scope contract
+   - Incremental maintain scope must be derived only from completed upload batch outputs.
+   - Failure condition: scope entries not traceable to upload results.
+
+3. S4-C03 Full-maintain priority contract
+   - Full maintain due window has priority over incremental maintain.
+   - Failure condition: incremental maintain starts when full-maintain guard should defer.
+
+4. S4-C04 ZIP idempotency contract
+   - ZIP intake decision uses signature delta; unchanged signature must be idempotent.
+   - Failure condition: repeated extraction without signature delta.
+
+5. S4-C05 Cleanup safety contract
+   - Cleanup removes only confirmed-uploaded sources and empty directories.
+   - Failure condition: deletion of non-confirmed source file.
+
+6. S4-C06 Single-instance contract
+   - Launcher/runtime lock acquisition is required before loop start.
+   - Failure condition: active lock overridden without stale-lock proof.
+
+7. S4-C07 Retry and exit semantics contract
+   - Retry mapping must be deterministic; `--once` must return non-zero on unresolved failure.
+   - Failure condition: success exit while failed/pending work remains.
+
+### AI Execution Sequence (Do Not Reorder Without Reason)
+
+1. Contract mapping
+   - Build traceability map `{contract_id -> owner modules -> test files}`.
+   - Abort if any contract has no owner module.
+
+2. Deterministic harness build
+   - Prepare test fixtures for clock/process/io/lock outcomes.
+   - Avoid real network dependency for integration assertions.
+
+3. Case pack execution
+   - Pack A: upload + incremental maintain coupling (`S4-C02` + `S4-C01`).
+   - Pack B: full-maintain arbitration (`S4-C03`).
+   - Pack C: ZIP intake + cleanup idempotency (`S4-C04` + `S4-C05`).
+   - Pack D: lock + retry + once-exit semantics (`S4-C06` + `S4-C07`).
+
+4. Stage gate validation
+   - Run help regressions and Stage 4 integration matrix commands.
+   - Record command outputs and failing assertion fingerprints if any.
+
+5. Completion rule
+   - Stage 4 can be marked complete only when all `S4-C01..S4-C07` assertions pass.
+
 ## Module Map
 
 ### `cwma/apps/cpa_warden.py`
