@@ -15,5 +15,6 @@ cpa_warden_quota_accounts.json
 *.log
 .auto_maintain_state/
 auth_files/*
+.tmp_unittest_temp/
 !auth_files/.gitkeep
 IMPLEMENTATION_PLAN.md
