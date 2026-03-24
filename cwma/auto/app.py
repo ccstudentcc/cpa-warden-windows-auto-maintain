@@ -8,7 +8,6 @@ import subprocess
 import sys
 import threading
 import time
-import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, TextIO
@@ -48,13 +47,7 @@ from .channel_feedback import (
     maintain_pending_progress_stage,
 )
 from .channel_lifecycle import (
-    MaintainStartErrorDecision,
-    MaintainProcessExitDecision,
-    UploadStartErrorDecision,
-    UploadProcessExitDecision,
-    decide_maintain_process_exit,
     decide_maintain_start_error,
-    decide_upload_process_exit,
     decide_upload_start_error,
 )
 from .channel_start_prep import (
@@ -63,19 +56,18 @@ from .channel_start_prep import (
     prepare_maintain_start,
     prepare_upload_start,
 )
-from .channel_runner import poll_process_exit, start_channel_with_handler
+from .process_supervisor import (
+    poll_channel_exit,
+    terminate_channel,
+)
 from .dashboard import (
     apply_panel_colors as apply_dashboard_panel_colors,
-    color_text as dashboard_color_text,
     fit_panel_line as fit_dashboard_panel_line,
     panel_border_line as dashboard_border_line,
-    state_color_code as dashboard_state_color_code,
 )
 from .locking import (
     InstanceLockState,
     acquire_instance_lock as acquire_lock_state,
-    is_pid_running as is_pid_running_helper,
-    read_lock_pid as read_lock_pid_helper,
     release_instance_lock as release_lock_state,
 )
 from .maintain_queue import (
@@ -97,21 +89,52 @@ from .panel_render import (
     should_skip_render_by_signature_gate,
 )
 from .panel_snapshot import PanelSnapshot, build_panel_snapshot
-from .process_runner import terminate_running_process
 from .process_output import (
-    build_child_process_env as build_child_process_env_map,
+    build_child_process_env,
     decode_child_output_line as decode_process_output_line,
-    preferred_decoding_order as preferred_process_decoding_order,
     should_log_child_alert_line as should_log_process_alert_line,
 )
 from .progress_parser import parse_progress_line
 from .runtime_state import (
+    build_auto_runtime_state,
+    build_composed_maintain_runtime_state,
+    build_lifecycle_runtime_state,
     build_maintain_queue_state,
     build_maintain_runtime_state,
+    build_snapshot_runtime_state,
+    build_ui_runtime_state,
+    build_upload_runtime_state,
     build_upload_queue_state,
     unpack_maintain_queue_state,
     unpack_maintain_runtime_state,
     unpack_upload_queue_state,
+)
+from .runtime.shutdown_runtime import (
+    ShutdownRuntimeState,
+    current_loop_sleep_seconds as current_loop_sleep_seconds_runtime,
+    request_shutdown as request_shutdown_runtime,
+    sleep_with_shutdown as sleep_with_shutdown_runtime,
+    sleep_between_watch_cycles as sleep_between_watch_cycles_runtime,
+)
+from .runtime.channel_runtime import (
+    poll_maintain_channel,
+    poll_upload_channel,
+    start_maintain_channel,
+    start_upload_channel,
+)
+from .runtime.startup_runtime import (
+    StartupRuntimeDeps,
+    StartupRuntimeState,
+    run_startup_cycle,
+)
+from .runtime.upload_scan_runtime import (
+    run_active_upload_probe_cycle,
+    run_upload_scan_cycle,
+)
+from .runtime.watch_runtime import (
+    WatchRuntimeDeps,
+    WatchRuntimeState,
+    run_watch_iteration,
 )
 from .scope_files import write_scope_names
 from .snapshots import (
@@ -123,20 +146,11 @@ from .snapshots import (
     read_snapshot_lines as read_snapshot_lines_rows,
     write_snapshot_lines as write_snapshot_lines_rows,
 )
-from .startup_flow import (
-    build_startup_action_plan,
-    decide_startup_seed,
-    decide_startup_zip_follow_up,
-)
 from .zip_intake import (
     compute_zip_signature as compute_zip_signature_rows,
-    count_zip_files as count_zip_rows,
     extract_zip_with_bandizip as extract_zip_with_bandizip_rows,
     extract_zip_with_windows_builtin as extract_zip_with_windows_builtin_rows,
     inspect_zip_archives as inspect_zip_archives_rows,
-    list_zip_json_entries as list_zip_json_entries_rows,
-    list_zip_paths as list_zip_paths_rows,
-    ps_quote as ps_quote_rows,
 )
 from .upload_queue import (
     UploadQueueState,
@@ -152,10 +166,6 @@ from .upload_postprocess import (
 )
 from .upload_cleanup import cleanup_uploaded_files, prune_empty_dirs_under
 from ..scheduler.smart_scheduler import SmartSchedulerConfig, SmartSchedulerPolicy
-from .watch_cycle import (
-    decide_scheduled_maintain_enqueues,
-    decide_watch_upload_check_gate,
-)
 
 
 def log(message: str) -> None:
@@ -241,6 +251,67 @@ class AutoMaintainer:
                 ),
             )
         )
+        self.runtime = build_auto_runtime_state(
+            upload=build_upload_runtime_state(
+                queue=build_upload_queue_state(
+                    pending_snapshot=self.pending_upload_snapshot,
+                    pending_reason=self.pending_upload_reason,
+                    pending_retry=self.pending_upload_retry,
+                    inflight_snapshot=self.inflight_upload_snapshot,
+                    attempt=self.upload_attempt,
+                    retry_due_at=self.upload_retry_due_at,
+                ),
+                deep_scan_counter=self.deep_scan_counter,
+                pending_source_changes_during_upload=self.pending_source_changes_during_upload,
+                last_active_upload_deep_scan_at=self.last_active_upload_deep_scan_at,
+            ),
+            maintain=build_composed_maintain_runtime_state(
+                queue=build_maintain_queue_state(
+                    pending=self.pending_maintain,
+                    reason=self.pending_maintain_reason,
+                    names=self.pending_maintain_names,
+                ),
+                inflight_names=self.inflight_maintain_names,
+                attempt=self.maintain_attempt,
+                retry_due_at=self.maintain_retry_due_at,
+                last_incremental_started_at=self.last_incremental_maintain_started_at,
+                last_incremental_defer_reason=self.last_incremental_defer_reason,
+            ),
+            snapshot=build_snapshot_runtime_state(
+                last_uploaded_snapshot_file=self.last_uploaded_snapshot_file,
+                current_snapshot_file=self.current_snapshot_file,
+                stable_snapshot_file=self.stable_snapshot_file,
+                last_json_count=self.last_json_count,
+                last_zip_signature=self.last_zip_signature,
+                zip_extract_processed_signatures=self.zip_extract_processed_signatures,
+            ),
+            ui=build_ui_runtime_state(
+                upload_progress_state=self.upload_progress_state,
+                maintain_progress_state=self.maintain_progress_state,
+                last_progress_render_at=self.last_progress_render_at,
+                progress_render_interval_seconds=self.progress_render_interval_seconds,
+                progress_render_heartbeat_seconds=self.progress_render_heartbeat_seconds,
+                last_progress_signature=self.last_progress_signature,
+                panel_height=self.panel_height,
+                panel_title=self.panel_title,
+                panel_enabled=self.panel_enabled,
+                panel_color_enabled=self.panel_color_enabled,
+                panel_initialized=self.panel_initialized,
+            ),
+            lifecycle=build_lifecycle_runtime_state(
+                instance_started_at=self.instance_started_at,
+                shutdown_requested=self.shutdown_requested,
+                shutdown_reason=self.shutdown_reason,
+                instance_lock_token=self.instance_lock_token,
+                instance_lock_handle=self.instance_lock_handle,
+                upload_process=self.upload_process,
+                maintain_process=self.maintain_process,
+                upload_output_thread=self.upload_output_thread,
+                maintain_output_thread=self.maintain_output_thread,
+                windows_console_handler=self._windows_console_handler,
+                next_maintain_due_at=self.next_maintain_due_at,
+            ),
+        )
 
     def ensure_paths(self) -> None:
         if not self.cpa_script.exists():
@@ -261,108 +332,72 @@ class AutoMaintainer:
         self.maintain_cmd_output_file.parent.mkdir(parents=True, exist_ok=True)
         self.upload_cmd_output_file.parent.mkdir(parents=True, exist_ok=True)
 
+    def _apply_startup_runtime_state(self, state: StartupRuntimeState) -> None:
+        self.last_json_count = state.last_json_count
+        self.last_zip_signature = state.last_zip_signature
+        self.next_maintain_due_at = state.next_maintain_due_at
+        self.runtime.snapshot.last_json_count = self.last_json_count
+        self.runtime.snapshot.last_zip_signature = self.last_zip_signature
+        self.runtime.lifecycle.next_maintain_due_at = self.next_maintain_due_at
+
+    def _apply_watch_runtime_state(self, state: WatchRuntimeState) -> None:
+        self.next_maintain_due_at = state.next_maintain_due_at
+        self.runtime.lifecycle.next_maintain_due_at = self.next_maintain_due_at
+
     def _run_startup_phase(self) -> int:
-        initial_snapshot = self.build_snapshot(self.current_snapshot_file)
-        seed_decision = decide_startup_seed(
-            last_uploaded_snapshot_exists=self.last_uploaded_snapshot_file.exists(),
+        result = run_startup_cycle(
+            state=StartupRuntimeState(
+                last_json_count=self.last_json_count,
+                last_zip_signature=self.last_zip_signature,
+                next_maintain_due_at=self.next_maintain_due_at,
+            ),
+            deps=StartupRuntimeDeps(
+                build_snapshot=lambda: self.build_snapshot(self.current_snapshot_file),
+                uploaded_snapshot_exists=self.last_uploaded_snapshot_file.exists,
+                write_uploaded_snapshot=lambda rows: self.write_snapshot(self.last_uploaded_snapshot_file, rows),
+                get_json_count=self.get_json_count,
+                inspect_zip_files=self.settings.inspect_zip_files,
+                get_zip_signature=self.get_zip_signature,
+                inspect_zip_archives=self.inspect_zip_archives,
+                run_stage=self._run_stage,
+                run_stage_sequence=self._run_stage_sequence,
+                check_and_maybe_upload=self.check_and_maybe_upload,
+                queue_maintain=self.queue_maintain,
+                run_maintain_on_start=self.settings.run_maintain_on_start,
+                run_upload_on_start=self.settings.run_upload_on_start,
+                maybe_start_maintain=self.maybe_start_maintain,
+                maybe_start_upload=self.maybe_start_upload,
+                render_progress_snapshot=self.render_progress_snapshot,
+                monotonic=time.monotonic,
+                maintain_interval_seconds=self.settings.maintain_interval_seconds,
+                log=log,
+            ),
         )
-        if seed_decision.should_seed_uploaded_snapshot:
-            self.write_snapshot(self.last_uploaded_snapshot_file, initial_snapshot)
-
-        self.last_json_count = self.get_json_count()
-        if self.settings.inspect_zip_files:
-            self.last_zip_signature = self.get_zip_signature()
-
-        startup_zip_changed = False
-        if self.settings.inspect_zip_files:
-            startup_zip_changed = self.inspect_zip_archives()
-            self.last_json_count = self.get_json_count()
-            self.last_zip_signature = self.get_zip_signature()
-        zip_follow_up = decide_startup_zip_follow_up(
-            inspect_zip_files=self.settings.inspect_zip_files,
-            startup_zip_changed=startup_zip_changed,
-        )
-        if zip_follow_up.should_run_upload_check:
-            if zip_follow_up.log_message:
-                log(zip_follow_up.log_message)
-            handled_exit = self._run_stage(
-                "startup zip-upload-check",
-                lambda: self.check_and_maybe_upload(force_deep_scan=True),
-            )
-            if handled_exit != 0:
-                return handled_exit
-
-        startup_action_plan = build_startup_action_plan(
-            run_maintain_on_start=self.settings.run_maintain_on_start,
-            run_upload_on_start=self.settings.run_upload_on_start,
-        )
-        if startup_action_plan.run_startup_maintain:
-            self.queue_maintain("startup maintain")
-
-        if startup_action_plan.run_startup_upload_check:
-            handled_exit = self._run_stage("startup upload-check", self.check_and_maybe_upload)
-            if handled_exit != 0:
-                return handled_exit
-
-        now = time.monotonic()
-        self.next_maintain_due_at = now + self.settings.maintain_interval_seconds
-
-        handled_exit = self._run_stage_sequence(
-            (
-                ("startup maintain command", self.maybe_start_maintain),
-                ("startup upload command", self.maybe_start_upload),
-            )
-        )
-        if handled_exit != 0:
-            return handled_exit
-        self.render_progress_snapshot(force=True)
-        return 0
+        self._apply_startup_runtime_state(result.state)
+        return result.exit_code
 
     def _run_watch_iteration(self, now: float) -> int:
-        scheduled_decision = decide_scheduled_maintain_enqueues(
-            next_maintain_due_at=self.next_maintain_due_at,
+        result = run_watch_iteration(
             now_monotonic=now,
-            maintain_interval_seconds=self.settings.maintain_interval_seconds,
+            state=WatchRuntimeState(next_maintain_due_at=self.next_maintain_due_at),
+            deps=WatchRuntimeDeps(
+                maintain_interval_seconds=self.settings.maintain_interval_seconds,
+                upload_running=lambda: self.upload_process is not None,
+                has_pending_upload_snapshot=lambda: self.pending_upload_snapshot is not None,
+                queue_maintain=self.queue_maintain,
+                run_stage=self._run_stage,
+                run_stage_sequence=self._run_stage_sequence,
+                poll_upload_process=self.poll_upload_process,
+                poll_maintain_process=self.poll_maintain_process,
+                probe_changes_during_active_upload=self.probe_changes_during_active_upload,
+                check_and_maybe_upload=self.check_and_maybe_upload,
+                maybe_start_upload=self.maybe_start_upload,
+                maybe_start_maintain=self.maybe_start_maintain,
+                render_progress_snapshot=self.render_progress_snapshot,
+            ),
         )
-        for _ in range(scheduled_decision.enqueue_count):
-            self.queue_maintain("scheduled maintain")
-        self.next_maintain_due_at = scheduled_decision.next_maintain_due_at
-
-        handled_exit = self._run_stage_sequence(
-            (
-                ("upload command", self.poll_upload_process),
-                ("maintain command", self.poll_maintain_process),
-            )
-        )
-        if handled_exit != 0:
-            return handled_exit
-
-        if self.upload_process is not None:
-            handled_exit = self._run_stage("active-upload source probe", self.probe_changes_during_active_upload)
-            if handled_exit != 0:
-                return handled_exit
-
-        # Build new upload batch only when current batch is not running.
-        upload_check_gate = decide_watch_upload_check_gate(
-            upload_running=self.upload_process is not None,
-            has_pending_upload_snapshot=self.pending_upload_snapshot is not None,
-        )
-        if upload_check_gate.should_run_upload_check:
-            handled_exit = self._run_stage("watch upload-check", self.check_and_maybe_upload)
-            if handled_exit != 0:
-                return handled_exit
-
-        handled_exit = self._run_stage_sequence(
-            (
-                ("watch upload command", self.maybe_start_upload),
-                ("watch maintain command", self.maybe_start_maintain),
-            )
-        )
-        if handled_exit != 0:
-            return handled_exit
-
-        self.render_progress_snapshot()
-        return 0
+        self._apply_watch_runtime_state(result.state)
+        return result.exit_code
 
     def _run_stage_sequence(self, stages: Iterable[tuple[str, Callable[[], int]]]) -> int:
         for stage, runner in stages:
@@ -391,17 +426,13 @@ class AutoMaintainer:
         return nothing_running and nothing_pending
 
     def _sleep_between_watch_cycles(self) -> int | None:
-        if self.settings.run_once:
-            if self._is_run_once_cycle_complete():
-                log("Run-once cycle finished.")
-                return 0
-            if not self.sleep_with_shutdown(1):
-                return 130
-            return None
-
-        if not self.sleep_with_shutdown(self.current_loop_sleep_seconds()):
-            return 130
-        return None
+        return sleep_between_watch_cycles_runtime(
+            run_once=self.settings.run_once,
+            is_run_once_cycle_complete=self._is_run_once_cycle_complete,
+            sleep_with_shutdown_fn=self.sleep_with_shutdown,
+            current_loop_sleep_seconds_fn=self.current_loop_sleep_seconds,
+            log=log,
+        )
 
     def run(self) -> int:
         self.ensure_paths()
@@ -550,17 +581,24 @@ class AutoMaintainer:
         self.request_shutdown(f"SIGNAL_{signum}")
 
     def request_shutdown(self, reason: str) -> None:
-        if self.shutdown_requested:
-            return
-        self.shutdown_requested = True
-        self.shutdown_reason = reason
-        log(f"Shutdown requested: {reason}")
-        self.terminate_active_processes()
+        state = request_shutdown_runtime(
+            state=ShutdownRuntimeState(
+                shutdown_requested=self.shutdown_requested,
+                shutdown_reason=self.shutdown_reason,
+            ),
+            reason=reason,
+            log=log,
+            terminate_active_processes=self.terminate_active_processes,
+        )
+        self.shutdown_requested = state.shutdown_requested
+        self.shutdown_reason = state.shutdown_reason
+        self.runtime.lifecycle.shutdown_requested = self.shutdown_requested
+        self.runtime.lifecycle.shutdown_reason = self.shutdown_reason
 
     def terminate_process(self, proc: subprocess.Popen | None, *, name: str) -> None:
-        terminate_running_process(
-            proc=proc,
-            name=name,
+        terminate_channel(
+            process=proc,
+            channel=name,
             log=log,
             terminate_timeout_seconds=8,
             kill_wait_seconds=5,
@@ -571,20 +609,18 @@ class AutoMaintainer:
         self.terminate_process(self.maintain_process, name=CHANNEL_MAINTAIN)
 
     def sleep_with_shutdown(self, total_seconds: int) -> bool:
-        if total_seconds <= 0:
-            return not self.shutdown_requested
-        deadline = time.time() + total_seconds
-        while time.time() < deadline:
-            if self.shutdown_requested:
-                return False
-            remaining = deadline - time.time()
-            time.sleep(min(0.5, max(0.05, remaining)))
-        return not self.shutdown_requested
+        return sleep_with_shutdown_runtime(
+            shutdown_requested=self.shutdown_requested,
+            total_seconds=total_seconds,
+        )
 
     def current_loop_sleep_seconds(self) -> int:
-        if self.upload_process is None and self.maintain_process is None:
-            return self.settings.watch_interval_seconds
-        return min(self.settings.watch_interval_seconds, self.settings.active_probe_interval_seconds)
+        return current_loop_sleep_seconds_runtime(
+            upload_running=self.upload_process is not None,
+            maintain_running=self.maintain_process is not None,
+            watch_interval_seconds=self.settings.watch_interval_seconds,
+            active_probe_interval_seconds=self.settings.active_probe_interval_seconds,
+        )
 
     def wait_for_stable_snapshot(self, baseline_snapshot: list[str]) -> tuple[int, list[str] | None]:
         stable_seconds = self.settings.upload_stable_wait_seconds
@@ -613,12 +649,6 @@ class AutoMaintainer:
                     f"Reset timer to {stable_seconds}s."
                 )
 
-    def is_pid_running(self, pid: int) -> bool:
-        return is_pid_running_helper(pid)
-
-    def read_lock_pid(self) -> int | None:
-        return read_lock_pid_helper(self.instance_lock_file)
-
     def acquire_instance_lock(self) -> None:
         state = acquire_lock_state(
             lock_file=self.instance_lock_file,
@@ -628,6 +658,8 @@ class AutoMaintainer:
         )
         self.instance_lock_token = state.token
         self.instance_lock_handle = state.handle
+        self.runtime.lifecycle.instance_lock_token = self.instance_lock_token
+        self.runtime.lifecycle.instance_lock_handle = self.instance_lock_handle
 
     def acquire_instance_lock_windows(self) -> None:
         if os.name != "nt":
@@ -640,6 +672,8 @@ class AutoMaintainer:
         )
         self.instance_lock_token = state.token
         self.instance_lock_handle = state.handle
+        self.runtime.lifecycle.instance_lock_token = self.instance_lock_token
+        self.runtime.lifecycle.instance_lock_handle = self.instance_lock_handle
 
     def release_instance_lock(self) -> None:
         state = InstanceLockState(token=self.instance_lock_token, handle=self.instance_lock_handle)
@@ -651,6 +685,8 @@ class AutoMaintainer:
         )
         self.instance_lock_token = next_state.token
         self.instance_lock_handle = next_state.handle
+        self.runtime.lifecycle.instance_lock_token = self.instance_lock_token
+        self.runtime.lifecycle.instance_lock_handle = self.instance_lock_handle
 
     def get_json_paths(self) -> list[Path]:
         return sorted(
@@ -661,17 +697,8 @@ class AutoMaintainer:
     def get_json_count(self) -> int:
         return len(self.get_json_paths())
 
-    def get_zip_paths(self) -> list[Path]:
-        return list_zip_paths_rows(self.settings.auth_dir)
-
     def get_zip_signature(self) -> tuple[str, ...]:
         return compute_zip_signature_rows(self.settings.auth_dir, log=log)
-
-    def get_zip_count(self) -> int:
-        return count_zip_rows(self.settings.auth_dir)
-
-    def zip_json_entries(self, archive: zipfile.ZipFile) -> list[str]:
-        return list_zip_json_entries_rows(archive)
 
     def inspect_zip_archives(self) -> bool:
         return inspect_zip_archives_rows(
@@ -681,18 +708,6 @@ class AutoMaintainer:
             delete_zip_after_extract=self.settings.delete_zip_after_extract,
             processed_signatures=self.zip_extract_processed_signatures,
             extract_zip=self.extract_zip_with_bandizip,
-            log=log,
-        )
-
-    def _ps_quote(self, value: str) -> str:
-        return ps_quote_rows(value)
-
-    def extract_zip_with_windows_builtin(self, zip_path: Path, output_dir: Path) -> int:
-        return extract_zip_with_windows_builtin_rows(
-            zip_path=zip_path,
-            output_dir=output_dir,
-            base_dir=self.settings.base_dir,
-            timeout_seconds=self.settings.bandizip_timeout_seconds,
             log=log,
         )
 
@@ -710,7 +725,13 @@ class AutoMaintainer:
 
         if self.settings.use_windows_zip_fallback:
             log(f"Trying Windows built-in unzip fallback: {zip_path.name}")
-            return self.extract_zip_with_windows_builtin(zip_path, output_dir)
+            return extract_zip_with_windows_builtin_rows(
+                zip_path=zip_path,
+                output_dir=output_dir,
+                base_dir=self.settings.base_dir,
+                timeout_seconds=self.settings.bandizip_timeout_seconds,
+                log=log,
+            )
 
         return exit_code
 
@@ -729,30 +750,6 @@ class AutoMaintainer:
             paths=self.get_json_paths(),
             log=log,
         )
-
-    def compute_uploaded_baseline(
-        self,
-        existing_baseline: list[str],
-        uploaded_snapshot: list[str],
-        current_snapshot: list[str],
-    ) -> list[str]:
-        return compute_uploaded_baseline_rows(existing_baseline, uploaded_snapshot, current_snapshot)
-
-    def compute_pending_upload_snapshot(
-        self,
-        current_snapshot: list[str],
-        uploaded_baseline: list[str],
-    ) -> list[str]:
-        return compute_pending_upload_snapshot_rows(current_snapshot, uploaded_baseline)
-
-    def extract_names_from_snapshot(self, snapshot_lines: list[str]) -> set[str]:
-        return extract_names_from_snapshot_rows(snapshot_lines)
-
-    def write_maintain_names_scope(self, names: set[str]) -> Path:
-        return write_scope_names(self.maintain_names_file, names)
-
-    def write_upload_names_scope(self, names: set[str]) -> Path:
-        return write_scope_names(self.upload_names_file, names)
 
     def delete_uploaded_files_from_snapshot(self, snapshot_lines: list[str]) -> None:
         result = cleanup_uploaded_files(snapshot_lines)
@@ -792,8 +789,10 @@ class AutoMaintainer:
                 state["stage"] = stage
             if done is not None:
                 state["done"] = max(0, int(done))
-        if total is not None:
-            state["total"] = max(0, int(total))
+            if total is not None:
+                state["total"] = max(0, int(total))
+            self.runtime.ui.upload_progress_state = dict(self.upload_progress_state)
+            self.runtime.ui.maintain_progress_state = dict(self.maintain_progress_state)
         self.render_progress_snapshot(force=force_render)
 
     def mark_channel_running(self, name: str) -> None:
@@ -825,44 +824,8 @@ class AutoMaintainer:
             return text
         return text[: max(1, limit - 3)] + "..."
 
-    def _fit_panel_line(self, text: str) -> str:
-        return fit_dashboard_panel_line(text)
-
-    def _panel_border_line(self, char: str = "=") -> str:
-        return dashboard_border_line(char=char)
-
-    def _color_text(self, text: str, code: str) -> str:
-        return dashboard_color_text(text, code, enabled=self.panel_color_enabled)
-
-    def _state_color_code(self, state: str) -> str:
-        return dashboard_state_color_code(state)
-
-    def _apply_panel_colors(
-        self,
-        lines: list[str],
-        *,
-        upload_state: str,
-        maintain_state: str,
-        upload_stage: str,
-        maintain_stage: str,
-    ) -> list[str]:
-        return apply_dashboard_panel_colors(
-            lines,
-            enabled=self.panel_color_enabled,
-            upload_state=upload_state,
-            maintain_state=maintain_state,
-            upload_stage=upload_stage,
-            maintain_stage=maintain_stage,
-        )
-
-    def _preferred_decoding_order(self) -> list[str]:
-        return preferred_process_decoding_order()
-
     def decode_child_output_line(self, raw: bytes | str) -> str:
         return decode_process_output_line(raw)
-
-    def build_child_process_env(self) -> dict[str, str]:
-        return build_child_process_env_map()
 
     def should_log_child_alert_line(self, text: str) -> bool:
         return should_log_process_alert_line(text)
@@ -909,8 +872,8 @@ class AutoMaintainer:
         return build_plain_panel_lines(
             snapshot=panel_snapshot,
             context=context,
-            fit_line=self._fit_panel_line,
-            border_line=self._panel_border_line,
+            fit_line=fit_dashboard_panel_line,
+            border_line=dashboard_border_line,
         )
 
     def _should_skip_progress_render(self, *, force: bool, signature: str, now_monotonic: float) -> bool:
@@ -936,9 +899,12 @@ class AutoMaintainer:
                 return
             self.last_progress_render_at = now
             self.last_progress_signature = signature
+            self.runtime.ui.last_progress_render_at = self.last_progress_render_at
+            self.runtime.ui.last_progress_signature = self.last_progress_signature
 
-        panel_lines = self._apply_panel_colors(
+        panel_lines = apply_dashboard_panel_colors(
             panel_lines_plain,
+            enabled=self.panel_color_enabled,
             upload_state=panel_snapshot.upload_state,
             maintain_state=panel_snapshot.maintain_state,
             upload_stage=panel_snapshot.upload_stage,
@@ -1030,6 +996,7 @@ class AutoMaintainer:
             sys.stdout.write("\n" * self.panel_height)
             sys.stdout.flush()
             self.panel_initialized = True
+            self.runtime.ui.panel_initialized = self.panel_initialized
 
     def render_fixed_panel(self, lines: list[str]) -> None:
         if not self.panel_enabled:
@@ -1088,6 +1055,14 @@ class AutoMaintainer:
             self.upload_attempt,
             self.upload_retry_due_at,
         ) = unpack_upload_queue_state(state)
+        self.runtime.upload.queue = build_upload_queue_state(
+            pending_snapshot=self.pending_upload_snapshot,
+            pending_reason=self.pending_upload_reason,
+            pending_retry=self.pending_upload_retry,
+            inflight_snapshot=self.inflight_upload_snapshot,
+            attempt=self.upload_attempt,
+            retry_due_at=self.upload_retry_due_at,
+        )
 
     def _maintain_queue_state(self) -> MaintainQueueState:
         return build_maintain_queue_state(
@@ -1102,6 +1077,11 @@ class AutoMaintainer:
             self.pending_maintain_reason,
             self.pending_maintain_names,
         ) = unpack_maintain_queue_state(state)
+        self.runtime.maintain.queue = build_maintain_queue_state(
+            pending=self.pending_maintain,
+            reason=self.pending_maintain_reason,
+            names=self.pending_maintain_names,
+        )
 
     def _maintain_runtime_state(self) -> MaintainRuntimeState:
         return build_maintain_runtime_state(
@@ -1117,6 +1097,18 @@ class AutoMaintainer:
         self.inflight_maintain_names = inflight_names
         self.maintain_attempt = attempt
         self.maintain_retry_due_at = retry_due_at
+        self.runtime.maintain = build_composed_maintain_runtime_state(
+            queue=build_maintain_queue_state(
+                pending=self.pending_maintain,
+                reason=self.pending_maintain_reason,
+                names=self.pending_maintain_names,
+            ),
+            inflight_names=self.inflight_maintain_names,
+            attempt=self.maintain_attempt,
+            retry_due_at=self.maintain_retry_due_at,
+            last_incremental_started_at=self.last_incremental_maintain_started_at,
+            last_incremental_defer_reason=self.last_incremental_defer_reason,
+        )
 
     def queue_maintain(self, reason: str, names: set[str] | None = None) -> None:
         result = queue_maintain_request(
@@ -1176,7 +1168,7 @@ class AutoMaintainer:
             attempt=self.maintain_attempt,
             max_attempts=max_attempts,
             scope_names=scope_names,
-            write_scope_file=self.write_maintain_names_scope,
+            write_scope_file=lambda names: write_scope_names(self.maintain_names_file, names),
             build_command=self.build_maintain_command,
             format_start_message=lambda attempt, max_attempts, reason, scope_names: (
                 format_maintain_start_message_rows(
@@ -1188,31 +1180,57 @@ class AutoMaintainer:
             ),
         )
 
-    def _start_channel_process(self, *, channel: str, command: list[str]):
-        return start_channel_with_handler(
-            channel=channel,
-            cmd=command,
-            env=self.build_child_process_env(),
-            cwd=str(self.settings.base_dir),
-            start_output_pump=self.start_output_pump,
-            mark_channel_running=self.mark_channel_running,
-            handle_start_error=self.handle_command_start_error,
-            popen_factory=subprocess.Popen,
-        )
+    def _apply_channel_start_flow_feedback(
+        self,
+        *,
+        channel: str,
+        status: str,
+        start_exception: Exception | None,
+        return_code: int,
+    ) -> int:
+        if status == STATUS_SUCCESS:
+            return return_code
+        if start_exception is not None:
+            log(format_command_start_failed_message(channel, start_exception))
+        self.update_channel_progress(channel, stage=STAGE_START_FAILED, force_render=True)
+        if status == STATUS_RETRY:
+            log(
+                format_command_start_retry_message(
+                    channel,
+                    self.settings.command_retry_delay_seconds,
+                )
+            )
+            self.update_channel_progress(channel, stage=STAGE_RETRY_WAIT, force_render=True)
+        return return_code
 
     def _start_maintain_process(self, *, prep: MaintainStartPrep, now: float) -> int:
         log(prep.log_message)
         if prep.started_incremental:
             self.last_incremental_maintain_started_at = now
         self.inflight_maintain_names = prep.scope_names
-        start_result = self._start_channel_process(
-            channel=CHANNEL_MAINTAIN,
+        start_flow = start_maintain_channel(
             command=prep.command,
+            cwd=self.settings.base_dir,
+            state=self._maintain_runtime_state(),
+            retry_count=self.settings.maintain_retry_count,
+            retry_delay_seconds=self.settings.command_retry_delay_seconds,
+            env=build_child_process_env(),
+            output_file=self.maintain_cmd_output_file,
+            on_output_line=lambda line: self.parse_child_progress_line(CHANNEL_MAINTAIN, line),
+            log=log,
+            mark_channel_running=self.mark_channel_running,
+            now_monotonic=time.monotonic(),
+            popen_factory=subprocess.Popen,
         )
-        if start_result.return_code != 0:
-            return start_result.return_code
-        self.maintain_process = start_result.process
-        return 0
+        self._apply_maintain_runtime_state(start_flow.state)
+        self.maintain_process = start_flow.process
+        self.runtime.lifecycle.maintain_process = self.maintain_process
+        return self._apply_channel_start_flow_feedback(
+            channel=CHANNEL_MAINTAIN,
+            status=start_flow.status,
+            start_exception=start_flow.start_exception,
+            return_code=start_flow.return_code,
+        )
 
     def _can_attempt_maintain_start(self, *, now: float) -> bool:
         if self.maintain_process is not None:
@@ -1278,8 +1296,8 @@ class AutoMaintainer:
             max_attempts=max_attempts,
             batch=batch,
             pending_total=len(self.pending_upload_snapshot or []),
-            extract_scope_names=self.extract_names_from_snapshot,
-            write_scope_file=self.write_upload_names_scope,
+            extract_scope_names=extract_names_from_snapshot_rows,
+            write_scope_file=lambda names: write_scope_names(self.upload_names_file, names),
             build_command=self.build_upload_command,
             format_start_message=lambda attempt, max_attempts, reason, batch_size, pending_total: (
                 format_upload_start_message_rows(
@@ -1295,14 +1313,29 @@ class AutoMaintainer:
     def _start_upload_process(self, *, prep: UploadStartPrep) -> int:
         log(prep.log_message)
         self.inflight_upload_snapshot = list(prep.batch)
-        start_result = self._start_channel_process(
-            channel=CHANNEL_UPLOAD,
+        start_flow = start_upload_channel(
             command=prep.command,
+            cwd=self.settings.base_dir,
+            state=self._upload_queue_state(),
+            retry_count=self.settings.upload_retry_count,
+            retry_delay_seconds=self.settings.command_retry_delay_seconds,
+            env=build_child_process_env(),
+            output_file=self.upload_cmd_output_file,
+            on_output_line=lambda line: self.parse_child_progress_line(CHANNEL_UPLOAD, line),
+            log=log,
+            mark_channel_running=self.mark_channel_running,
+            now_monotonic=time.monotonic(),
+            popen_factory=subprocess.Popen,
         )
-        if start_result.return_code != 0:
-            return start_result.return_code
-        self.upload_process = start_result.process
-        return 0
+        self._apply_upload_queue_state(start_flow.state)
+        self.upload_process = start_flow.process
+        self.runtime.lifecycle.upload_process = self.upload_process
+        return self._apply_channel_start_flow_feedback(
+            channel=CHANNEL_UPLOAD,
+            status=start_flow.status,
+            start_exception=start_flow.start_exception,
+            return_code=start_flow.return_code,
+        )
 
     def maybe_start_upload(self) -> int:
         if self.upload_process is not None:
@@ -1334,59 +1367,33 @@ class AutoMaintainer:
         )
         return self._start_upload_process(prep=prep)
 
-    def _decide_maintain_start_error(self) -> MaintainStartErrorDecision:
-        decision = decide_maintain_start_error(
-            state=self._maintain_runtime_state(),
-            retry_count=self.settings.maintain_retry_count,
-            now_monotonic=time.monotonic(),
-            retry_delay_seconds=self.settings.command_retry_delay_seconds,
-        )
-        self._apply_maintain_runtime_state(decision.state)
-        return decision
-
-    def _decide_upload_start_error(self) -> UploadStartErrorDecision:
-        decision = decide_upload_start_error(
-            state=self._upload_queue_state(),
-            retry_count=self.settings.upload_retry_count,
-            now_monotonic=time.monotonic(),
-            retry_delay_seconds=self.settings.command_retry_delay_seconds,
-        )
-        self._apply_upload_queue_state(decision.state)
-        return decision
-
-    def _apply_channel_start_error_retry_result(self, *, channel: str, should_retry: bool) -> int:
-        if not should_retry:
-            return 1
-        log(
-            format_command_start_retry_message(
-                channel,
-                self.settings.command_retry_delay_seconds,
-            )
-        )
-        self.update_channel_progress(channel, stage=STAGE_RETRY_WAIT, force_render=True)
-        return 0
-
-    def _handle_maintain_start_error(self) -> int:
-        self.update_channel_progress(CHANNEL_MAINTAIN, stage=STAGE_START_FAILED, force_render=True)
-        decision = self._decide_maintain_start_error()
-        return self._apply_channel_start_error_retry_result(
-            channel=CHANNEL_MAINTAIN,
-            should_retry=decision.should_retry,
-        )
-
-    def _handle_upload_start_error(self) -> int:
-        self.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_START_FAILED, force_render=True)
-        decision = self._decide_upload_start_error()
-        return self._apply_channel_start_error_retry_result(
-            channel=CHANNEL_UPLOAD,
-            should_retry=decision.should_retry,
-        )
-
     def handle_command_start_error(self, name: str, exc: Exception) -> int:
+        # Kept for compatibility with tests/hooks that may invoke this path directly.
         log(format_command_start_failed_message(name, exc))
+        self.update_channel_progress(name, stage=STAGE_START_FAILED, force_render=True)
         if name == CHANNEL_MAINTAIN:
-            return self._handle_maintain_start_error()
-        return self._handle_upload_start_error()
+            decision = decide_maintain_start_error(
+                state=self._maintain_runtime_state(),
+                retry_count=self.settings.maintain_retry_count,
+                now_monotonic=time.monotonic(),
+                retry_delay_seconds=self.settings.command_retry_delay_seconds,
+            )
+            self._apply_maintain_runtime_state(decision.state)
+            should_retry = decision.should_retry
+        else:
+            decision = decide_upload_start_error(
+                state=self._upload_queue_state(),
+                retry_count=self.settings.upload_retry_count,
+                now_monotonic=time.monotonic(),
+                retry_delay_seconds=self.settings.command_retry_delay_seconds,
+            )
+            self._apply_upload_queue_state(decision.state)
+            should_retry = decision.should_retry
+        if should_retry:
+            log(format_command_start_retry_message(name, self.settings.command_retry_delay_seconds))
+            self.update_channel_progress(name, stage=STAGE_RETRY_WAIT, force_render=True)
+            return 0
+        return 1
 
     def _handle_maintain_success(self) -> None:
         log(format_command_completed_message(CHANNEL_MAINTAIN))
@@ -1413,6 +1420,9 @@ class AutoMaintainer:
         self.last_json_count = len(current_snapshot)
         if self.settings.inspect_zip_files:
             self.last_zip_signature = self.get_zip_signature()
+        self.runtime.snapshot.last_json_count = self.last_json_count
+        self.runtime.snapshot.last_zip_signature = self.last_zip_signature
+        self.runtime.snapshot.zip_extract_processed_signatures = dict(self.zip_extract_processed_signatures)
         return postprocess
 
     def _apply_post_upload_queue_state(self, *, postprocess: UploadSuccessPostProcessResult) -> None:
@@ -1478,86 +1488,74 @@ class AutoMaintainer:
 
     def _collect_exited_process_code(self, *, channel: str) -> int | None:
         proc = self.maintain_process if channel == CHANNEL_MAINTAIN else self.upload_process
-        poll_result = poll_process_exit(proc)
+        poll_result = poll_channel_exit(process=proc)
         if not poll_result.exited:
             return None
         if channel == CHANNEL_MAINTAIN:
-            self.maintain_process = None
+            self.maintain_process = poll_result.process
+            self.runtime.lifecycle.maintain_process = self.maintain_process
         else:
-            self.upload_process = None
+            self.upload_process = poll_result.process
+            self.runtime.lifecycle.upload_process = self.upload_process
         return int(poll_result.code or 0)
 
-    def _decide_maintain_process_exit(self, *, code: int) -> MaintainProcessExitDecision:
-        decision = decide_maintain_process_exit(
-            code=code,
-            shutdown_requested=self.shutdown_requested,
+    def poll_maintain_process(self) -> int:
+        flow = poll_maintain_channel(
+            process=self.maintain_process,
             state=self._maintain_runtime_state(),
-            retry_count=self.settings.maintain_retry_count,
-            now_monotonic=time.monotonic(),
-            retry_delay_seconds=self.settings.command_retry_delay_seconds,
-        )
-        self._apply_maintain_runtime_state(decision.state)
-        return decision
-
-    def _decide_upload_process_exit(self, *, code: int) -> UploadProcessExitDecision:
-        decision = decide_upload_process_exit(
-            code=code,
             shutdown_requested=self.shutdown_requested,
-            state=self._upload_queue_state(),
-            retry_count=self.settings.upload_retry_count,
-            now_monotonic=time.monotonic(),
+            retry_count=self.settings.maintain_retry_count,
             retry_delay_seconds=self.settings.command_retry_delay_seconds,
+            now_monotonic=time.monotonic(),
         )
-        self._apply_upload_queue_state(decision.state)
-        return decision
-
-    def _handle_maintain_poll_decision(
-        self,
-        *,
-        decision: MaintainProcessExitDecision,
-        code: int,
-    ) -> int:
-        if decision.status == STATUS_SUCCESS:
+        self.maintain_process = flow.process
+        self.runtime.lifecycle.maintain_process = self.maintain_process
+        if not flow.exited:
+            return 0
+        self._apply_maintain_runtime_state(flow.state)
+        code = int(flow.exit_code or 0)
+        if flow.status == STATUS_SUCCESS:
             self._handle_maintain_success()
-            return decision.return_code
-        if decision.status == STATUS_SHUTDOWN:
-            return decision.return_code
+            return flow.return_code
+        if flow.status == STATUS_SHUTDOWN:
+            return flow.return_code
         self._apply_non_success_process_exit_feedback(
             channel=CHANNEL_MAINTAIN,
-            status=decision.status,
+            status=str(flow.status),
             code=code,
         )
-        return decision.return_code
+        return flow.return_code
 
-    def _handle_upload_poll_decision(
-        self,
-        *,
-        decision: UploadProcessExitDecision,
-        code: int,
-        uploaded_snapshot: list[str],
-    ) -> int:
-        if decision.status == STATUS_SUCCESS:
+    def poll_upload_process(self) -> int:
+        uploaded_snapshot = self.inflight_upload_snapshot or []
+        flow = poll_upload_channel(
+            process=self.upload_process,
+            state=self._upload_queue_state(),
+            shutdown_requested=self.shutdown_requested,
+            retry_count=self.settings.upload_retry_count,
+            retry_delay_seconds=self.settings.command_retry_delay_seconds,
+            now_monotonic=time.monotonic(),
+        )
+        self.upload_process = flow.process
+        self.runtime.lifecycle.upload_process = self.upload_process
+        if not flow.exited:
+            return 0
+        self._apply_upload_queue_state(flow.state)
+        code = int(flow.exit_code or 0)
+        if flow.status == STATUS_SUCCESS:
             return self._handle_upload_success(
                 uploaded_snapshot=uploaded_snapshot,
-                return_code=decision.return_code,
+                return_code=flow.return_code,
             )
-        if decision.status == STATUS_SHUTDOWN:
-            return decision.return_code
+        if flow.status == STATUS_SHUTDOWN:
+            return flow.return_code
         self._apply_non_success_process_exit_feedback(
             channel=CHANNEL_UPLOAD,
-            status=decision.status,
+            status=str(flow.status),
             code=code,
         )
         self.pending_source_changes_during_upload = False
-        return decision.return_code
-
-    def poll_maintain_process(self) -> int:
-        code = self._collect_exited_process_code(channel=CHANNEL_MAINTAIN)
-        if code is None:
-            return 0
-
-        decision = self._decide_maintain_process_exit(code=code)
-        return self._handle_maintain_poll_decision(decision=decision, code=code)
+        return flow.return_code
 
     def _collect_active_upload_probe_inputs(self) -> tuple[int, tuple[str, ...] | None, float]:
         current_json_count = self.get_json_count()
@@ -1593,6 +1591,10 @@ class AutoMaintainer:
         self.last_json_count = decision.state.last_json_count
         self.last_zip_signature = decision.state.last_zip_signature
         self.last_active_upload_deep_scan_at = decision.state.last_deep_scan_at
+        self.runtime.upload.pending_source_changes_during_upload = self.pending_source_changes_during_upload
+        self.runtime.upload.last_active_upload_deep_scan_at = self.last_active_upload_deep_scan_at
+        self.runtime.snapshot.last_json_count = self.last_json_count
+        self.runtime.snapshot.last_zip_signature = self.last_zip_signature
 
     def _log_active_upload_source_change_if_needed(self, *, decision: ActiveUploadProbeDecision) -> None:
         if not decision.should_log_detection:
@@ -1613,36 +1615,13 @@ class AutoMaintainer:
         )
 
     def probe_changes_during_active_upload(self) -> int:
-        if self.upload_process is None:
-            return 0
-
-        current_json_count, current_zip_signature, now_monotonic = self._collect_active_upload_probe_inputs()
-        decision = self._decide_active_upload_probe(
-            current_json_count=current_json_count,
-            current_zip_signature=current_zip_signature,
-            now_monotonic=now_monotonic,
-        )
-        if not decision.source_changed:
-            return 0
-
-        self._apply_active_upload_probe_state(decision=decision)
-        self._log_active_upload_source_change_if_needed(decision=decision)
-        if not decision.should_refresh_upload_queue:
-            return 0
-
-        return self._refresh_upload_queue_during_active_upload()
-
-    def poll_upload_process(self) -> int:
-        code = self._collect_exited_process_code(channel=CHANNEL_UPLOAD)
-        if code is None:
-            return 0
-
-        uploaded_snapshot = self.inflight_upload_snapshot or []
-        decision = self._decide_upload_process_exit(code=code)
-        return self._handle_upload_poll_decision(
-            decision=decision,
-            code=code,
-            uploaded_snapshot=uploaded_snapshot,
+        return run_active_upload_probe_cycle(
+            upload_running=self.upload_process is not None,
+            collect_active_upload_probe_inputs=self._collect_active_upload_probe_inputs,
+            decide_active_upload_probe=self._decide_active_upload_probe,
+            apply_active_upload_probe_state=self._apply_active_upload_probe_state,
+            log_active_upload_source_change_if_needed=self._log_active_upload_source_change_if_needed,
+            refresh_upload_queue_during_active_upload=self._refresh_upload_queue_during_active_upload,
         )
 
     def handle_failure(self, stage: str, code: int) -> bool:
@@ -1679,6 +1658,7 @@ class AutoMaintainer:
             deep_scan_interval_loops=self.settings.deep_scan_interval_loops,
         )
         self.deep_scan_counter = cadence.next_deep_scan_counter
+        self.runtime.upload.deep_scan_counter = self.deep_scan_counter
         return cadence.should_deep_scan
 
     def _refresh_upload_scan_inputs_after_zip_if_needed(
@@ -1721,6 +1701,8 @@ class AutoMaintainer:
         self.last_json_count = json_count
         if self.settings.inspect_zip_files:
             self.last_zip_signature = zip_signature
+        self.runtime.snapshot.last_json_count = self.last_json_count
+        self.runtime.snapshot.last_zip_signature = self.last_zip_signature
 
     def _handle_upload_no_changes_detected(
         self,
@@ -1790,48 +1772,21 @@ class AutoMaintainer:
         skip_stability_wait: bool = False,
         queue_reason: str = "detected JSON changes",
     ) -> int:
-        current_json_count, current_zip_signature = self._current_upload_scan_inputs()
-        if not self._should_run_upload_deep_scan(
+        return run_upload_scan_cycle(
             force_deep_scan=force_deep_scan,
-            current_json_count=current_json_count,
-            current_zip_signature=current_zip_signature,
-        ):
-            return 0
-
-        current_json_count, current_zip_signature = self._refresh_upload_scan_inputs_after_zip_if_needed(
-            current_json_count=current_json_count,
-            current_zip_signature=current_zip_signature,
-        )
-        current_snapshot = self.build_snapshot(self.current_snapshot_file)
-        last_uploaded_snapshot = self.read_snapshot(self.last_uploaded_snapshot_file)
-        if current_snapshot == last_uploaded_snapshot:
-            return self._handle_upload_no_changes_detected(
-                current_snapshot=current_snapshot,
-                current_json_count=current_json_count,
-                current_zip_signature=current_zip_signature,
-                preserve_retry_state=preserve_retry_state,
-            )
-
-        stable_wait_exit, stable_snapshot = self._resolve_stable_upload_snapshot(
-            current_snapshot=current_snapshot,
-            skip_stability_wait=skip_stability_wait,
-        )
-        if stable_wait_exit != 0:
-            return stable_wait_exit
-        if stable_snapshot is None:
-            return 130
-        pending_snapshot = self.compute_pending_upload_snapshot(stable_snapshot, last_uploaded_snapshot)
-        if not pending_snapshot:
-            return self._handle_upload_no_pending_discovered(
-                stable_snapshot=stable_snapshot,
-                current_zip_signature=current_zip_signature,
-                preserve_retry_state=preserve_retry_state,
-            )
-
-        return self._queue_pending_upload_snapshot(
-            pending_snapshot=pending_snapshot,
-            queue_reason=queue_reason,
             preserve_retry_state=preserve_retry_state,
+            skip_stability_wait=skip_stability_wait,
+            queue_reason=queue_reason,
+            current_upload_scan_inputs=self._current_upload_scan_inputs,
+            should_run_upload_deep_scan=self._should_run_upload_deep_scan,
+            refresh_upload_scan_inputs_after_zip_if_needed=self._refresh_upload_scan_inputs_after_zip_if_needed,
+            build_current_snapshot=lambda: self.build_snapshot(self.current_snapshot_file),
+            read_last_uploaded_snapshot=lambda: self.read_snapshot(self.last_uploaded_snapshot_file),
+            handle_upload_no_changes_detected=self._handle_upload_no_changes_detected,
+            resolve_stable_upload_snapshot=self._resolve_stable_upload_snapshot,
+            compute_pending_upload_snapshot=compute_pending_upload_snapshot_rows,
+            handle_upload_no_pending_discovered=self._handle_upload_no_pending_discovered,
+            queue_pending_upload_snapshot=self._queue_pending_upload_snapshot,
         )
 
 

@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from unittest import mock
@@ -23,7 +24,12 @@ from cwma.auto.channel_lifecycle import (
     decide_upload_process_exit,
     decide_upload_start_error,
 )
-from cwma.auto.channel_runner import poll_process_exit, start_channel_with_handler
+from cwma.auto.channel_runner import (
+    ChannelStartResult,
+    ProcessPollResult,
+    poll_process_exit,
+    start_channel_with_handler,
+)
 from cwma.auto.channel_start_prep import prepare_maintain_start, prepare_upload_start
 from cwma.auto.channel_feedback import (
     build_non_success_exit_feedback,
@@ -68,14 +74,35 @@ from cwma.auto.process_output import (
     decode_child_output_line,
     should_log_child_alert_line,
 )
+from cwma.auto.process_supervisor import poll_channel_exit, start_channel
 from cwma.auto.progress_parser import parse_progress_line
 from cwma.auto.runtime_state import (
+    build_auto_runtime_state,
+    build_composed_maintain_runtime_state,
+    build_lifecycle_runtime_state,
     build_maintain_queue_state,
     build_maintain_runtime_state,
+    build_snapshot_runtime_state,
+    build_ui_runtime_state,
     build_upload_queue_state,
+    build_upload_runtime_state,
+    unpack_auto_runtime_state,
+    unpack_composed_maintain_runtime_state,
+    unpack_lifecycle_runtime_state,
     unpack_maintain_queue_state,
     unpack_maintain_runtime_state,
+    unpack_snapshot_runtime_state,
+    unpack_ui_runtime_state,
     unpack_upload_queue_state,
+    unpack_upload_runtime_state,
+)
+from cwma.auto.state_models import (
+    AutoRuntimeState,
+    LifecycleRuntimeState,
+    MaintainRuntimeState as ComposedMaintainRuntimeState,
+    SnapshotRuntimeState,
+    UiRuntimeState,
+    UploadRuntimeState,
 )
 from cwma.auto.scope_files import write_scope_names
 from cwma.auto.snapshots import (
@@ -382,6 +409,251 @@ class AutoModuleTests(unittest.TestCase):
         self.assertEqual(runtime_values[1], {"b.json"})
         self.assertEqual(runtime_values[2], 2)
         self.assertEqual(runtime_values[3], 9.0)
+
+    def test_state_models_auto_runtime_defaults(self) -> None:
+        runtime = AutoRuntimeState()
+        self.assertIsInstance(runtime.upload, UploadRuntimeState)
+        self.assertIsInstance(runtime.maintain, ComposedMaintainRuntimeState)
+        self.assertIsInstance(runtime.snapshot, SnapshotRuntimeState)
+        self.assertIsInstance(runtime.ui, UiRuntimeState)
+        self.assertIsInstance(runtime.lifecycle, LifecycleRuntimeState)
+        self.assertEqual(runtime.upload.deep_scan_counter, 0)
+        self.assertFalse(runtime.lifecycle.shutdown_requested)
+
+    def test_runtime_state_composed_upload_build_unpack_roundtrip(self) -> None:
+        queue = build_upload_queue_state(
+            pending_snapshot=["u|1|1"],
+            pending_reason="detected",
+            pending_retry=False,
+            inflight_snapshot=["u|1|1"],
+            attempt=1,
+            retry_due_at=3.0,
+        )
+        runtime = build_upload_runtime_state(
+            queue=queue,
+            deep_scan_counter=11,
+            pending_source_changes_during_upload=True,
+            last_active_upload_deep_scan_at=14.0,
+        )
+        values = unpack_upload_runtime_state(runtime)
+        self.assertEqual(values[0], queue)
+        self.assertEqual(values[1], 11)
+        self.assertTrue(values[2])
+        self.assertEqual(values[3], 14.0)
+
+    def test_runtime_state_composed_maintain_build_unpack_roundtrip(self) -> None:
+        queue = build_maintain_queue_state(
+            pending=True,
+            reason="queued incremental maintain",
+            names={"x.json"},
+        )
+        runtime = build_composed_maintain_runtime_state(
+            queue=queue,
+            inflight_names={"y.json"},
+            attempt=2,
+            retry_due_at=22.0,
+            last_incremental_started_at=18.0,
+            last_incremental_defer_reason="cooldown",
+        )
+        values = unpack_composed_maintain_runtime_state(runtime)
+        self.assertEqual(values[0], queue)
+        self.assertEqual(values[1], {"y.json"})
+        self.assertEqual(values[2], 2)
+        self.assertEqual(values[3], 22.0)
+        self.assertEqual(values[4], 18.0)
+        self.assertEqual(values[5], "cooldown")
+
+    def test_runtime_state_snapshot_build_unpack_roundtrip(self) -> None:
+        state = build_snapshot_runtime_state(
+            last_uploaded_snapshot_file=Path("last.txt"),
+            current_snapshot_file=Path("current.txt"),
+            stable_snapshot_file=Path("stable.txt"),
+            last_json_count=7,
+            last_zip_signature=("a.zip|1|2",),
+            zip_extract_processed_signatures={"a.zip": "sig"},
+        )
+        values = unpack_snapshot_runtime_state(state)
+        self.assertEqual(values[0], Path("last.txt"))
+        self.assertEqual(values[1], Path("current.txt"))
+        self.assertEqual(values[2], Path("stable.txt"))
+        self.assertEqual(values[3], 7)
+        self.assertEqual(values[4], ("a.zip|1|2",))
+        self.assertEqual(values[5], {"a.zip": "sig"})
+
+    def test_runtime_state_snapshot_build_unpack_defensive_copy(self) -> None:
+        source = {"a.zip": "sig-a"}
+        state = build_snapshot_runtime_state(
+            last_uploaded_snapshot_file=Path("last.txt"),
+            current_snapshot_file=Path("current.txt"),
+            stable_snapshot_file=Path("stable.txt"),
+            last_json_count=1,
+            last_zip_signature=("a.zip|1|1",),
+            zip_extract_processed_signatures=source,
+        )
+        source["b.zip"] = "sig-b"
+        self.assertEqual(state.zip_extract_processed_signatures, {"a.zip": "sig-a"})
+
+        unpacked = unpack_snapshot_runtime_state(state)[5]
+        unpacked["c.zip"] = "sig-c"
+        self.assertEqual(state.zip_extract_processed_signatures, {"a.zip": "sig-a"})
+
+    def test_runtime_state_ui_build_unpack_roundtrip(self) -> None:
+        state = build_ui_runtime_state(
+            upload_progress_state={"stage": "running", "done": 1, "total": 5},
+            maintain_progress_state={"stage": "idle", "done": 0, "total": 0},
+            last_progress_render_at=10.0,
+            progress_render_interval_seconds=0.5,
+            progress_render_heartbeat_seconds=9.0,
+            last_progress_signature="sig",
+            panel_height=9,
+            panel_title="Panel",
+            panel_enabled=True,
+            panel_color_enabled=False,
+            panel_initialized=True,
+        )
+        values = unpack_ui_runtime_state(state)
+        self.assertEqual(values[0], {"stage": "running", "done": 1, "total": 5})
+        self.assertEqual(values[1], {"stage": "idle", "done": 0, "total": 0})
+        self.assertEqual(values[2], 10.0)
+        self.assertEqual(values[3], 0.5)
+        self.assertEqual(values[4], 9.0)
+        self.assertEqual(values[5], "sig")
+        self.assertEqual(values[6], 9)
+        self.assertEqual(values[7], "Panel")
+        self.assertTrue(values[8])
+        self.assertFalse(values[9])
+        self.assertTrue(values[10])
+
+    def test_runtime_state_ui_build_unpack_defensive_copy(self) -> None:
+        upload_progress = {"stage": "running", "done": 1, "total": 5}
+        maintain_progress = {"stage": "idle", "done": 0, "total": 0}
+        state = build_ui_runtime_state(
+            upload_progress_state=upload_progress,
+            maintain_progress_state=maintain_progress,
+            last_progress_render_at=1.0,
+            progress_render_interval_seconds=0.5,
+            progress_render_heartbeat_seconds=9.0,
+            last_progress_signature="sig",
+            panel_height=9,
+            panel_title="Panel",
+            panel_enabled=True,
+            panel_color_enabled=True,
+            panel_initialized=False,
+        )
+        upload_progress["done"] = 99
+        maintain_progress["stage"] = "pending"
+        self.assertEqual(state.upload_progress_state["done"], 1)
+        self.assertEqual(state.maintain_progress_state["stage"], "idle")
+
+        unpacked_upload, unpacked_maintain = unpack_ui_runtime_state(state)[:2]
+        unpacked_upload["done"] = 7
+        unpacked_maintain["stage"] = "running"
+        self.assertEqual(state.upload_progress_state["done"], 1)
+        self.assertEqual(state.maintain_progress_state["stage"], "idle")
+
+    def test_runtime_state_lifecycle_and_auto_build_unpack_roundtrip(self) -> None:
+        started_at = datetime(2026, 3, 24, 10, 0, 0)
+        lifecycle = build_lifecycle_runtime_state(
+            instance_started_at=started_at,
+            shutdown_requested=True,
+            shutdown_reason="test",
+            instance_lock_token="token",
+            instance_lock_handle=None,
+            upload_process=None,
+            maintain_process=None,
+            upload_output_thread=None,
+            maintain_output_thread=None,
+            windows_console_handler=None,
+            next_maintain_due_at=88.0,
+        )
+        lifecycle_values = unpack_lifecycle_runtime_state(lifecycle)
+        self.assertEqual(lifecycle_values[0], started_at)
+        self.assertTrue(lifecycle_values[1])
+        self.assertEqual(lifecycle_values[2], "test")
+        self.assertEqual(lifecycle_values[3], "token")
+        self.assertEqual(lifecycle_values[10], 88.0)
+
+        upload = build_upload_runtime_state(
+            queue=build_upload_queue_state(
+                pending_snapshot=None,
+                pending_reason=None,
+                pending_retry=False,
+                inflight_snapshot=None,
+                attempt=0,
+                retry_due_at=0.0,
+            ),
+            deep_scan_counter=1,
+            pending_source_changes_during_upload=False,
+            last_active_upload_deep_scan_at=0.0,
+        )
+        maintain = build_composed_maintain_runtime_state(
+            queue=build_maintain_queue_state(
+                pending=False,
+                reason=None,
+                names=None,
+            ),
+            inflight_names=None,
+            attempt=0,
+            retry_due_at=0.0,
+            last_incremental_started_at=0.0,
+            last_incremental_defer_reason=None,
+        )
+        snapshot = build_snapshot_runtime_state(
+            last_uploaded_snapshot_file=None,
+            current_snapshot_file=None,
+            stable_snapshot_file=None,
+            last_json_count=0,
+            last_zip_signature=tuple(),
+            zip_extract_processed_signatures={},
+        )
+        ui = build_ui_runtime_state(
+            upload_progress_state={"stage": "idle", "done": 0, "total": 0},
+            maintain_progress_state={"stage": "idle", "done": 0, "total": 0},
+            last_progress_render_at=0.0,
+            progress_render_interval_seconds=0.4,
+            progress_render_heartbeat_seconds=8.0,
+            last_progress_signature="",
+            panel_height=8,
+            panel_title="CPA Warden Auto Dashboard",
+            panel_enabled=False,
+            panel_color_enabled=False,
+            panel_initialized=False,
+        )
+        auto_state = build_auto_runtime_state(
+            upload=upload,
+            maintain=maintain,
+            snapshot=snapshot,
+            ui=ui,
+            lifecycle=lifecycle,
+        )
+        auto_values = unpack_auto_runtime_state(auto_state)
+        self.assertEqual(auto_values[0], upload)
+        self.assertEqual(auto_values[1], maintain)
+        self.assertEqual(auto_values[2], snapshot)
+        self.assertEqual(auto_values[3], ui)
+        self.assertEqual(auto_values[4], lifecycle)
+
+    def test_build_auto_runtime_state_defaults_are_not_shared_between_instances(self) -> None:
+        first = build_auto_runtime_state()
+        second = build_auto_runtime_state()
+
+        self.assertIsNot(first.upload, second.upload)
+        self.assertIsNot(first.maintain, second.maintain)
+        self.assertIsNot(first.snapshot, second.snapshot)
+        self.assertIsNot(first.ui, second.ui)
+        self.assertIsNot(first.lifecycle, second.lifecycle)
+
+        first.upload.deep_scan_counter = 9
+        first.maintain.queue.pending = True
+        first.snapshot.last_json_count = 11
+        first.ui.panel_initialized = True
+        first.lifecycle.shutdown_requested = True
+
+        self.assertEqual(second.upload.deep_scan_counter, 0)
+        self.assertFalse(second.maintain.queue.pending)
+        self.assertEqual(second.snapshot.last_json_count, 0)
+        self.assertFalse(second.ui.panel_initialized)
+        self.assertFalse(second.lifecycle.shutdown_requested)
 
     def test_build_maintain_command_with_scope_and_yes(self) -> None:
         cmd = build_maintain_command(
@@ -1575,6 +1847,119 @@ class AutoModuleTests(unittest.TestCase):
         exited = poll_process_exit(_Proc(3))
         self.assertTrue(exited.exited)
         self.assertEqual(exited.code, 3)
+
+    def test_start_channel_uses_env_builder_and_output_callbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_target = Path(tmp) / "upload.log"
+            captured: dict[str, object] = {}
+            forwarded_lines: list[str] = []
+
+            class _Proc:
+                pass
+
+            def _stub_start_channel_with_handler(**kwargs: object) -> ChannelStartResult:
+                captured.update(kwargs)
+                proc = _Proc()
+                start_output_pump = kwargs["start_output_pump"]
+                if not callable(start_output_pump):
+                    self.fail("start_output_pump should be callable")
+                start_output_pump("upload", proc)  # type: ignore[misc]
+                return ChannelStartResult(return_code=0, process=proc)  # type: ignore[arg-type]
+
+            with mock.patch(
+                "cwma.auto.process_supervisor.build_child_process_env",
+                return_value={"AUTO": "1"},
+            ) as env_builder, mock.patch(
+                "cwma.auto.process_supervisor.start_channel_with_handler",
+                side_effect=_stub_start_channel_with_handler,
+            ) as start_with_handler, mock.patch(
+                "cwma.auto.process_supervisor.start_output_pump_thread",
+                side_effect=lambda channel, proc, decode_line, on_line, warn: on_line("hello"),
+            ) as pump_thread, mock.patch(
+                "cwma.auto.process_supervisor.append_child_output_line"
+            ) as append_line:
+                result = start_channel(
+                    channel="upload",
+                    command=["python", "--version"],
+                    cwd=Path("C:/tmp"),
+                    output_file=output_target,
+                    on_output_line=forwarded_lines.append,
+                    log=lambda _msg: None,
+                    popen_factory=mock.Mock(),
+                )
+
+            self.assertEqual(result.return_code, 0)
+            self.assertEqual(forwarded_lines, ["hello"])
+            env_builder.assert_called_once()
+            self.assertEqual(start_with_handler.call_count, 1)
+            self.assertEqual(pump_thread.call_count, 1)
+            append_line.assert_called_once_with(target=output_target, line="hello")
+            self.assertEqual(captured["channel"], "upload")
+            self.assertEqual(captured["cmd"], ["python", "--version"])
+            self.assertEqual(captured["env"], {"AUTO": "1"})
+            self.assertEqual(captured["cwd"], str(Path("C:/tmp")))
+
+    def test_start_channel_prefers_explicit_env_over_builder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_target = Path(tmp) / "maintain.log"
+            captured: dict[str, object] = {}
+
+            class _Proc:
+                pass
+
+            def _stub_start_channel_with_handler(**kwargs: object) -> ChannelStartResult:
+                captured.update(kwargs)
+                return ChannelStartResult(return_code=0, process=_Proc())  # type: ignore[arg-type]
+
+            with mock.patch("cwma.auto.process_supervisor.build_child_process_env") as env_builder, mock.patch(
+                "cwma.auto.process_supervisor.start_channel_with_handler",
+                side_effect=_stub_start_channel_with_handler,
+            ) as start_with_handler, mock.patch(
+                "cwma.auto.process_supervisor.start_output_pump_thread"
+            ) as pump_thread:
+                result = start_channel(
+                    channel="maintain",
+                    command=["python", "--version"],
+                    cwd=Path("C:/tmp"),
+                    env={"MANUAL_ENV": "1"},
+                    output_file=output_target,
+                    on_output_line=lambda _line: None,
+                    log=lambda _msg: None,
+                    popen_factory=mock.Mock(),
+                )
+
+            self.assertEqual(result.return_code, 0)
+            self.assertEqual(start_with_handler.call_count, 1)
+            self.assertEqual(pump_thread.call_count, 0)
+            env_builder.assert_not_called()
+            self.assertEqual(captured["env"], {"MANUAL_ENV": "1"})
+            self.assertEqual(captured["cwd"], str(Path("C:/tmp")))
+
+    def test_poll_channel_exit_preserves_running_process(self) -> None:
+        proc = object()
+        with mock.patch(
+            "cwma.auto.process_supervisor.poll_process_exit",
+            return_value=ProcessPollResult(exited=False, code=None),
+        ) as poll_mock:
+            result = poll_channel_exit(process=proc)  # type: ignore[arg-type]
+
+        poll_mock.assert_called_once_with(proc)
+        self.assertFalse(result.exited)
+        self.assertIsNone(result.code)
+        self.assertIs(result.process, proc)
+
+    def test_poll_channel_exit_normalizes_none_code_to_zero(self) -> None:
+        proc = object()
+        with mock.patch(
+            "cwma.auto.process_supervisor.poll_process_exit",
+            return_value=ProcessPollResult(exited=True, code=None),
+        ) as poll_mock:
+            result = poll_channel_exit(process=proc)  # type: ignore[arg-type]
+
+        poll_mock.assert_called_once_with(proc)
+        self.assertTrue(result.exited)
+        self.assertEqual(result.code, 0)
+        self.assertIsNone(result.process)
 
 
 if __name__ == "__main__":

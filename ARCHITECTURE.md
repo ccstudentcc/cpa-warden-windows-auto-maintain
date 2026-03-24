@@ -62,6 +62,8 @@ This repository provides a Windows-first automation layer on top of the CPA main
 - Internal note: run-once completion checks, watch-cycle sleep policy, and stage-failure resolution are coordinated through dedicated helper methods
 - Internal note: startup/watch stage execution now goes through a unified `_run_stage(...)` helper for consistent failure gating
 - Internal note: channel-specific success side effects are routed through dedicated handlers (`_handle_maintain_success` / `_handle_upload_success`) to isolate post-success orchestration
+- Internal note: startup/watch/upload-scan/shutdown core orchestration has begun delegating into `cwma/auto/runtime/*` adapters, and process launch/poll/terminate paths now route through `cwma/auto/process_supervisor.py`
+- Internal note: low-value host pass-through wrappers continue to be removed in small batches (ZIP/scope/snapshot helper seams now prefer direct module wiring where compatibility hooks are not needed)
 - Internal note: upload start path is decomposed into dedicated helper steps (batch sizing, start decision, start payload prep, process launch) to keep channel lifecycle branches small and testable
 - Internal note: non-success process-exit feedback application is deduplicated through `_apply_non_success_process_exit_feedback(...)` for maintain/upload poll paths
 - Internal note: maintain/upload poll prelude now uses `_collect_exited_process_code(...)` to standardize exited-process collection + process-handle clearing
@@ -181,8 +183,56 @@ This repository provides a Windows-first automation layer on top of the CPA main
 ### `cwma/auto/runtime_state.py`
 
 - Entry point: imported by `cwma/auto/app.py`
-- Public interface: `build_upload_queue_state`, `unpack_upload_queue_state`, `build_maintain_queue_state`, `unpack_maintain_queue_state`, `build_maintain_runtime_state`, `unpack_maintain_runtime_state`
-- Responsibility: pure conversion helpers between orchestrator runtime fields and queue/runtime dataclasses
+- Public interface: legacy queue/runtime adapters plus composed runtime adapters (`build_*_runtime_state`, `unpack_*_runtime_state`, `build_auto_runtime_state`, `unpack_auto_runtime_state`)
+- Responsibility: pure conversion helpers between orchestrator runtime fields and queue/runtime dataclasses, including Stage 2.5 composed runtime root wiring
+
+### `cwma/auto/state_models.py`
+
+- Entry point: imported by `cwma/auto/runtime_state.py` and `cwma/auto/app.py`
+- Public interface: `UploadRuntimeState`, `MaintainRuntimeState`, `SnapshotRuntimeState`, `UiRuntimeState`, `LifecycleRuntimeState`, `AutoRuntimeState`
+- Responsibility: typed composed runtime state containers used to reduce mutable-field sprawl in host orchestrator
+
+### `cwma/auto/process_supervisor.py`
+
+- Entry point: imported by `cwma/auto/app.py` and `cwma/auto/runtime/channel_runtime.py`
+- Public interface: `start_channel`, `poll_channel_exit`, `terminate_channel`, `ChannelExitResult`
+- Responsibility: process lifecycle supervision boundary around launch/poll/terminate and output pumping composition
+
+### `cwma/auto/runtime/channel_runtime.py`
+
+- Entry point: imported by `cwma/auto/runtime/__init__.py` and host integration points
+- Public interface: `start_maintain_channel`, `start_upload_channel`, `poll_maintain_channel`, `poll_upload_channel` (+ flow result dataclasses)
+- Responsibility: channel start/poll orchestration adapter layer that reuses lifecycle policy modules without changing policy semantics
+
+### `cwma/auto/runtime/startup_runtime.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `StartupRuntimeState`, `StartupRuntimeDeps`, `StartupRuntimeResult`, `run_startup_cycle`
+- Responsibility: startup phase orchestration adapter (seed, ZIP follow-up, startup maintain/upload checks, initial command starts)
+
+### `cwma/auto/runtime/watch_runtime.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `WatchRuntimeState`, `WatchRuntimeDeps`, `WatchRuntimeResult`, `run_watch_iteration`
+- Responsibility: watch-iteration orchestration adapter (scheduled maintain enqueue, poll/start stage sequencing, upload-check gate)
+
+### `cwma/auto/runtime/upload_scan_runtime.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `run_upload_scan_cycle`, `run_active_upload_probe_cycle`
+- Responsibility: upload deep-scan and active-upload probe orchestration wrappers with callback-injected side effects
+
+### `cwma/auto/runtime/shutdown_runtime.py`
+
+- Entry point: imported by `cwma/auto/app.py`
+- Public interface: `ShutdownRuntimeState`, `request_shutdown`, `sleep_with_shutdown`, `current_loop_sleep_seconds`, `sleep_between_watch_cycles`
+- Responsibility: shutdown and sleep cadence orchestration adapters (host-facing, behavior-preserving)
+
+### `cwma/auto/ui_runtime.py`
+
+- Entry point: imported by runtime/host integration points
+- Public interface: `UiRuntimeState`, `UiRuntime`
+- Responsibility: encapsulate dashboard render cadence/signature-gate behavior behind a runtime API (`on_stage_update`, `on_tick`, `render_if_needed`)
 
 ### `cwma/auto/upload_postprocess.py`
 

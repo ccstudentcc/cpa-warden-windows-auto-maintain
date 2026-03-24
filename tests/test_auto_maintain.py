@@ -11,6 +11,9 @@ from pathlib import Path
 from unittest import mock
 
 from auto_maintain import AutoMaintainer, Settings, load_settings
+from cwma.auto.runtime.startup_runtime import StartupRuntimeResult, StartupRuntimeState
+from cwma.auto.runtime.watch_runtime import WatchRuntimeResult, WatchRuntimeState
+from cwma.auto.snapshots import compute_uploaded_baseline as compute_uploaded_baseline_rows
 
 
 class _DoneProcess:
@@ -106,6 +109,120 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertEqual(code, 7)
             self.assertIsNone(maintainer.maintain_process)
 
+    def test_run_startup_phase_applies_runtime_result_state_writeback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            maintainer = AutoMaintainer(_build_settings(base, auth_dir))
+            maintainer.last_json_count = 7
+            maintainer.last_zip_signature = ("before.zip|1|1",)
+            maintainer.next_maintain_due_at = 33.0
+
+            runtime_result = StartupRuntimeResult(
+                exit_code=5,
+                state=StartupRuntimeState(
+                    last_json_count=21,
+                    last_zip_signature=("after.zip|2|2",),
+                    next_maintain_due_at=44.0,
+                ),
+            )
+
+            with mock.patch("auto_maintain.run_startup_cycle", return_value=runtime_result) as runtime_call:
+                code = maintainer._run_startup_phase()
+
+            self.assertEqual(code, 5)
+            call_state = runtime_call.call_args.kwargs["state"]
+            self.assertEqual(call_state.last_json_count, 7)
+            self.assertEqual(call_state.last_zip_signature, ("before.zip|1|1",))
+            self.assertEqual(call_state.next_maintain_due_at, 33.0)
+            self.assertEqual(maintainer.last_json_count, 21)
+            self.assertEqual(maintainer.last_zip_signature, ("after.zip|2|2",))
+            self.assertEqual(maintainer.next_maintain_due_at, 44.0)
+            self.assertEqual(maintainer.runtime.snapshot.last_json_count, 21)
+            self.assertEqual(maintainer.runtime.snapshot.last_zip_signature, ("after.zip|2|2",))
+            self.assertEqual(maintainer.runtime.lifecycle.next_maintain_due_at, 44.0)
+
+    def test_run_watch_iteration_applies_runtime_result_state_writeback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            maintainer = AutoMaintainer(_build_settings(base, auth_dir))
+            maintainer.next_maintain_due_at = 99.0
+
+            runtime_result = WatchRuntimeResult(
+                exit_code=8,
+                state=WatchRuntimeState(next_maintain_due_at=123.0),
+            )
+            with mock.patch("auto_maintain.run_watch_iteration", return_value=runtime_result) as runtime_call:
+                code = maintainer._run_watch_iteration(now=77.0)
+
+            self.assertEqual(code, 8)
+            self.assertEqual(runtime_call.call_args.kwargs["now_monotonic"], 77.0)
+            call_state = runtime_call.call_args.kwargs["state"]
+            self.assertEqual(call_state.next_maintain_due_at, 99.0)
+            self.assertEqual(maintainer.next_maintain_due_at, 123.0)
+            self.assertEqual(maintainer.runtime.lifecycle.next_maintain_due_at, 123.0)
+
+    def test_check_and_maybe_upload_delegates_to_upload_scan_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            maintainer = AutoMaintainer(_build_settings(base, auth_dir))
+
+            with mock.patch("auto_maintain.run_upload_scan_cycle", return_value=6) as runtime_call:
+                code = maintainer.check_and_maybe_upload(
+                    force_deep_scan=True,
+                    preserve_retry_state=True,
+                    skip_stability_wait=True,
+                    queue_reason="guardrail-check",
+                )
+
+            self.assertEqual(code, 6)
+            kwargs = runtime_call.call_args.kwargs
+            self.assertTrue(kwargs["force_deep_scan"])
+            self.assertTrue(kwargs["preserve_retry_state"])
+            self.assertTrue(kwargs["skip_stability_wait"])
+            self.assertEqual(kwargs["queue_reason"], "guardrail-check")
+            for key in (
+                "current_upload_scan_inputs",
+                "should_run_upload_deep_scan",
+                "refresh_upload_scan_inputs_after_zip_if_needed",
+                "build_current_snapshot",
+                "read_last_uploaded_snapshot",
+                "handle_upload_no_changes_detected",
+                "resolve_stable_upload_snapshot",
+                "compute_pending_upload_snapshot",
+                "handle_upload_no_pending_discovered",
+                "queue_pending_upload_snapshot",
+            ):
+                self.assertTrue(callable(kwargs[key]), key)
+
+    def test_probe_changes_during_active_upload_delegates_to_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            maintainer = AutoMaintainer(_build_settings(base, auth_dir))
+
+            maintainer.upload_process = _DoneProcess(0)
+            with mock.patch("auto_maintain.run_active_upload_probe_cycle", return_value=9) as runtime_call:
+                code = maintainer.probe_changes_during_active_upload()
+
+            self.assertEqual(code, 9)
+            kwargs = runtime_call.call_args.kwargs
+            self.assertTrue(kwargs["upload_running"])
+            for key in (
+                "collect_active_upload_probe_inputs",
+                "decide_active_upload_probe",
+                "apply_active_upload_probe_state",
+                "log_active_upload_source_change_if_needed",
+                "refresh_upload_queue_during_active_upload",
+            ):
+                self.assertTrue(callable(kwargs[key]), key)
+
     def test_upload_queue_state_adapter_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -139,6 +256,12 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertIsNone(maintainer.inflight_upload_snapshot)
             self.assertEqual(maintainer.upload_attempt, 0)
             self.assertEqual(maintainer.upload_retry_due_at, 0.0)
+            self.assertEqual(maintainer.runtime.upload.queue.pending_snapshot, ["b|2|2"])
+            self.assertEqual(maintainer.runtime.upload.queue.pending_reason, "next")
+            self.assertFalse(maintainer.runtime.upload.queue.pending_retry)
+            self.assertIsNone(maintainer.runtime.upload.queue.inflight_snapshot)
+            self.assertEqual(maintainer.runtime.upload.queue.attempt, 0)
+            self.assertEqual(maintainer.runtime.upload.queue.retry_due_at, 0.0)
 
     def test_maintain_runtime_state_adapter_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -174,16 +297,18 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertIsNone(maintainer.inflight_maintain_names)
             self.assertEqual(maintainer.maintain_attempt, 0)
             self.assertEqual(maintainer.maintain_retry_due_at, 0.0)
+            self.assertFalse(maintainer.runtime.maintain.queue.pending)
+            self.assertIsNone(maintainer.runtime.maintain.queue.reason)
+            self.assertIsNone(maintainer.runtime.maintain.queue.names)
+            self.assertIsNone(maintainer.runtime.maintain.inflight_names)
+            self.assertEqual(maintainer.runtime.maintain.attempt, 0)
+            self.assertEqual(maintainer.runtime.maintain.retry_due_at, 0.0)
 
     def test_compute_uploaded_baseline_keeps_only_uploaded_and_still_existing(self) -> None:
         existing_baseline = ["legacy|0|0", "a|1|1"]
         uploaded_snapshot = ["a|1|1", "b|2|2"]
         current_snapshot = ["a|1|1", "c|3|3", "legacy|0|0"]
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            settings = _build_settings(base, base / "auth")
-            maintainer = AutoMaintainer(settings)
-            baseline = maintainer.compute_uploaded_baseline(existing_baseline, uploaded_snapshot, current_snapshot)
+        baseline = compute_uploaded_baseline_rows(existing_baseline, uploaded_snapshot, current_snapshot)
         self.assertEqual(baseline, ["a|1|1", "legacy|0|0"])
 
     def test_poll_upload_process_queues_next_batch_for_new_files(self) -> None:
@@ -274,6 +399,49 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertIsNotNone(maintainer.inflight_upload_snapshot)
             self.assertEqual(len(maintainer.inflight_upload_snapshot or []), 8)
 
+    def test_maybe_start_upload_passes_env_and_monotonic_to_runtime_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            maintainer = AutoMaintainer(settings)
+
+            maintainer.pending_upload_snapshot = [f"{auth_dir / 'a.json'}|1|1"]
+            maintainer.pending_upload_reason = "detected JSON changes"
+            captured: dict[str, object] = {}
+            flow = mock.Mock(
+                state=maintainer._upload_queue_state(),
+                process=_DoneProcess(0),
+                status="success",
+                start_exception=None,
+                return_code=0,
+            )
+
+            def _stub_start_upload_channel(**kwargs: object) -> object:
+                captured.update(kwargs)
+                return flow
+
+            with mock.patch(
+                "auto_maintain.start_upload_channel",
+                side_effect=_stub_start_upload_channel,
+            ) as runtime_call, mock.patch(
+                "auto_maintain.build_child_process_env",
+                return_value={"AUTO_TEST_ENV": "1"},
+            ) as env_builder, mock.patch(
+                "auto_maintain.time.monotonic",
+                side_effect=[100.0, 101.5],
+            ):
+                result = maintainer.maybe_start_upload()
+
+            self.assertEqual(result, 0)
+            self.assertEqual(runtime_call.call_count, 1)
+            env_builder.assert_called_once()
+            self.assertEqual(captured["env"], {"AUTO_TEST_ENV": "1"})
+            self.assertEqual(captured["now_monotonic"], 101.5)
+            self.assertEqual(captured["cwd"], base)
+            self.assertIs(maintainer.upload_process, flow.process)
+
     def test_poll_upload_process_keeps_existing_uploaded_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -319,9 +487,12 @@ class AutoMaintainTests(unittest.TestCase):
             maintainer.pending_maintain = True
             maintainer.pending_maintain_reason = "post-upload maintain"
             maintainer.pending_maintain_names = {"a.json"}
-            maintainer.last_incremental_maintain_started_at = time.monotonic()
+            maintainer.last_incremental_maintain_started_at = 995.0
 
-            with mock.patch("auto_maintain.subprocess.Popen") as popen:
+            with mock.patch("auto_maintain.subprocess.Popen") as popen, mock.patch(
+                "auto_maintain.time.monotonic",
+                return_value=1000.0,
+            ):
                 result = maintainer.maybe_start_maintain()
 
             self.assertEqual(result, 0)
@@ -342,15 +513,50 @@ class AutoMaintainTests(unittest.TestCase):
             maintainer.pending_maintain = True
             maintainer.pending_maintain_reason = "post-upload maintain"
             maintainer.pending_maintain_names = {"a.json"}
-            maintainer.next_maintain_due_at = time.monotonic() + 30
+            maintainer.next_maintain_due_at = 1030.0
 
-            with mock.patch("auto_maintain.subprocess.Popen") as popen:
+            with mock.patch("auto_maintain.subprocess.Popen") as popen, mock.patch(
+                "auto_maintain.time.monotonic",
+                return_value=1000.0,
+            ):
                 result = maintainer.maybe_start_maintain()
 
             self.assertEqual(result, 0)
             self.assertIsNone(maintainer.maintain_process)
             self.assertTrue(maintainer.pending_maintain)
             self.assertEqual(popen.call_count, 0)
+
+    def test_check_and_maybe_upload_invokes_snapshot_seams(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            maintainer = AutoMaintainer(_build_settings(base, auth_dir))
+            observed: dict[str, list[str]] = {}
+
+            def _stub_run_upload_scan_cycle(**kwargs: object) -> int:
+                build_current_snapshot = kwargs["build_current_snapshot"]
+                read_last_uploaded_snapshot = kwargs["read_last_uploaded_snapshot"]
+                if not callable(build_current_snapshot) or not callable(read_last_uploaded_snapshot):
+                    self.fail("snapshot seam callbacks must be callable")
+                observed["current"] = build_current_snapshot()  # type: ignore[misc]
+                observed["uploaded"] = read_last_uploaded_snapshot()  # type: ignore[misc]
+                return 0
+
+            with mock.patch.object(maintainer, "build_snapshot", return_value=["cur|1|1"]) as build_snapshot, mock.patch.object(
+                maintainer, "read_snapshot", return_value=["base|1|1"]
+            ) as read_snapshot, mock.patch(
+                "auto_maintain.run_upload_scan_cycle",
+                side_effect=_stub_run_upload_scan_cycle,
+            ) as runtime_call:
+                result = maintainer.check_and_maybe_upload(force_deep_scan=True)
+
+            self.assertEqual(result, 0)
+            self.assertEqual(runtime_call.call_count, 1)
+            build_snapshot.assert_called_once_with(maintainer.current_snapshot_file)
+            read_snapshot.assert_called_once_with(maintainer.last_uploaded_snapshot_file)
+            self.assertEqual(observed["current"], ["cur|1|1"])
+            self.assertEqual(observed["uploaded"], ["base|1|1"])
 
     def test_snapshot_lines_tolerates_transient_missing_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
