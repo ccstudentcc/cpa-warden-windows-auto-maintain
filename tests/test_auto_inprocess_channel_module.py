@@ -159,6 +159,44 @@ class AutoInprocessChannelTests(unittest.TestCase):
         self.assertEqual(seen_env.get("SAMPLE_FLAG"), "x")
         self.assertEqual(seen_env.get("CPA_WARDEN_DISABLE_RICH_PROGRESS"), "1")
 
+    def test_start_inprocess_channel_forwards_output_line_and_writes_output_file(self) -> None:
+        tmp = self._workspace_temp_dir("inprocess_output_bridge")
+        output_file = tmp / "upload_command_output.log"
+        forwarded_lines: list[str] = []
+
+        def _runner(**kwargs: object) -> int:
+            callback = kwargs.get("on_output_line")
+            if not callable(callback):
+                self.fail("missing on_output_line callback")
+            callback("2026-03-25 09:00:00,000 | INFO | 上传进度: 1/3")
+            callback("2026-03-25 09:00:00,100 | INFO | 上传进度: 2/3")
+            return 0
+
+        start_result = start_inprocess_channel(
+            channel="upload",
+            command=["python", "cpa_warden.py", "--mode", "upload"],
+            cwd=Path("."),
+            env={},
+            output_file=output_file,
+            on_output_line=forwarded_lines.append,
+            command_runner=_runner,
+        )
+        self.assertIsNotNone(start_result.process)
+        if start_result.process is None:
+            self.fail("missing process handle")
+        self.assertEqual(start_result.process.wait(timeout=1), 0)
+        self.assertEqual(
+            forwarded_lines,
+            [
+                "2026-03-25 09:00:00,000 | INFO | 上传进度: 1/3",
+                "2026-03-25 09:00:00,100 | INFO | 上传进度: 2/3",
+            ],
+        )
+        self.assertTrue(output_file.exists())
+        output_text = output_file.read_text(encoding="utf-8")
+        self.assertIn("上传进度: 1/3", output_text)
+        self.assertIn("上传进度: 2/3", output_text)
+
     def test_load_settings_reads_inprocess_execution_enabled(self) -> None:
         tmp = self._workspace_temp_dir("inprocess_settings")
         watch_cfg = tmp / "watch.json"

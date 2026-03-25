@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
+import sys
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
@@ -12,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ..channel.channel_runner import ChannelStartResult
+from .output_pump import append_child_output_line
 from .process_supervisor import ChannelExitResult
 
 LogCallback = Callable[[str], None]
@@ -30,6 +33,10 @@ def _noop_log(_message: str) -> None:
 
 
 def _noop_channel(_channel: str) -> None:
+    return
+
+
+def _noop_output_line(_line: str) -> None:
     return
 
 
@@ -92,12 +99,60 @@ def _temporary_cwd(cwd: str | Path | None) -> Any:
         os.chdir(previous)
 
 
+def _build_output_line_callback(
+    *,
+    output_file: Path | None,
+    on_output_line: OutputLineCallback | None,
+) -> OutputLineCallback:
+    def _handle_output_line(line: str) -> None:
+        if output_file is not None:
+            append_child_output_line(target=output_file, line=line)
+        if on_output_line is not None:
+            on_output_line(line)
+
+    return _handle_output_line
+
+
+class _InProcessLogForwardHandler(logging.Handler):
+    def __init__(self, emit_line: OutputLineCallback) -> None:
+        super().__init__(level=logging.NOTSET)
+        self._emit_line = emit_line
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = self.format(record)
+        except Exception:
+            line = record.getMessage()
+        self._emit_line(line)
+
+
+@contextmanager
+def _temporary_cpa_logger_bridge(*, logger: logging.Logger, on_output_line: OutputLineCallback) -> Any:
+    removed_console_handlers: list[logging.Handler] = []
+    for handler in list(logger.handlers):
+        stream = getattr(handler, "stream", None)
+        if stream in {sys.stdout, sys.stderr}:
+            logger.removeHandler(handler)
+            removed_console_handlers.append(handler)
+
+    bridge_handler = _InProcessLogForwardHandler(on_output_line)
+    bridge_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+    logger.addHandler(bridge_handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(bridge_handler)
+        for handler in removed_console_handlers:
+            logger.addHandler(handler)
+
+
 def run_cpa_command_inprocess(
     *,
     command: list[str],
     cwd: str | Path | None,
     env: Mapping[str, str] | None,
     log: LogCallback,
+    on_output_line: OutputLineCallback | None = None,
 ) -> int:
     """Execute cpa_warden maintain/upload command in-process and return exit code."""
 
@@ -128,17 +183,19 @@ def run_cpa_command_inprocess(
             conf = cpa_app.load_config_json(args.config, required=config_required)
             settings = cpa_app.build_settings(args, conf)
             cpa_app.configure_logging(settings["log_file"], settings["debug"])
-            cpa_app.ensure_credentials(settings, interactive=False)
-            conn = cpa_app.connect_db(settings["db_path"])
-            try:
-                cpa_app.init_db(conn)
-                if mode == "maintain":
-                    asyncio.run(cpa_app.run_maintain_async(conn, settings))
-                else:
-                    asyncio.run(cpa_app.run_upload_async(conn, settings))
-                return 0
-            finally:
-                conn.close()
+            bridge_output = on_output_line or _noop_output_line
+            with _temporary_cpa_logger_bridge(logger=cpa_app.LOGGER, on_output_line=bridge_output):
+                cpa_app.ensure_credentials(settings, interactive=False)
+                conn = cpa_app.connect_db(settings["db_path"])
+                try:
+                    cpa_app.init_db(conn)
+                    if mode == "maintain":
+                        asyncio.run(cpa_app.run_maintain_async(conn, settings))
+                    else:
+                        asyncio.run(cpa_app.run_upload_async(conn, settings))
+                    return 0
+                finally:
+                    conn.close()
         except SystemExit as exc:
             return _normalize_system_exit_code(exc)
         except KeyboardInterrupt:
@@ -242,16 +299,21 @@ def start_channel(
 ) -> ChannelStartResult:
     """Start in-process channel execution with process-like lifecycle semantics."""
 
-    del output_file, on_output_line, popen_factory
+    del popen_factory
     warn = log or _noop_log
     mark_running = mark_channel_running or _noop_channel
     on_start_error = handle_start_error or _default_start_error_handler
+    handle_output_line = _build_output_line_callback(
+        output_file=output_file,
+        on_output_line=on_output_line,
+    )
     runner = command_runner or (
         lambda **kwargs: run_cpa_command_inprocess(
             command=list(kwargs["command"]),
             cwd=kwargs["cwd"],
             env=kwargs["env"],
             log=kwargs["log"],
+            on_output_line=kwargs["on_output_line"],
         )
     )
     runner_env = dict(env or {})
@@ -267,6 +329,7 @@ def start_channel(
                 cwd=cwd,
                 env=runner_env,
                 log=warn,
+                on_output_line=handle_output_line,
                 cancel_requested=cancel_requested,
             ),
             log=warn,

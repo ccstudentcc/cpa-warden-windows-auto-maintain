@@ -21,6 +21,8 @@ from ..state.runtime_state import (
 )
 from ...scheduler.smart_scheduler import SmartSchedulerConfig, SmartSchedulerPolicy
 
+GLOBAL_CONSOLE_LOCK = threading.RLock()
+
 
 def initialize_host_state(
     *,
@@ -65,7 +67,7 @@ def initialize_host_state(
     host.maintain_cmd_output_file = host.settings.state_dir / "maintain_command_output.log"
     host.upload_cmd_output_file = host.settings.state_dir / "upload_command_output.log"
     host.output_lock = threading.Lock()
-    host.console_lock = threading.Lock()
+    host.console_lock = GLOBAL_CONSOLE_LOCK
     host.upload_progress_state = {"stage": STAGE_IDLE, "done": 0, "total": 0}
     host.maintain_progress_state = {"stage": STAGE_IDLE, "done": 0, "total": 0}
     host.last_progress_render_at = 0.0

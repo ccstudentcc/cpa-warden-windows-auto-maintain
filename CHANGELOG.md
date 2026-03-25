@@ -66,6 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Stage-7 hardening now applies the shared temp sandbox bootstrap across unittest modules that rely on `tempfile`, making full discovery (`273` tests) pass consistently in constrained Windows/Python 3.14 environments.
 - Stage-7 rollout/rollback documentation is now synchronized across `README.md`, `README.zh-CN.md`, `ARCHITECTURE.md`, and `cwma/auto/BOUNDARY_MAP.md` with explicit `INPROCESS_EXECUTION_ENABLED` guidance.
 - In-process channel startup now forces `CPA_WARDEN_DISABLE_RICH_PROGRESS=1` so nested `cpa_warden` runs do not render Rich live progress bars that interfere with watcher fixed-panel terminal UI.
+- In-process channel logging now bridges through the watcher output callback path (instead of direct stdout), so progress parsing/panel state updates remain consistent and fixed-panel redraw is no longer torn by child logger output.
 
 ## [cwma 0.1.0] - 2026-03-23
 

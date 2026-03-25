@@ -49,7 +49,7 @@ from .runtime.channel_runtime import (
 )
 from .runtime.channel_runtime_adapter import ChannelRuntimeAdapter
 from .runtime.cycle_runtime_adapter import CycleRuntimeAdapter
-from .runtime.host_init_adapter import initialize_host_state
+from .runtime.host_init_adapter import GLOBAL_CONSOLE_LOCK, initialize_host_state
 from .runtime.lifecycle_runtime_adapter import LifecycleRuntimeAdapter
 from .runtime.host_ops_adapter import HostOpsAdapter
 from .runtime.panel_runtime_adapter import PanelRuntimeAdapter, detect_panel_capability
@@ -76,7 +76,8 @@ from .state.upload_queue import UploadQueueState
 
 def log(message: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {message}", flush=True)
+    with GLOBAL_CONSOLE_LOCK:
+        print(f"[{ts}] {message}", flush=True)
 
 
 class AutoMaintainer:
