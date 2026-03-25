@@ -125,6 +125,7 @@ class PanelRuntimeAdapter:
             maintain_retry_due_at=self.host.maintain_retry_due_at,
             next_maintain_due_at=self.host.next_maintain_due_at,
             last_incremental_defer_reason=self.host.last_incremental_defer_reason,
+            maintain_queue_state=self.host.runtime.maintain.queue,
             now_monotonic=now_monotonic,
             compute_upload_queue_batches=self._compute_upload_queue_batches,
             choose_incremental_maintain_batch_size=(

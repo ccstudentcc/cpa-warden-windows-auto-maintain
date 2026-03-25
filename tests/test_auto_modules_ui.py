@@ -5,6 +5,15 @@ import unittest
 from unittest import mock
 
 from cwma.auto.channel.channel_status import CHANNEL_UPLOAD, STATE_PENDING, STATE_RUNNING
+from cwma.auto.state.maintain_queue import (
+    MAINTAIN_SCOPE_FULL,
+    MAINTAIN_SCOPE_INCREMENTAL,
+    MAINTAIN_STEP_DELETE_401,
+    MAINTAIN_STEP_SCAN,
+    MaintainJob,
+    MaintainPipelineState,
+    MaintainQueueState,
+)
 from cwma.auto.ui.dashboard import apply_panel_colors, fit_panel_line, panel_border_line
 from cwma.auto.ui.panel_render import (
     PanelLinesContext,
@@ -153,7 +162,7 @@ class AutoModuleUiTests(unittest.TestCase):
             fit_line=lambda text: text,
             border_line=lambda char: char * 8,
         )
-        self.assertEqual(len(lines), 8)
+        self.assertEqual(len(lines), 10)
         self.assertEqual(lines[0], "========")
         self.assertEqual(lines[4], "--------")
         self.assertIn("panel=log", lines[1])
@@ -161,6 +170,9 @@ class AutoModuleUiTests(unittest.TestCase):
         self.assertIn("queue_files=2", lines[3])
         self.assertIn("MAINTAIN [##----------------] 1/5", lines[5])
         self.assertIn("queue_incremental=1", lines[6])
+        self.assertIn("steps_qr=", lines[7])
+        self.assertIn("parallel=", lines[8])
+        self.assertEqual(lines[9], "========")
 
     def test_panel_signature_joins_lines_with_newlines(self) -> None:
         self.assertEqual(panel_signature(["a", "b", "c"]), "a\nb\nc")
@@ -312,4 +324,73 @@ class AutoModuleUiTests(unittest.TestCase):
         self.assertEqual(snapshot.pending_incremental, 0)
         self.assertEqual(snapshot.maintain_next_batch, 0)
         self.assertEqual(snapshot.maintain_inflight_scope, "full")
+
+    def test_build_panel_snapshot_step_queues_parallel_and_retry(self) -> None:
+        maintain_queue_state = MaintainQueueState(
+            pending=True,
+            reason="pipeline state",
+            names=None,
+            pipeline=MaintainPipelineState(
+                next_job_seq=4,
+                jobs={
+                    "job-1": MaintainJob(
+                        job_id="job-1",
+                        scope_type=MAINTAIN_SCOPE_INCREMENTAL,
+                        names={"a.json"},
+                        reason="retry delete_401",
+                        created_at=0.0,
+                        stage_cursor=MAINTAIN_STEP_DELETE_401,
+                    ),
+                    "job-2": MaintainJob(
+                        job_id="job-2",
+                        scope_type=MAINTAIN_SCOPE_INCREMENTAL,
+                        names={"b.json"},
+                        reason="running scan",
+                        created_at=0.0,
+                        stage_cursor=MAINTAIN_STEP_SCAN,
+                    ),
+                    "job-3": MaintainJob(
+                        job_id="job-3",
+                        scope_type=MAINTAIN_SCOPE_FULL,
+                        names=None,
+                        reason="queued full",
+                        created_at=0.0,
+                        stage_cursor=MAINTAIN_STEP_SCAN,
+                    ),
+                },
+                maintain_scan_queue=["job-3"],
+            ),
+        )
+        snapshot = build_panel_snapshot(
+            upload_progress_state={"stage": "upload", "done": 2, "total": 5},
+            maintain_progress_state={"stage": "running", "done": 1, "total": 4},
+            pending_upload_snapshot=["a"],
+            inflight_upload_snapshot=["a"],
+            pending_upload_reason="detected changes",
+            upload_running=True,
+            upload_retry_due_at=0.0,
+            pending_maintain=True,
+            pending_maintain_names=None,
+            pending_maintain_reason="scheduled maintain",
+            inflight_maintain_names=None,
+            maintain_running=True,
+            maintain_retry_due_at=0.0,
+            next_maintain_due_at=None,
+            last_incremental_defer_reason="batch_too_small_waiting_fill",
+            maintain_queue_state=maintain_queue_state,
+            now_monotonic=10.0,
+            compute_upload_queue_batches=lambda pending: (1, 1),
+            choose_incremental_maintain_batch_size=lambda pending, upload_pressure: pending,
+        )
+        step_map = {step.step: step for step in snapshot.maintain_steps}
+        self.assertEqual(snapshot.maintain_parallel_state, "channels+pipeline")
+        self.assertEqual(snapshot.maintain_queue_full_jobs, 1)
+        self.assertEqual(snapshot.maintain_queue_incremental_jobs, 2)
+        self.assertEqual(snapshot.maintain_running_full_jobs, 0)
+        self.assertEqual(snapshot.maintain_running_incremental_jobs, 2)
+        self.assertEqual(step_map[MAINTAIN_STEP_SCAN].queued, 1)
+        self.assertEqual(step_map[MAINTAIN_STEP_SCAN].running, 1)
+        self.assertEqual(step_map[MAINTAIN_STEP_DELETE_401].running, 1)
+        self.assertEqual(step_map[MAINTAIN_STEP_DELETE_401].retry, 1)
+        self.assertEqual(snapshot.maintain_retry_jobs, 1)
 

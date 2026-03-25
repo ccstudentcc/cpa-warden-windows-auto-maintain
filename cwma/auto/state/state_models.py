@@ -70,7 +70,7 @@ class UiRuntimeState:
     progress_render_interval_seconds: float = 0.4
     progress_render_heartbeat_seconds: float = 8.0
     last_progress_signature: str = ""
-    panel_height: int = 8
+    panel_height: int = 10
     panel_title: str = "CPA Warden Auto Dashboard"
     panel_enabled: bool = False
     panel_color_enabled: bool = False

@@ -31,6 +31,7 @@ See [NOTICE](NOTICE) for attribution details.
 - Maintain service now executes explicit ordered steps (`scan -> delete_401 -> quota -> reenable -> finalize`) through a step engine + pipeline runtime policy
 - Upload stability wait now freezes the current candidate batch, defers in-window new/updated rows to next-round intake, and merges pending rows by path (`last-writer-wins`)
 - Smart scheduler batch sizing is now driven by a shared total-backlog signal (upload pending + incremental pending + full-maintain equivalent backlog), and incremental defer is narrowed to `batch_too_small_waiting_fill` only
+- Dashboard panel now exposes maintain step-queue observability (`steps_qr` / `steps_retry`), full-vs-incremental job counters, and channel/pipeline parallel-state hints
 
 ## Documentation Architecture
 
@@ -58,6 +59,7 @@ The goal is not replacing `cpa_warden.py`, but running it safely and continuousl
 - isolate maintain/upload runtime DB and log files
 - keep upload stability wait bounded by freezing the current batch and deferring in-window changes to the next queue intake
 - allow incremental maintain defer only when current incremental slice is too small and upload-side fill source is active (`batch_too_small_waiting_fill`)
+- render maintain pipeline queue/running/retry/defer state directly in panel output, including full/incremental job split and parallel-state visibility
 - support archive intake (`.zip/.7z/.rar`, Bandizip first, Windows fallback for `.zip`)
 - clean uploaded files and prune empty directories
 - keep single-instance safety (launcher lock + Python runtime lock)

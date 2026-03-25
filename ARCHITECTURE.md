@@ -47,6 +47,11 @@ Scheduling Stage-5 total-backlog policy is now in place:
 - upload/incremental maintain batch sizing accepts a shared total-backlog signal (`pending upload + pending incremental + full-maintain equivalent backlog`)
 - incremental maintain defer semantics are narrowed to the single small-fill case (`batch_too_small_waiting_fill`) when upload-side fill source is active
 
+UI Stage-6 step-queue observability is now in place:
+
+- panel snapshot composition consumes maintain pipeline queue state and projects per-step `queued/running/retry` counters (`scan/delete_401/quota/reenable/finalize`)
+- panel output now includes full/incremental maintain job counters and parallel-state hints (`channels`, `pipeline`, `channels+pipeline`)
+
 ## 3. Documentation Architecture
 
 To avoid drift and duplicated maintenance:
@@ -194,6 +199,7 @@ Runtime-local copy:
 - Scheduled maintain is full scope.
 - Post-upload maintain is incremental and derived from completed upload batch names.
 - Maintain queue state keeps a unified Job model for full/incremental and separate step queues (`scan/delete_401/quota/reenable/finalize`).
+- UI snapshot derives step-level queue/running/retry telemetry from the same maintain pipeline state and preserves fallback rendering when pipeline fields are absent.
 - Maintain step engine enforces serial order per job and supports cross-job pipeline concurrency:
   - one action-stage job can run while another job runs scan
   - action-stage claim respects account-name locks to avoid conflicting side effects

@@ -72,7 +72,7 @@ def initialize_host_state(
     host.progress_render_interval_seconds = 0.4
     host.progress_render_heartbeat_seconds = 8.0
     host.last_progress_signature = ""
-    host.panel_height = 8
+    host.panel_height = 10
     host.panel_title = "CPA Warden Auto Dashboard"
     host.panel_enabled = detect_panel_capability()
     host.panel_color_enabled = (

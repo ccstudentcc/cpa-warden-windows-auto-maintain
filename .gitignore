@@ -3,6 +3,7 @@
 .uv_cache/
 .uv_python/
 .tmp_unittest_temp/
+.tmp*/
 __pycache__/
 *.pyc
 config.json

@@ -31,6 +31,7 @@
 - maintain 服务已通过步骤引擎与流水线运行策略执行有序步骤（`scan -> delete_401 -> quota -> reenable -> finalize`）
 - 上传稳定等待已采用“冻结当前候选批次”策略；窗口内新增/更新项延后到下一轮入队，且按路径合并待上传项（`last-writer-wins`）
 - 智能调度批次决策已改为共享“总积压”信号（上传待处理 + 增量维护待处理 + 全量维护等价积压）；增量 defer 语义已收敛为仅 `batch_too_small_waiting_fill`
+- 仪表盘面板已支持 maintain 步骤队列可观测（`steps_qr` / `steps_retry`）、full/incremental 作业计数，以及通道/流水线并行状态提示
 
 ## 文档架构（避免冗余）
 
@@ -58,6 +59,7 @@
 - 维护/上传运行数据库与日志分离
 - 上传稳定等待采用冻结当前批次策略，避免等待窗口内变更无限重置计时
 - 增量维护仅在“当前批次过小且存在上传侧补充来源”时才 defer（`batch_too_small_waiting_fill`）
+- 终端面板直接展示 maintain pipeline 的 queue/running/retry/defer 状态，并区分 full/incremental 作业与并行状态
 - 支持归档入口（`.zip/.7z/.rar`，Bandizip 优先，`.zip` 可回退 Windows 内置解压）
 - 上传后清理文件并清理空目录
 - 双层单实例保护（启动器锁 + Python 运行时锁）

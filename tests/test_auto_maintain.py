@@ -15,6 +15,15 @@ from auto_maintain import AutoMaintainer, Settings, load_settings
 from cwma.auto.channel.channel_status import CHANNEL_UPLOAD
 from cwma.auto.runtime.startup_runtime import StartupRuntimeResult, StartupRuntimeState
 from cwma.auto.runtime.watch_runtime import WatchRuntimeResult, WatchRuntimeState
+from cwma.auto.state.maintain_queue import (
+    MAINTAIN_SCOPE_FULL,
+    MAINTAIN_SCOPE_INCREMENTAL,
+    MAINTAIN_STEP_DELETE_401,
+    MAINTAIN_STEP_SCAN,
+    MaintainJob,
+    MaintainPipelineState,
+    MaintainQueueState,
+)
 from cwma.auto.state.snapshots import compute_uploaded_baseline as compute_uploaded_baseline_rows
 
 _ORIGINAL_TEMP_ENV: dict[str, str | None] = {}
@@ -1011,9 +1020,37 @@ class AutoMaintainTests(unittest.TestCase):
             maintainer.inflight_upload_snapshot = [
                 f"{auth_dir / 'a.json'}|1|1",
             ]
-            maintainer.pending_maintain = True
-            maintainer.pending_maintain_reason = "post-upload maintain"
-            maintainer.pending_maintain_names = {"a.json", "b.json"}
+            maintainer._apply_maintain_queue_state(
+                MaintainQueueState(
+                    pending=True,
+                    reason="pipeline maintain",
+                    names=None,
+                    pipeline=MaintainPipelineState(
+                        next_job_seq=3,
+                        jobs={
+                            "job-full": MaintainJob(
+                                job_id="job-full",
+                                scope_type=MAINTAIN_SCOPE_FULL,
+                                names=None,
+                                reason="scheduled maintain",
+                                created_at=0.0,
+                                stage_cursor=MAINTAIN_STEP_SCAN,
+                            ),
+                            "job-inc": MaintainJob(
+                                job_id="job-inc",
+                                scope_type=MAINTAIN_SCOPE_INCREMENTAL,
+                                names={"a.json"},
+                                reason="maintain retry",
+                                created_at=0.0,
+                                stage_cursor=MAINTAIN_STEP_DELETE_401,
+                            ),
+                        },
+                        maintain_scan_queue=["job-full"],
+                        maintain_delete_401_queue=["job-inc"],
+                    ),
+                )
+            )
+            maintainer.maintain_retry_due_at = 19.0
 
             with mock.patch("auto_maintain.log") as log_mock:
                 maintainer.render_progress_snapshot(force=True)
@@ -1023,18 +1060,30 @@ class AutoMaintainTests(unittest.TestCase):
             maintain_lines = [line for line in lines if line.startswith("MAINTAIN ")]
             upload_queue_lines = [line for line in lines if "queue_files=" in line]
             maintain_queue_lines = [line for line in lines if "queue_full=" in line]
+            maintain_step_queue_lines = [line for line in lines if "steps_qr=" in line]
+            maintain_step_retry_lines = [line for line in lines if "steps_retry=" in line]
             header_lines = [line for line in lines if line.startswith("CPA Warden Auto Dashboard")]
             self.assertEqual(len(header_lines), 1)
             self.assertEqual(len(upload_lines), 1)
             self.assertEqual(len(maintain_lines), 1)
             self.assertEqual(len(upload_queue_lines), 1)
             self.assertEqual(len(maintain_queue_lines), 1)
+            self.assertEqual(len(maintain_step_queue_lines), 1)
+            self.assertEqual(len(maintain_step_retry_lines), 1)
             self.assertIn("queue_files=3", upload_queue_lines[0])
             self.assertIn("queue_batches=1", upload_queue_lines[0])
             self.assertIn("next_batch=3", upload_queue_lines[0])
             self.assertIn("inflight=1", upload_queue_lines[0])
-            self.assertIn("queue_full=0", maintain_queue_lines[0])
-            self.assertIn("queue_incremental=2", maintain_queue_lines[0])
+            self.assertIn("queue_full=1", maintain_queue_lines[0])
+            self.assertIn("queue_incremental=0", maintain_queue_lines[0])
+            self.assertIn("jobs_full=1", maintain_queue_lines[0])
+            self.assertIn("jobs_incremental=1", maintain_queue_lines[0])
+            self.assertIn("steps_qr=", maintain_step_queue_lines[0])
+            self.assertIn("scan:q1/r0", maintain_step_queue_lines[0])
+            self.assertIn("delete_401:q1/r0", maintain_step_queue_lines[0])
+            self.assertIn("steps_retry=", maintain_step_retry_lines[0])
+            self.assertIn("delete_401:1", maintain_step_retry_lines[0])
+            self.assertIn("retry_jobs=1", maintain_step_retry_lines[0])
 
     def test_render_progress_snapshot_skips_duplicate_panel_logs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

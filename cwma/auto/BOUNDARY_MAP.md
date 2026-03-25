@@ -104,6 +104,7 @@ Owner scope:
 Responsibilities:
 - progress parsing and presentation state
 - panel snapshot composition and render policy
+- maintain pipeline step-queue observability projection (`steps_qr` / `steps_retry`, full/incremental job counters, parallel-state hints)
 - fixed-panel terminal I/O adapter behavior
 
 ### Package Surface
@@ -134,6 +135,17 @@ Responsibilities:
 - `tests/test_auto_maintain.py` now includes host-level batch/defer integration assertions for:
   - upload batch expansion from total backlog signal when full maintain is pending
   - incremental maintain defer/no-defer boundaries under small-fill vs sufficient-fill scenarios
+
+## Stage 6 Test Mapping Update
+
+- `tests/test_auto_modules_ui.py` now includes Stage-6 UI snapshot assertions for:
+  - maintain step-level `queued/running/retry` projection from pipeline queues
+  - channel + pipeline parallel-state derivation (`channels`, `pipeline`, `channels+pipeline`)
+  - full/incremental job counter projection in panel snapshot
+- `tests/test_auto_maintain.py::test_render_progress_snapshot_includes_queue_details` now verifies panel output includes:
+  - `jobs_full/jobs_incremental`
+  - `steps_qr/steps_retry/retry_jobs`
+  - step-level retry visibility (e.g. `delete_401:1`)
 
 ## Stage 2.6 Test Modules Map (Closeout Completed)
 

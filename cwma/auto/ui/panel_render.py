@@ -28,6 +28,20 @@ class SignatureHeartbeatGate:
     heartbeat_seconds: float
 
 
+def _format_step_qr_tokens(snapshot: PanelSnapshot) -> str:
+    tokens: list[str] = []
+    for step_snapshot in snapshot.maintain_steps:
+        tokens.append(f"{step_snapshot.step}:q{step_snapshot.queued}/r{step_snapshot.running}")
+    return " ".join(tokens) if tokens else "-"
+
+
+def _format_step_retry_tokens(snapshot: PanelSnapshot) -> str:
+    tokens: list[str] = []
+    for step_snapshot in snapshot.maintain_steps:
+        tokens.append(f"{step_snapshot.step}:{step_snapshot.retry}")
+    return " ".join(tokens) if tokens else "-"
+
+
 def build_plain_panel_lines(
     *,
     snapshot: PanelSnapshot,
@@ -62,11 +76,25 @@ def build_plain_panel_lines(
             "         "
             f"queue_full={int(snapshot.pending_full)} "
             f"queue_incremental={snapshot.pending_incremental} "
+            f"jobs_full={snapshot.maintain_queue_full_jobs} "
+            f"jobs_incremental={snapshot.maintain_queue_incremental_jobs} "
             f"next_batch={snapshot.maintain_next_batch} "
             f"inflight_scope={snapshot.maintain_inflight_scope} "
+            f"running_full={snapshot.maintain_running_full_jobs} "
+            f"running_incremental={snapshot.maintain_running_incremental_jobs} "
             f"retry={snapshot.maintain_retry_wait}s "
             f"next_full={snapshot.next_full_wait}s "
             f"defer={context.maintain_defer_text} reason={context.maintain_reason_text}"
+        ),
+        fit_line(
+            "         "
+            f"steps_qr={_format_step_qr_tokens(snapshot)}"
+        ),
+        fit_line(
+            "         "
+            f"steps_retry={_format_step_retry_tokens(snapshot)} "
+            f"retry_jobs={snapshot.maintain_retry_jobs} "
+            f"parallel={snapshot.maintain_parallel_state}"
         ),
         fit_line(border_line("=")),
     ]

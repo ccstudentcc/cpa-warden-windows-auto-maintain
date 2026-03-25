@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS`
 - Watcher now pumps child command output through parser threads, keeps command-output artifacts under `.auto_maintain_state/*_command_output.log`, and renders concise per-channel terminal panel snapshots to avoid parallel progress-bar flicker
 - Panel snapshots now expose per-channel queue visibility (`queue_files`, `queue_batches`, `queue_full`, `queue_incremental`, retry waits, and next full-maintain wait)
+- Panel snapshots now also expose maintain pipeline step-queue observability (`steps_qr`, `steps_retry`, `retry_jobs`), full/incremental job counters (`jobs_full`, `jobs_incremental`), and channel/pipeline parallel-state hints
 - Added fixed dashboard redraw and optional color/channel separators for clearer upload/maintain panel readability (`AUTO_MAINTAIN_FIXED_PANEL`, `AUTO_MAINTAIN_PANEL_COLOR`)
 - Child output decoding now uses UTF-8-first fallback chain (including GB18030/CP936) to reduce mojibake in Chinese logs
 - While upload is running, watcher now performs lightweight JSON/ZIP change probing and triggers immediate deep upload-check after current batch completes
