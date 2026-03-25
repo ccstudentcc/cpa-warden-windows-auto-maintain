@@ -21,6 +21,8 @@ ThreadFactory = Callable[..., threading.Thread]
 ChannelCommandRunner = Callable[..., int]
 
 _CPA_INPROCESS_RUN_LOCK = threading.Lock()
+_DISABLE_RICH_PROGRESS_ENV_KEY = "CPA_WARDEN_DISABLE_RICH_PROGRESS"
+_DISABLE_RICH_PROGRESS_ENV_VALUE = "1"
 
 
 def _noop_log(_message: str) -> None:
@@ -252,6 +254,8 @@ def start_channel(
             log=kwargs["log"],
         )
     )
+    runner_env = dict(env or {})
+    runner_env[_DISABLE_RICH_PROGRESS_ENV_KEY] = _DISABLE_RICH_PROGRESS_ENV_VALUE
 
     try:
         process = InProcessChannelHandle(
@@ -261,7 +265,7 @@ def start_channel(
                 channel=channel,
                 command=list(command),
                 cwd=cwd,
-                env=None if env is None else dict(env),
+                env=runner_env,
                 log=warn,
                 cancel_requested=cancel_requested,
             ),

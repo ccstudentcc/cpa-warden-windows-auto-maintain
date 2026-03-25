@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -192,6 +193,8 @@ def configure_logging(log_file: str, debug: bool) -> None:
 
 
 def rich_progress_enabled(debug: bool) -> bool:
+    if os.getenv("CPA_WARDEN_DISABLE_RICH_PROGRESS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return False
     return bool((Progress is not None) and (not debug) and hasattr(sys.stdout, "isatty") and sys.stdout.isatty())
 
 

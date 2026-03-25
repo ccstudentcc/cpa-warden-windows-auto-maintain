@@ -135,6 +135,30 @@ class AutoInprocessChannelTests(unittest.TestCase):
         start_result.process.terminate()
         self.assertEqual(start_result.process.wait(timeout=1), 130)
 
+    def test_start_inprocess_channel_injects_disable_rich_progress_env(self) -> None:
+        seen_env: dict[str, str] = {}
+
+        def _runner(**kwargs: object) -> int:
+            env = kwargs.get("env")
+            if not isinstance(env, dict):
+                self.fail("missing env mapping")
+            seen_env.update({str(k): str(v) for k, v in env.items()})
+            return 0
+
+        start_result = start_inprocess_channel(
+            channel="upload",
+            command=["python", "cpa_warden.py", "--mode", "upload"],
+            cwd=Path("."),
+            env={"SAMPLE_FLAG": "x"},
+            command_runner=_runner,
+        )
+        self.assertIsNotNone(start_result.process)
+        if start_result.process is None:
+            self.fail("missing process handle")
+        self.assertEqual(start_result.process.wait(timeout=1), 0)
+        self.assertEqual(seen_env.get("SAMPLE_FLAG"), "x")
+        self.assertEqual(seen_env.get("CPA_WARDEN_DISABLE_RICH_PROGRESS"), "1")
+
     def test_load_settings_reads_inprocess_execution_enabled(self) -> None:
         tmp = self._workspace_temp_dir("inprocess_settings")
         watch_cfg = tmp / "watch.json"
