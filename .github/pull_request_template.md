@@ -8,8 +8,8 @@ Describe the purpose of this pull request.
 
 ## Validation
 
-- [ ] `uv run python -m py_compile cpa_warden.py clean_codex_accounts.py`
-- [ ] `uv run python cpa_warden.py --help`
+- [ ] `uv run python tools/quality_gate_runner.py --output results/quality_gate_report.md --strict`
+- [ ] `uv run python tools/stage_comparison_report.py --candidate results/stageX_json_replay_candidate.csv --output results/stageX_vs_stage0_report.md --stage-label "Stage X" --commit-ref <commit-sha>`（若涉及性能闸门）
 - [ ] Runtime behavior tested locally if applicable
 
 ## Notes

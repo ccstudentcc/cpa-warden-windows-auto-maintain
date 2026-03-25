@@ -180,6 +180,74 @@ class AutoModuleStateTests(unittest.TestCase):
         self.assertFalse(deferred)
         self.assertEqual(reason, "")
 
+    def test_smart_scheduler_upload_ewma_smoothing_keeps_throughput_after_spike(self) -> None:
+        policy = SmartSchedulerPolicy(
+            SmartSchedulerConfig(
+                enabled=True,
+                adaptive_upload_batching=True,
+                base_upload_batch_size=100,
+                upload_high_backlog_threshold=400,
+                upload_high_backlog_batch_size=300,
+                adaptive_maintain_batching=True,
+                base_incremental_maintain_batch_size=120,
+                maintain_high_backlog_threshold=300,
+                maintain_high_backlog_batch_size=220,
+                incremental_maintain_min_interval_seconds=20,
+                incremental_maintain_full_guard_seconds=90,
+                backlog_ewma_alpha=0.2,
+            )
+        )
+        first = policy.choose_upload_batch_size(
+            pending_count=300,
+            maintain_pressure=True,
+            total_backlog=500,
+        )
+        second = policy.choose_upload_batch_size(
+            pending_count=300,
+            maintain_pressure=True,
+            total_backlog=100,
+        )
+        self.assertEqual(first, 300)
+        self.assertEqual(second, 300)
+
+    def test_smart_scheduler_upload_hysteresis_uses_enter_and_exit_thresholds(self) -> None:
+        policy = SmartSchedulerPolicy(
+            SmartSchedulerConfig(
+                enabled=True,
+                adaptive_upload_batching=True,
+                base_upload_batch_size=100,
+                upload_high_backlog_threshold=400,
+                upload_high_backlog_batch_size=300,
+                adaptive_maintain_batching=True,
+                base_incremental_maintain_batch_size=120,
+                maintain_high_backlog_threshold=300,
+                maintain_high_backlog_batch_size=220,
+                incremental_maintain_min_interval_seconds=20,
+                incremental_maintain_full_guard_seconds=90,
+                scheduler_hysteresis_enabled=True,
+                upload_high_backlog_enter_threshold=400,
+                upload_high_backlog_exit_threshold=260,
+            )
+        )
+        entered = policy.choose_upload_batch_size(
+            pending_count=180,
+            maintain_pressure=True,
+            total_backlog=450,
+        )
+        held = policy.choose_upload_batch_size(
+            pending_count=180,
+            maintain_pressure=True,
+            total_backlog=300,
+        )
+        exited = policy.choose_upload_batch_size(
+            pending_count=180,
+            maintain_pressure=True,
+            total_backlog=240,
+        )
+        self.assertEqual(entered, 180)
+        self.assertEqual(held, 180)
+        self.assertEqual(exited, 100)
+
     def test_snapshot_file_helpers_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

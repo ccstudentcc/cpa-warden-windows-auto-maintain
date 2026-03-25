@@ -78,3 +78,24 @@ uv run python -m py_compile tests/test_auto_modules_process_channel.py tests/tes
 
 - 在受限运行环境中，如出现 `KeyboardInterrupt` 或退出码 `130/137`，按“外部中断”处理，不视为稳定结果。
 - 需要将对应命令串行重跑，直到回归命令稳定完成。
+
+## 7) StageX 对比报告（质量闸门 G3）
+
+```bash
+uv run python tools/stage0_json_replay_benchmark.py --output results/stageX_json_replay_candidate.csv
+uv run python tools/stage_comparison_report.py --candidate results/stageX_json_replay_candidate.csv --output results/stageX_vs_stage0_report.md --stage-label "Stage X" --commit-ref <commit-sha>
+```
+
+## 8) G1/G2 一键质量闸门
+
+```bash
+uv run python tools/quality_gate_runner.py --output results/quality_gate_report.md --strict
+```
+
+说明：该命令会执行 `BASE`（compile + CLI help）以及 `G1/G2` 测试闸门。
+
+仅跑 G1（跳过 G2 集成套件）：
+
+```bash
+uv run python tools/quality_gate_runner.py --g1-only --output results/quality_gate_report.md --strict
+```

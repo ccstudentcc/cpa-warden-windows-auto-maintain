@@ -133,6 +133,7 @@ Responsibilities:
 - `tests/test_auto_modules_state.py` now includes Stage-5 scheduler/defer assertions for:
   - total-backlog-aware batch sizing on upload and incremental maintain policy entrypoints
   - narrowed incremental defer semantics (`batch_too_small_waiting_fill` only)
+  - optional EWMA smoothing and hysteresis enter/exit threshold behavior under backlog oscillation
 - `tests/test_auto_maintain.py` now includes host-level batch/defer integration assertions for:
   - upload batch expansion from total backlog signal when full maintain is pending
   - incremental maintain defer/no-defer boundaries under small-fill vs sufficient-fill scenarios

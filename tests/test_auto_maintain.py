@@ -912,6 +912,12 @@ class AutoMaintainTests(unittest.TestCase):
                         "adaptive_upload_batching": False,
                         "upload_high_backlog_threshold": 33,
                         "upload_high_backlog_batch_size": 22,
+                        "backlog_ewma_alpha": 0.4,
+                        "scheduler_hysteresis_enabled": True,
+                        "upload_high_backlog_enter_threshold": 40,
+                        "upload_high_backlog_exit_threshold": 25,
+                        "maintain_high_backlog_enter_threshold": 35,
+                        "maintain_high_backlog_exit_threshold": 20,
                         "incremental_maintain_min_interval_seconds": 9,
                         "incremental_maintain_full_guard_seconds": 8,
                         "run_upload_on_start": False,
@@ -932,6 +938,12 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertFalse(settings.adaptive_upload_batching)
             self.assertEqual(settings.upload_high_backlog_threshold, 33)
             self.assertEqual(settings.upload_high_backlog_batch_size, 22)
+            self.assertEqual(settings.backlog_ewma_alpha, 0.4)
+            self.assertTrue(settings.scheduler_hysteresis_enabled)
+            self.assertEqual(settings.upload_high_backlog_enter_threshold, 40)
+            self.assertEqual(settings.upload_high_backlog_exit_threshold, 25)
+            self.assertEqual(settings.maintain_high_backlog_enter_threshold, 35)
+            self.assertEqual(settings.maintain_high_backlog_exit_threshold, 20)
             self.assertEqual(settings.incremental_maintain_min_interval_seconds, 9)
             self.assertEqual(settings.incremental_maintain_full_guard_seconds, 8)
             self.assertFalse(settings.run_upload_on_start)
@@ -969,6 +981,12 @@ class AutoMaintainTests(unittest.TestCase):
                     "ADAPTIVE_UPLOAD_BATCHING": "1",
                     "UPLOAD_HIGH_BACKLOG_THRESHOLD": "44",
                     "UPLOAD_HIGH_BACKLOG_BATCH_SIZE": "55",
+                        "BACKLOG_EWMA_ALPHA": "0.2",
+                        "SCHEDULER_HYSTERESIS_ENABLED": "1",
+                        "UPLOAD_HIGH_BACKLOG_ENTER_THRESHOLD": "66",
+                        "UPLOAD_HIGH_BACKLOG_EXIT_THRESHOLD": "33",
+                        "MAINTAIN_HIGH_BACKLOG_ENTER_THRESHOLD": "77",
+                        "MAINTAIN_HIGH_BACKLOG_EXIT_THRESHOLD": "44",
                         "INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS": "77",
                         "INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS": "88",
                         "RUN_UPLOAD_ON_START": "1",
@@ -983,6 +1001,12 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertTrue(settings.adaptive_upload_batching)
             self.assertEqual(settings.upload_high_backlog_threshold, 44)
             self.assertEqual(settings.upload_high_backlog_batch_size, 55)
+            self.assertEqual(settings.backlog_ewma_alpha, 0.2)
+            self.assertTrue(settings.scheduler_hysteresis_enabled)
+            self.assertEqual(settings.upload_high_backlog_enter_threshold, 66)
+            self.assertEqual(settings.upload_high_backlog_exit_threshold, 33)
+            self.assertEqual(settings.maintain_high_backlog_enter_threshold, 77)
+            self.assertEqual(settings.maintain_high_backlog_exit_threshold, 44)
             self.assertEqual(settings.incremental_maintain_min_interval_seconds, 77)
             self.assertEqual(settings.incremental_maintain_full_guard_seconds, 88)
             self.assertTrue(settings.run_upload_on_start)

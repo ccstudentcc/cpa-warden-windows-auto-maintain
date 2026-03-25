@@ -220,6 +220,9 @@ Rollout/rollback controls:
 - Smart scheduler uses backlog-sensitive mode switching:
   - lower backlog: smaller slices to improve upload/maintain interleaving responsiveness
   - higher backlog: larger slices to improve queue-drain throughput
+- Smart scheduler optionally supports EWMA backlog smoothing and enter/exit hysteresis thresholds:
+  - `backlog_ewma_alpha` controls smoothing intensity (`1.0` keeps raw signal behavior)
+  - `scheduler_hysteresis_enabled` + `*_high_backlog_enter_threshold` / `*_high_backlog_exit_threshold` can reduce mode flapping when backlog oscillates near thresholds
 - Incremental maintain defer is constrained to a narrow fill behavior:
   - defer only when current incremental pending is below the minimum fill threshold of the planned batch and upload-side fill source exists
   - no defer for cooldown/full-guard legacy reasons

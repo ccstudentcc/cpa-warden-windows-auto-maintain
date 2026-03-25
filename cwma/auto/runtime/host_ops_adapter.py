@@ -69,7 +69,7 @@ class HostOpsAdapter:
         self.host.maintain_cmd_output_file.parent.mkdir(parents=True, exist_ok=True)
         self.host.upload_cmd_output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    def settings_log_rows(self) -> list[tuple[str, str | int | Path]]:
+    def settings_log_rows(self) -> list[tuple[str, str | int | float | Path]]:
         return [
             ("WATCH_CONFIG_PATH", self.host.settings.watch_config_path or "(none)"),
             ("AUTH_DIR", self.host.settings.auth_dir),
@@ -94,6 +94,32 @@ class HostOpsAdapter:
             ("INCREMENTAL_MAINTAIN_BATCH_SIZE", self.host.settings.incremental_maintain_batch_size),
             ("MAINTAIN_HIGH_BACKLOG_THRESHOLD", self.host.settings.maintain_high_backlog_threshold),
             ("MAINTAIN_HIGH_BACKLOG_BATCH_SIZE", self.host.settings.maintain_high_backlog_batch_size),
+            ("BACKLOG_EWMA_ALPHA", self.host.settings.backlog_ewma_alpha),
+            ("SCHEDULER_HYSTERESIS_ENABLED", int(self.host.settings.scheduler_hysteresis_enabled)),
+            (
+                "UPLOAD_HIGH_BACKLOG_ENTER_THRESHOLD",
+                self.host.settings.upload_high_backlog_enter_threshold
+                if self.host.settings.upload_high_backlog_enter_threshold is not None
+                else "-",
+            ),
+            (
+                "UPLOAD_HIGH_BACKLOG_EXIT_THRESHOLD",
+                self.host.settings.upload_high_backlog_exit_threshold
+                if self.host.settings.upload_high_backlog_exit_threshold is not None
+                else "-",
+            ),
+            (
+                "MAINTAIN_HIGH_BACKLOG_ENTER_THRESHOLD",
+                self.host.settings.maintain_high_backlog_enter_threshold
+                if self.host.settings.maintain_high_backlog_enter_threshold is not None
+                else "-",
+            ),
+            (
+                "MAINTAIN_HIGH_BACKLOG_EXIT_THRESHOLD",
+                self.host.settings.maintain_high_backlog_exit_threshold
+                if self.host.settings.maintain_high_backlog_exit_threshold is not None
+                else "-",
+            ),
             (
                 "INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS",
                 self.host.settings.incremental_maintain_min_interval_seconds,

@@ -19,6 +19,7 @@ uv run python -m py_compile cpa_warden.py auto_maintain.py clean_codex_accounts.
 uv run python cpa_warden.py --help
 uv run python auto_maintain.py --help
 uv run python -m unittest -v tests/test_auto_maintain.py
+uv run python tools/quality_gate_runner.py --output results/quality_gate_report.md --strict
 ```
 
 ## Development Guidelines
@@ -49,6 +50,8 @@ If you share logs for debugging, sanitize tokens, account identifiers, and sensi
 - List validation commands that were run.
 - Update docs and changelog when user-facing behavior changes.
 - Keep examples and screenshots sanitized.
+- CI automatically uploads `quality_gate_report_ci.md` as an artifact per Python version; use it as the primary gate evidence in PR discussion.
+- CI job summary now includes `Overall` + Gate Summary table extracted from `quality_gate_report_ci.md` for quick triage.
 
 ## Test Runner Interruptions (Known Behavior In Constrained Environments)
 

@@ -105,6 +105,12 @@ def initialize_host_state(
             incremental_maintain_full_guard_seconds=(
                 host.settings.incremental_maintain_full_guard_seconds
             ),
+            backlog_ewma_alpha=host.settings.backlog_ewma_alpha,
+            scheduler_hysteresis_enabled=host.settings.scheduler_hysteresis_enabled,
+            upload_high_backlog_enter_threshold=host.settings.upload_high_backlog_enter_threshold,
+            upload_high_backlog_exit_threshold=host.settings.upload_high_backlog_exit_threshold,
+            maintain_high_backlog_enter_threshold=host.settings.maintain_high_backlog_enter_threshold,
+            maintain_high_backlog_exit_threshold=host.settings.maintain_high_backlog_exit_threshold,
         )
     )
     host.runtime = build_auto_runtime_state(

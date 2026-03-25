@@ -39,6 +39,15 @@ class ReplayMetrics:
 
 
 def _build_scheduler_config(config_data: dict[str, object]) -> SmartSchedulerConfig:
+    def _optional_int(name: str) -> int | None:
+        raw = config_data.get(name, None)
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        if not text:
+            return None
+        return int(text)
+
     return SmartSchedulerConfig(
         enabled=bool(config_data.get("smart_schedule_enabled", True)),
         adaptive_upload_batching=bool(config_data.get("adaptive_upload_batching", True)),
@@ -60,6 +69,12 @@ def _build_scheduler_config(config_data: dict[str, object]) -> SmartSchedulerCon
             0,
             int(config_data.get("incremental_maintain_full_guard_seconds", 90)),
         ),
+        backlog_ewma_alpha=float(config_data.get("backlog_ewma_alpha", 1.0)),
+        scheduler_hysteresis_enabled=bool(config_data.get("scheduler_hysteresis_enabled", False)),
+        upload_high_backlog_enter_threshold=_optional_int("upload_high_backlog_enter_threshold"),
+        upload_high_backlog_exit_threshold=_optional_int("upload_high_backlog_exit_threshold"),
+        maintain_high_backlog_enter_threshold=_optional_int("maintain_high_backlog_enter_threshold"),
+        maintain_high_backlog_exit_threshold=_optional_int("maintain_high_backlog_exit_threshold"),
     )
 
 

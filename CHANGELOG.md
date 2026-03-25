@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added maintain pipeline runtime test suite `tests/test_auto_maintain_pipeline_runtime_module.py` covering step-order progression, retry requeue, account-lock conflict handling, and full/incremental shared executor behavior.
 - Added upload stability suite `tests/test_auto_upload_stability_module.py` covering frozen-batch stability wait and deferred next-round intake behavior.
 - Added shared test temp sandbox helper `tests/temp_sandbox.py` to stabilize `tempfile.TemporaryDirectory()` behavior on Python 3.14 Windows runners.
+- Added Gate-B comparison report generator `tools/stage_comparison_report.py` and tool tests `tests/test_stage_comparison_report_tool_module.py` for baseline-vs-candidate KPI checks and markdown report output.
+- Added G1/G2 quality gate runner `tools/quality_gate_runner.py` and tool tests `tests/test_quality_gate_runner_tool_module.py` for one-command compile/test gate execution and summary report output.
 
 ### Changed
 
@@ -60,12 +62,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Upload stability wait now freezes the current candidate batch and defers in-window new/updated rows to the next queue intake instead of resetting the timer indefinitely.
 - Upload pending queue merge is now path-coalesced (`last-writer-wins`) so active deep-scan intake replaces stale versions of the same file path.
 - Smart scheduler batch selection now consumes a shared total-backlog estimate (`upload pending + incremental pending + full-maintain equivalent`) when deciding upload and incremental-maintain batch sizes.
+- Smart scheduler now supports optional backlog signal smoothing and hysteresis thresholds:
+  - `BACKLOG_EWMA_ALPHA` / `backlog_ewma_alpha`
+  - `SCHEDULER_HYSTERESIS_ENABLED` / `scheduler_hysteresis_enabled`
+  - `*_HIGH_BACKLOG_ENTER_THRESHOLD` / `*_HIGH_BACKLOG_EXIT_THRESHOLD` (upload + maintain)
 - Incremental maintain defer semantics are narrowed to the small-fill case only (`batch_too_small_waiting_fill`) when upload-side fill source is active; cooldown/full-guard backlog-priority defer reasons were removed.
 - `cwma/auto/runtime/channel_runtime_adapter.py` now computes total backlog at maintain/upload start boundaries and passes it to scheduler policy consistently (including panel next-batch projections via `panel_runtime_adapter`).
 - Added Stage-5 scheduler/defer regression coverage in `tests/test_auto_modules_state.py` and host-level Stage-5 integration coverage in `tests/test_auto_maintain.py`.
 - Stage-7 hardening now applies the shared temp sandbox bootstrap across unittest modules that rely on `tempfile`, making full discovery (`273` tests) pass consistently in constrained Windows/Python 3.14 environments.
 - Stage-7 rollout/rollback documentation is now synchronized across `README.md`, `README.zh-CN.md`, `ARCHITECTURE.md`, and `cwma/auto/BOUNDARY_MAP.md` with explicit `INPROCESS_EXECUTION_ENABLED` guidance.
 - In-process channel startup now forces `CPA_WARDEN_DISABLE_RICH_PROGRESS=1` so nested `cpa_warden` runs do not render Rich live progress bars that interfere with watcher fixed-panel terminal UI.
+- Added operator command quick entries for Gate-B and G1/G2 runner workflows in `cmd.md`.
+- CI workflow now runs unified gate command `tools/quality_gate_runner.py --strict` instead of scattered compile/help/test steps.
+- CI now uploads `results/quality_gate_report_ci.md` as a build artifact for each Python matrix entry.
+- CI now publishes `quality_gate_report_ci.md` summary (`Overall` + Gate Summary table) to GitHub Actions job summary.
 - In-process channel logging now bridges through the watcher output callback path (instead of direct stdout), so progress parsing/panel state updates remain consistent and fixed-panel redraw is no longer torn by child logger output.
 
 ## [cwma 0.1.0] - 2026-03-23

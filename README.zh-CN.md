@@ -171,6 +171,7 @@ start_auto_maintain_optimized.bat
   - 调度模式切换规则：低积压偏小批次，提升上传/维护交错实时性；高积压偏大批次，加速队列清空
   - 总积压规则：上传/增量维护批次选择共享同一积压估算（上传待处理 + 增量待处理 + 全量维护等价积压）
   - 增量 defer 规则：仅用于“小批补充等待”（`batch_too_small_waiting_fill`），不再使用 cooldown/full-guard 旧语义
+  - 可选平滑/滞回参数：`backlog_ewma_alpha`、`scheduler_hysteresis_enabled`、`*_high_backlog_enter_threshold`、`*_high_backlog_exit_threshold`
 - 运行行为：`run_maintain_on_start`、`run_upload_on_start`、`run_maintain_after_upload`
 - 执行后端开关：`inprocess_execution_enabled`（`false` 使用 legacy 子进程，`true` 使用进程内通道执行）
 - 失败策略：`maintain_retry_count`、`upload_retry_count`、`command_retry_delay_seconds`、`continue_on_command_failure`
@@ -186,6 +187,7 @@ start_auto_maintain_optimized.bat
 - `MAINTAIN_DB_PATH`、`UPLOAD_DB_PATH`
 - `MAINTAIN_LOG_FILE`、`UPLOAD_LOG_FILE`
 - 调度和节奏控制（`*_INTERVAL_*`、`*_BATCH_*`、`*_BACKLOG_*`）
+- 可选调度平滑/滞回控制（`BACKLOG_EWMA_ALPHA`、`SCHEDULER_HYSTERESIS_ENABLED`、`*_HIGH_BACKLOG_ENTER_THRESHOLD`、`*_HIGH_BACKLOG_EXIT_THRESHOLD`）
 - 行为开关（`RUN_*`、`ALLOW_MULTI_INSTANCE`、`CONTINUE_ON_COMMAND_FAILURE`、`MAINTAIN_ASSUME_YES`、`INPROCESS_EXECUTION_ENABLED`）
 - 归档控制（`INSPECT_ZIP_FILES`、`AUTO_EXTRACT_ZIP_JSON`、`ARCHIVE_EXTENSIONS`、`BANDIZIP_*`、`USE_WINDOWS_ZIP_FALLBACK`）
 - 面板开关（`AUTO_MAINTAIN_FIXED_PANEL`、`AUTO_MAINTAIN_PANEL_COLOR`）

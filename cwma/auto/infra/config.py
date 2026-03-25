@@ -59,6 +59,12 @@ class Settings:
     allow_multi_instance: bool
     run_once: bool
     inprocess_execution_enabled: bool = False
+    backlog_ewma_alpha: float = 1.0
+    scheduler_hysteresis_enabled: bool = False
+    upload_high_backlog_enter_threshold: int | None = None
+    upload_high_backlog_exit_threshold: int | None = None
+    maintain_high_backlog_enter_threshold: int | None = None
+    maintain_high_backlog_exit_threshold: int | None = None
 
 
 def load_watch_config(path: Path) -> dict[str, object]:
@@ -103,6 +109,31 @@ def parse_archive_extensions(name: str, raw: object) -> tuple[str, ...]:
     if not deduped:
         raise ValueError(f"{name} cannot be empty.")
     return tuple(deduped)
+
+
+def parse_float_range_value(
+    name: str,
+    raw: object,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a float between {minimum} and {maximum}, got: {raw}") from exc
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}, got: {raw}")
+    return value
+
+
+def parse_optional_int_value(name: str, raw: object, minimum: int) -> int | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    return parse_int_value(name, text, minimum)
 
 
 def load_settings(
@@ -433,5 +464,65 @@ def load_settings(
                 "inprocess_execution_enabled",
                 False,
             ),
+        ),
+        backlog_ewma_alpha=parse_float_range_value(
+            "BACKLOG_EWMA_ALPHA",
+            pick_setting(
+                "BACKLOG_EWMA_ALPHA",
+                watch_config_data,
+                "backlog_ewma_alpha",
+                1.0,
+            ),
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        scheduler_hysteresis_enabled=parse_bool_value(
+            "SCHEDULER_HYSTERESIS_ENABLED",
+            pick_setting(
+                "SCHEDULER_HYSTERESIS_ENABLED",
+                watch_config_data,
+                "scheduler_hysteresis_enabled",
+                False,
+            ),
+        ),
+        upload_high_backlog_enter_threshold=parse_optional_int_value(
+            "UPLOAD_HIGH_BACKLOG_ENTER_THRESHOLD",
+            pick_setting(
+                "UPLOAD_HIGH_BACKLOG_ENTER_THRESHOLD",
+                watch_config_data,
+                "upload_high_backlog_enter_threshold",
+                None,
+            ),
+            1,
+        ),
+        upload_high_backlog_exit_threshold=parse_optional_int_value(
+            "UPLOAD_HIGH_BACKLOG_EXIT_THRESHOLD",
+            pick_setting(
+                "UPLOAD_HIGH_BACKLOG_EXIT_THRESHOLD",
+                watch_config_data,
+                "upload_high_backlog_exit_threshold",
+                None,
+            ),
+            1,
+        ),
+        maintain_high_backlog_enter_threshold=parse_optional_int_value(
+            "MAINTAIN_HIGH_BACKLOG_ENTER_THRESHOLD",
+            pick_setting(
+                "MAINTAIN_HIGH_BACKLOG_ENTER_THRESHOLD",
+                watch_config_data,
+                "maintain_high_backlog_enter_threshold",
+                None,
+            ),
+            1,
+        ),
+        maintain_high_backlog_exit_threshold=parse_optional_int_value(
+            "MAINTAIN_HIGH_BACKLOG_EXIT_THRESHOLD",
+            pick_setting(
+                "MAINTAIN_HIGH_BACKLOG_EXIT_THRESHOLD",
+                watch_config_data,
+                "maintain_high_backlog_exit_threshold",
+                None,
+            ),
+            1,
         ),
     )

@@ -35,14 +35,31 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked
 
-      - name: Compile script
-        run: uv run python -m py_compile cpa_warden.py auto_maintain.py clean_codex_accounts.py
+      - name: Run quality gates (BASE + G1 + G2)
+        run: uv run python tools/quality_gate_runner.py --output results/quality_gate_report_ci.md --strict
 
-      - name: Check CLI help (core)
-        run: uv run python cpa_warden.py --help
+      - name: Publish quality gate summary
+        if: always()
+        run: |
+          {
+            echo "## Quality Gate (Python ${{ matrix.python-version }})"
+            if [ -f results/quality_gate_report_ci.md ]; then
+              OVERALL_LINE="$(grep -m1 '^Overall:' results/quality_gate_report_ci.md || true)"
+              if [ -n "$OVERALL_LINE" ]; then
+                echo "$OVERALL_LINE"
+              fi
+              echo ""
+              echo "### Gate Summary"
+              awk '/^## Gate Summary/{flag=1; next} /^## /{if (flag) exit} flag {print}' results/quality_gate_report_ci.md
+            else
+              echo "quality_gate_report_ci.md not found."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Check CLI help (auto maintain)
-        run: uv run python auto_maintain.py --help
-
-      - name: Run auto maintain tests
-        run: uv run python -m unittest -v tests/test_auto_maintain.py
+      - name: Upload quality gate report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-gate-report-py${{ matrix.python-version }}
+          path: results/quality_gate_report_ci.md
+          if-no-files-found: warn
