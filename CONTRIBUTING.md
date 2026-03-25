@@ -20,6 +20,8 @@ uv run python cpa_warden.py --help
 uv run python auto_maintain.py --help
 uv run python -m unittest -v tests/test_auto_maintain.py
 uv run python tools/quality_gate_runner.py --output results/quality_gate_report.md --strict
+# non-performance stage-comparison evidence (Gate B marked as N/A)
+uv run python tools/stage_comparison_report.py --candidate results/stageX_json_replay_candidate.csv --output results/stageX_vs_stage0_report.md --stage-label "Stage X" --commit-ref <commit-sha> --gate-b-mode na
 ```
 
 ## Development Guidelines

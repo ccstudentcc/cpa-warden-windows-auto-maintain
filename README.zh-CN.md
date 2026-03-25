@@ -245,6 +245,11 @@ uv run python -m unittest -v tests/test_auto_maintain.py
 uv run python -m unittest discover -s tests -p "test_*.py"
 ```
 
+Stage 对比说明：
+
+- 对于非性能类改动（例如可靠性护栏、约束参数固化），可使用 Gate-B N/A 模式生成 Stage-X 对比证据：
+  - `uv run python tools/stage_comparison_report.py --candidate results/stageX_json_replay_candidate.csv --output results/stageX_vs_stage0_report.md --stage-label "Stage X" --commit-ref <commit-sha> --gate-b-mode na`
+
 说明：测试套件已通过 `tests/temp_sandbox.py` 将 `tempfile.TemporaryDirectory()` 适配到仓库工作区安全目录，避免受限 Windows/Python 3.14 环境下的权限波动导致全量回归不稳定。
 
 ## 参与贡献

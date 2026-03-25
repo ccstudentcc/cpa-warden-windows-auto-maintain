@@ -245,6 +245,11 @@ Optional full local suite:
 uv run python -m unittest discover -s tests -p "test_*.py"
 ```
 
+Stage comparison note:
+
+- For non-performance changes (for example reliability guardrails or config constraints), you can generate Stage-X comparison evidence with Gate-B marked as N/A:
+  - `uv run python tools/stage_comparison_report.py --candidate results/stageX_json_replay_candidate.csv --output results/stageX_vs_stage0_report.md --stage-label "Stage X" --commit-ref <commit-sha> --gate-b-mode na`
+
 Note: the test suite now patches `tempfile.TemporaryDirectory()` to a workspace-safe implementation (`tests/temp_sandbox.py`) so full discovery remains stable in constrained Windows/Python 3.14 environments.
 
 ## Contributing
