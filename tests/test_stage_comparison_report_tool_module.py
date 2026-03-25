@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from tools.stage_comparison_report import (
+    build_gate_b_not_applicable,
     build_metric_deltas,
     evaluate_gate_b,
     parse_metrics_csv,
@@ -175,6 +176,47 @@ class StageComparisonReportToolTests(unittest.TestCase):
         self.assertIn("# Stage 8 vs Stage 0 Comparison Report", report)
         self.assertIn("## 3) Gate B Target Check (Decision Scenario: mixed)", report)
         self.assertIn("Overall Gate B: `PASS`", report)
+
+    def test_render_report_supports_non_performance_gate_na_mode(self) -> None:
+        baseline_path = self.temp_dir / "baseline.csv"
+        candidate_path = self.temp_dir / "candidate.csv"
+        output_path = self.temp_dir / "report.md"
+        _write_csv(
+            baseline_path,
+            [
+                _row(scenario="burst", throughput=10.0, wait_p95=20.0, resets=100),
+                _row(scenario="sustained", throughput=5.0, wait_p95=50.0, resets=200),
+                _row(scenario="mixed", throughput=4.0, wait_p95=100.0, resets=1000),
+            ],
+        )
+        _write_csv(
+            candidate_path,
+            [
+                _row(scenario="burst", throughput=10.0, wait_p95=20.0, resets=100),
+                _row(scenario="sustained", throughput=5.0, wait_p95=50.0, resets=200),
+                _row(scenario="mixed", throughput=4.0, wait_p95=100.0, resets=1000),
+            ],
+        )
+
+        baseline_rows = parse_metrics_csv(baseline_path)
+        candidate_rows = parse_metrics_csv(candidate_path)
+        deltas = build_metric_deltas(baseline_rows=baseline_rows, candidate_rows=candidate_rows)
+        gate = build_gate_b_not_applicable()
+        report = render_report(
+            stage_label="Stage 8",
+            baseline_csv=baseline_path,
+            candidate_csv=candidate_path,
+            output_path=output_path,
+            commit_ref="abc123",
+            baseline_rows=baseline_rows,
+            candidate_rows=candidate_rows,
+            deltas=deltas,
+            gate_b=gate,
+        )
+
+        self.assertIn("Overall Gate B: `N/A`", report)
+        self.assertIn("Gate mode: `N/A (non-performance change)`", report)
+        self.assertIn("Recommendation: `go-with-guardrails`", report)
 
 
 if __name__ == "__main__":

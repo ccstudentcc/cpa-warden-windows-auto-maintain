@@ -86,6 +86,12 @@ uv run python tools/stage0_json_replay_benchmark.py --output results/stageX_json
 uv run python tools/stage_comparison_report.py --candidate results/stageX_json_replay_candidate.csv --output results/stageX_vs_stage0_report.md --stage-label "Stage X" --commit-ref <commit-sha>
 ```
 
+非性能改动（例如可靠性/约束控制）可用 N/A 模式仅产出报告不触发 Gate-B 严格判定：
+
+```bash
+uv run python tools/stage_comparison_report.py --candidate results/stageX_json_replay_candidate.csv --output results/stageX_vs_stage0_report.md --stage-label "Stage X" --commit-ref <commit-sha> --gate-b-mode na
+```
+
 ## 8) G1/G2 一键质量闸门
 
 ```bash

@@ -32,6 +32,7 @@ class MetricDelta:
 
 @dataclass(frozen=True)
 class GateBResult:
+    applicable: bool
     resets_reduction_pass: bool
     wait_p95_reduction_pass: bool
     mixed_throughput_pass: bool
@@ -41,7 +42,21 @@ class GateBResult:
 
     @property
     def passed(self) -> bool:
+        if not self.applicable:
+            return True
         return self.resets_reduction_pass and self.wait_p95_reduction_pass and self.mixed_throughput_pass
+
+
+def build_gate_b_not_applicable() -> GateBResult:
+    return GateBResult(
+        applicable=False,
+        resets_reduction_pass=False,
+        wait_p95_reduction_pass=False,
+        mixed_throughput_pass=False,
+        resets_reduction_percent=0.0,
+        wait_p95_reduction_percent=0.0,
+        mixed_throughput_improve_percent=0.0,
+    )
 
 
 def _to_float(value: str) -> float:
@@ -189,6 +204,7 @@ def evaluate_gate_b(
     )
 
     return GateBResult(
+        applicable=True,
         resets_reduction_pass=resets_reduction >= 70.0,
         wait_p95_reduction_pass=wait_reduction >= 25.0,
         mixed_throughput_pass=throughput_gain >= 15.0,
@@ -200,6 +216,12 @@ def evaluate_gate_b(
 
 def _status_label(passed: bool) -> str:
     return "PASS" if passed else "FAIL"
+
+
+def _gate_b_overall_label(gate_b: GateBResult) -> str:
+    if not gate_b.applicable:
+        return "N/A"
+    return _status_label(gate_b.passed)
 
 
 def render_report(
@@ -248,7 +270,9 @@ def render_report(
             cand_display = f"{delta.candidate:.3f}" if key != "stability_wait_reset_count" else f"{int(delta.candidate)}"
             delta_display = f"{delta.delta_percent:+.2f}%"
             if has_target and scenario == "mixed":
-                if key == "throughput_files_per_second":
+                if not gate_b.applicable:
+                    pass_fail = "N/A"
+                elif key == "throughput_files_per_second":
                     pass_fail = _status_label(delta.delta_percent >= 15.0)
                 elif key == "upload_queue_wait_p95_seconds":
                     pass_fail = _status_label(delta.delta_percent >= 25.0)
@@ -267,24 +291,30 @@ def render_report(
     lines.append("- Upload Queue Wait P95 reduction target: `>= 25%`")
     lines.append("- Mixed Throughput improvement target: `>= 15%`")
     lines.append("")
-    lines.append(
-        f"- Stability Wait Resets: `{gate_b.resets_reduction_percent:.2f}%` -> `{_status_label(gate_b.resets_reduction_pass)}`"
-    )
-    lines.append(
-        f"- Upload Queue Wait P95: `{gate_b.wait_p95_reduction_percent:.2f}%` -> `{_status_label(gate_b.wait_p95_reduction_pass)}`"
-    )
-    lines.append(
-        f"- Mixed Throughput: `{gate_b.mixed_throughput_improve_percent:.2f}%` -> `{_status_label(gate_b.mixed_throughput_pass)}`"
-    )
-    lines.append(f"- Overall Gate B: `{_status_label(gate_b.passed)}`")
+    if gate_b.applicable:
+        lines.append(
+            f"- Stability Wait Resets: `{gate_b.resets_reduction_percent:.2f}%` -> `{_status_label(gate_b.resets_reduction_pass)}`"
+        )
+        lines.append(
+            f"- Upload Queue Wait P95: `{gate_b.wait_p95_reduction_percent:.2f}%` -> `{_status_label(gate_b.wait_p95_reduction_pass)}`"
+        )
+        lines.append(
+            f"- Mixed Throughput: `{gate_b.mixed_throughput_improve_percent:.2f}%` -> `{_status_label(gate_b.mixed_throughput_pass)}`"
+        )
+    else:
+        lines.append("- Gate mode: `N/A (non-performance change)`")
+    lines.append(f"- Overall Gate B: `{_gate_b_overall_label(gate_b)}`")
     lines.append("")
     lines.append("## 4) Decision")
     lines.append("")
-    lines.append(
-        "- Recommendation: "
-        + ("`go`" if gate_b.passed else "`no-go`")
-        + " (based on Gate B targets and decision scenario `mixed`)."
-    )
+    if not gate_b.applicable:
+        lines.append("- Recommendation: `go-with-guardrails` (Gate B marked as non-performance N/A).")
+    else:
+        lines.append(
+            "- Recommendation: "
+            + ("`go`" if gate_b.passed else "`no-go`")
+            + " (based on Gate B targets and decision scenario `mixed`)."
+        )
     lines.append("")
     return "\n".join(lines)
 
@@ -324,6 +354,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Exit with code 2 when Gate B does not pass.",
     )
+    parser.add_argument(
+        "--gate-b-mode",
+        choices=("strict", "advisory", "na"),
+        default="strict",
+        help="Gate-B evaluation mode: strict=fail on miss, advisory=report only, na=non-performance change.",
+    )
     return parser.parse_args()
 
 
@@ -332,7 +368,10 @@ def main() -> int:
     baseline_rows = parse_metrics_csv(args.baseline)
     candidate_rows = parse_metrics_csv(args.candidate)
     deltas = build_metric_deltas(baseline_rows=baseline_rows, candidate_rows=candidate_rows)
-    gate_b = evaluate_gate_b(baseline_rows=baseline_rows, candidate_rows=candidate_rows)
+    if args.gate_b_mode == "na":
+        gate_b = build_gate_b_not_applicable()
+    else:
+        gate_b = evaluate_gate_b(baseline_rows=baseline_rows, candidate_rows=candidate_rows)
     markdown = render_report(
         stage_label=args.stage_label,
         baseline_csv=args.baseline,
@@ -349,8 +388,9 @@ def main() -> int:
     args.output.write_text(markdown + "\n", encoding="utf-8")
 
     print(f"Stage comparison report written: {args.output}")
-    print(f"Gate B result: {_status_label(gate_b.passed)}")
-    if args.strict_gate_b and not gate_b.passed:
+    print(f"Gate B result: {_gate_b_overall_label(gate_b)}")
+    enforce_strict = args.strict_gate_b or args.gate_b_mode == "strict"
+    if enforce_strict and gate_b.applicable and not gate_b.passed:
         return 2
     return 0
 

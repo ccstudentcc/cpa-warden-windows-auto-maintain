@@ -79,6 +79,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - CI now uploads `results/quality_gate_report_ci.md` as a build artifact for each Python matrix entry.
 - CI now publishes `quality_gate_report_ci.md` summary (`Overall` + Gate Summary table) to GitHub Actions job summary.
 - In-process channel logging now bridges through the watcher output callback path (instead of direct stdout), so progress parsing/panel state updates remain consistent and fixed-panel redraw is no longer torn by child logger output.
+- Stage comparison report tool now supports `--gate-b-mode na` for non-performance changes (marks Gate B as N/A and avoids strict no-go misclassification while still exporting comparable metrics).
 
 ## [cwma 0.1.0] - 2026-03-23
 
