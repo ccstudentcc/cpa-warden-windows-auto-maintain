@@ -128,6 +128,13 @@ class HostOpsAdapter:
                 "INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS",
                 self.host.settings.incremental_maintain_full_guard_seconds,
             ),
+            (
+                "NEXT_BATCH_BUFFER_LIMIT",
+                self.host.settings.next_batch_buffer_limit
+                if self.host.settings.next_batch_buffer_limit is not None
+                else "-",
+            ),
+            ("ACCOUNT_LOCK_LEASE_SECONDS", self.host.settings.account_lock_lease_seconds),
             ("RUN_MAINTAIN_ON_START", int(self.host.settings.run_maintain_on_start)),
             ("RUN_UPLOAD_ON_START", int(self.host.settings.run_upload_on_start)),
             ("RUN_MAINTAIN_AFTER_UPLOAD", int(self.host.settings.run_maintain_after_upload)),

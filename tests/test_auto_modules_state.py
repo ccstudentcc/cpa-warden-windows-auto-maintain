@@ -1003,6 +1003,26 @@ class AutoModuleStateTests(unittest.TestCase):
         self.assertEqual(result.merged_pending_snapshot, [new_row])
         self.assertEqual(result.state.pending_reason, "active-upload source changes")
 
+    def test_merge_pending_upload_snapshot_applies_buffer_limit(self) -> None:
+        state = UploadQueueState(
+            pending_snapshot=["a|1|1"],
+            pending_reason="old",
+            pending_retry=False,
+            inflight_snapshot=None,
+            attempt=0,
+            retry_due_at=0.0,
+        )
+        result = merge_pending_upload_snapshot(
+            state=state,
+            discovered_pending_snapshot=["b|1|1", "c|1|1"],
+            queue_reason="detected JSON changes",
+            preserve_retry_state=False,
+            buffer_limit=2,
+        )
+        self.assertEqual(result.merged_pending_snapshot, ["a|1|1", "b|1|1"])
+        self.assertEqual(result.state.pending_snapshot, ["a|1|1", "b|1|1"])
+        self.assertEqual(result.overflow_count, 1)
+
     def test_build_upload_success_postprocess_with_pending(self) -> None:
         row_a = f"{Path('C:/auth/a.json')}|1|1"
         row_b = f"{Path('C:/auth/b.json')}|2|2"

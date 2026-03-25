@@ -25,6 +25,7 @@ class UploadStartDecision:
 class UploadMergeResult:
     state: UploadQueueState
     merged_pending_snapshot: list[str]
+    overflow_count: int = 0
 
 
 def parse_upload_snapshot_row(row: str) -> tuple[str, int, int] | None:
@@ -160,10 +161,15 @@ def merge_pending_upload_snapshot(
     discovered_pending_snapshot: list[str],
     queue_reason: str,
     preserve_retry_state: bool,
+    buffer_limit: int | None = None,
 ) -> UploadMergeResult:
     merged_pending = coalesce_upload_snapshot_rows(
         list(state.pending_snapshot or []) + list(discovered_pending_snapshot)
     )
+    overflow_count = 0
+    if buffer_limit is not None and len(merged_pending) > buffer_limit:
+        overflow_count = len(merged_pending) - buffer_limit
+        merged_pending = merged_pending[:buffer_limit]
     attempt = state.attempt
     retry_due_at = state.retry_due_at
     if (not state.pending_retry) and (not preserve_retry_state):
@@ -180,6 +186,7 @@ def merge_pending_upload_snapshot(
     return UploadMergeResult(
         state=next_state,
         merged_pending_snapshot=merged_pending,
+        overflow_count=overflow_count,
     )
 
 

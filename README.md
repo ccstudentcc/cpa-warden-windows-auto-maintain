@@ -172,6 +172,7 @@ Full schema is tracked in `auto_maintain.config.example.json`. Frequently adjust
   - total-backlog rule: upload/incremental batch selection consumes a shared backlog estimate (upload pending + incremental pending + full-maintain equivalent)
   - incremental defer rule: defer is used only for small-batch fill waiting (`batch_too_small_waiting_fill`), not cooldown/full-guard legacy reasons
   - optional smoothing/hysteresis knobs: `backlog_ewma_alpha`, `scheduler_hysteresis_enabled`, `*_high_backlog_enter_threshold`, `*_high_backlog_exit_threshold`
+  - optional pressure/lock knobs: `next_batch_buffer_limit` (cap pending upload buffer growth), `account_lock_lease_seconds` (stale account-lock auto-expiry window)
 - runtime behavior: `run_maintain_on_start`, `run_upload_on_start`, `run_maintain_after_upload`
 - execution backend toggle: `inprocess_execution_enabled` (`false` = legacy subprocess mode; `true` = in-process channel execution)
 - failure policy: `maintain_retry_count`, `upload_retry_count`, `command_retry_delay_seconds`, `continue_on_command_failure`
@@ -188,6 +189,7 @@ Main variables consumed by `auto_maintain.py` include:
 - `MAINTAIN_LOG_FILE`, `UPLOAD_LOG_FILE`
 - scheduler and cadence controls (`*_INTERVAL_*`, `*_BATCH_*`, `*_BACKLOG_*`)
 - optional scheduler smoothing/hysteresis controls (`BACKLOG_EWMA_ALPHA`, `SCHEDULER_HYSTERESIS_ENABLED`, `*_HIGH_BACKLOG_ENTER_THRESHOLD`, `*_HIGH_BACKLOG_EXIT_THRESHOLD`)
+- optional pressure/lock controls (`NEXT_BATCH_BUFFER_LIMIT`, `ACCOUNT_LOCK_LEASE_SECONDS`)
 - behavior toggles (`RUN_*`, `ALLOW_MULTI_INSTANCE`, `CONTINUE_ON_COMMAND_FAILURE`, `MAINTAIN_ASSUME_YES`, `INPROCESS_EXECUTION_ENABLED`)
 - archive controls (`INSPECT_ZIP_FILES`, `AUTO_EXTRACT_ZIP_JSON`, `ARCHIVE_EXTENSIONS`, `BANDIZIP_*`, `USE_WINDOWS_ZIP_FALLBACK`)
 - dashboard toggles (`AUTO_MAINTAIN_FIXED_PANEL`, `AUTO_MAINTAIN_PANEL_COLOR`)

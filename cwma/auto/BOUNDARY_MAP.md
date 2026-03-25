@@ -91,6 +91,7 @@ Responsibilities:
 - lock lifecycle and shutdown/sleep cadence
 - config loading/parsing boundary
 - rollout/rollback runtime toggles surfaced via config/env (for example `inprocess_execution_enabled` / `INPROCESS_EXECUTION_ENABLED`)
+- optional intake/lock pressure controls surfaced via config/env (`next_batch_buffer_limit` / `NEXT_BATCH_BUFFER_LIMIT`, `account_lock_lease_seconds` / `ACCOUNT_LOCK_LEASE_SECONDS`)
 
 ### UI
 
@@ -121,12 +122,14 @@ Responsibilities:
 ## Stage 3 Test Mapping Update
 
 - `tests/test_auto_maintain_pipeline_runtime_module.py` is the primary suite for maintain step-engine runtime policy (`serial per-job + cross-job pipeline + account-lock conflict`) in the channel/runtime capability.
+- the same suite also verifies account-lock lease handling (`active lease blocks`, `expired lease is cleaned`) for stale-lock recovery policy.
 - `tests/test_auto_maintain_pipeline_state_module.py` remains the primary suite for maintain pipeline queue state transitions in state capability.
 
 ## Stage 4 Test Mapping Update
 
 - `tests/test_auto_upload_stability_module.py` is the primary suite for upload stability-wait freeze behavior (infra/runtime seam) and deferred-next-round intake contract.
 - `tests/test_auto_maintain.py::test_check_and_maybe_upload_queue_merge_replaces_same_path_with_latest_version` covers queue intake merge semantics at host runtime wiring level.
+- `tests/test_auto_maintain.py::test_check_and_maybe_upload_queue_merge_honors_next_batch_buffer_limit` + `tests/test_auto_modules_state.py::test_merge_pending_upload_snapshot_applies_buffer_limit` cover optional upload pending-buffer cap behavior.
 
 ## Stage 5 Test Mapping Update
 

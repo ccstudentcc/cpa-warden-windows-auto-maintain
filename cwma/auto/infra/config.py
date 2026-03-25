@@ -65,6 +65,8 @@ class Settings:
     upload_high_backlog_exit_threshold: int | None = None
     maintain_high_backlog_enter_threshold: int | None = None
     maintain_high_backlog_exit_threshold: int | None = None
+    next_batch_buffer_limit: int | None = None
+    account_lock_lease_seconds: int = 30
 
 
 def load_watch_config(path: Path) -> dict[str, object]:
@@ -522,6 +524,26 @@ def load_settings(
                 watch_config_data,
                 "maintain_high_backlog_exit_threshold",
                 None,
+            ),
+            1,
+        ),
+        next_batch_buffer_limit=parse_optional_int_value(
+            "NEXT_BATCH_BUFFER_LIMIT",
+            pick_setting(
+                "NEXT_BATCH_BUFFER_LIMIT",
+                watch_config_data,
+                "next_batch_buffer_limit",
+                None,
+            ),
+            1,
+        ),
+        account_lock_lease_seconds=parse_int_value(
+            "ACCOUNT_LOCK_LEASE_SECONDS",
+            pick_setting(
+                "ACCOUNT_LOCK_LEASE_SECONDS",
+                watch_config_data,
+                "account_lock_lease_seconds",
+                30,
             ),
             1,
         ),

@@ -806,6 +806,43 @@ class AutoMaintainTests(unittest.TestCase):
         finally:
             shutil.rmtree(base, ignore_errors=True)
 
+    def test_check_and_maybe_upload_queue_merge_honors_next_batch_buffer_limit(self) -> None:
+        base = (Path.cwd() / ".tmp_unittest_temp" / f"stage4_queue_limit_{time.time_ns()}").resolve()
+        auth_dir = base / "auth"
+        try:
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            settings.next_batch_buffer_limit = 2
+            maintainer = AutoMaintainer(settings)
+
+            row_a = f"{auth_dir / 'a.json'}|1|1"
+            row_b = f"{auth_dir / 'b.json'}|1|1"
+            row_c = f"{auth_dir / 'c.json'}|1|1"
+            maintainer.pending_upload_snapshot = [row_a]
+            maintainer.pending_upload_reason = "detected JSON changes"
+
+            with mock.patch.object(
+                maintainer,
+                "build_snapshot",
+                return_value=[row_b, row_c],
+            ), mock.patch.object(
+                maintainer,
+                "read_snapshot",
+                return_value=[],
+            ):
+                result = maintainer.check_and_maybe_upload(
+                    force_deep_scan=True,
+                    preserve_retry_state=True,
+                    skip_stability_wait=True,
+                    queue_reason="active-upload source changes",
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(maintainer.pending_upload_snapshot, [row_a, row_b])
+            self.assertEqual(maintainer.pending_upload_reason, "active-upload source changes")
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
     def test_poll_upload_process_runs_forced_check_after_active_upload_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -918,6 +955,8 @@ class AutoMaintainTests(unittest.TestCase):
                         "upload_high_backlog_exit_threshold": 25,
                         "maintain_high_backlog_enter_threshold": 35,
                         "maintain_high_backlog_exit_threshold": 20,
+                        "next_batch_buffer_limit": 150,
+                        "account_lock_lease_seconds": 45,
                         "incremental_maintain_min_interval_seconds": 9,
                         "incremental_maintain_full_guard_seconds": 8,
                         "run_upload_on_start": False,
@@ -944,6 +983,8 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertEqual(settings.upload_high_backlog_exit_threshold, 25)
             self.assertEqual(settings.maintain_high_backlog_enter_threshold, 35)
             self.assertEqual(settings.maintain_high_backlog_exit_threshold, 20)
+            self.assertEqual(settings.next_batch_buffer_limit, 150)
+            self.assertEqual(settings.account_lock_lease_seconds, 45)
             self.assertEqual(settings.incremental_maintain_min_interval_seconds, 9)
             self.assertEqual(settings.incremental_maintain_full_guard_seconds, 8)
             self.assertFalse(settings.run_upload_on_start)
@@ -987,6 +1028,8 @@ class AutoMaintainTests(unittest.TestCase):
                         "UPLOAD_HIGH_BACKLOG_EXIT_THRESHOLD": "33",
                         "MAINTAIN_HIGH_BACKLOG_ENTER_THRESHOLD": "77",
                         "MAINTAIN_HIGH_BACKLOG_EXIT_THRESHOLD": "44",
+                        "NEXT_BATCH_BUFFER_LIMIT": "120",
+                        "ACCOUNT_LOCK_LEASE_SECONDS": "55",
                         "INCREMENTAL_MAINTAIN_MIN_INTERVAL_SECONDS": "77",
                         "INCREMENTAL_MAINTAIN_FULL_GUARD_SECONDS": "88",
                         "RUN_UPLOAD_ON_START": "1",
@@ -1007,6 +1050,8 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertEqual(settings.upload_high_backlog_exit_threshold, 33)
             self.assertEqual(settings.maintain_high_backlog_enter_threshold, 77)
             self.assertEqual(settings.maintain_high_backlog_exit_threshold, 44)
+            self.assertEqual(settings.next_batch_buffer_limit, 120)
+            self.assertEqual(settings.account_lock_lease_seconds, 55)
             self.assertEqual(settings.incremental_maintain_min_interval_seconds, 77)
             self.assertEqual(settings.incremental_maintain_full_guard_seconds, 88)
             self.assertTrue(settings.run_upload_on_start)
@@ -1040,6 +1085,7 @@ class AutoMaintainTests(unittest.TestCase):
                     "UPLOAD_HIGH_BACKLOG_EXIT_THRESHOLD": "",
                     "MAINTAIN_HIGH_BACKLOG_ENTER_THRESHOLD": "",
                     "MAINTAIN_HIGH_BACKLOG_EXIT_THRESHOLD": "",
+                    "NEXT_BATCH_BUFFER_LIMIT": "",
                 },
                 clear=True,
             ):
@@ -1048,6 +1094,22 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertIsNone(settings.upload_high_backlog_exit_threshold)
             self.assertIsNone(settings.maintain_high_backlog_enter_threshold)
             self.assertIsNone(settings.maintain_high_backlog_exit_threshold)
+            self.assertIsNone(settings.next_batch_buffer_limit)
+
+    def test_load_settings_rejects_invalid_account_lock_lease_seconds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            watch_cfg = Path(tmp) / "watch.json"
+            watch_cfg.write_text("{}", encoding="utf-8")
+            args = argparse.Namespace(once=False, watch_config=str(watch_cfg))
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ACCOUNT_LOCK_LEASE_SECONDS": "0",
+                },
+                clear=True,
+            ):
+                with self.assertRaises(ValueError):
+                    _ = load_settings(args)
 
     def test_render_progress_snapshot_includes_queue_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

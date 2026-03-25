@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 from ..state.maintain_queue import (
     MAINTAIN_ACTION_STEPS,
@@ -34,12 +36,79 @@ class MaintainPipelineCycleResult:
     had_failure: bool
 
 
+@dataclass(frozen=True)
+class AccountLockLease:
+    owner_job_id: str
+    expires_at_monotonic: float
+
+
 def _reserved_lock_names_for_item(item: MaintainStepWorkItem) -> set[str]:
     if item.step not in MAINTAIN_ACTION_STEPS:
         return set()
     if item.scope_names is None:
         return {"*"}
     return set(item.scope_names)
+
+
+def _decode_lock_owner(lock_value: Any, *, now_monotonic: float) -> str | None:
+    if isinstance(lock_value, str):
+        return lock_value
+    if isinstance(lock_value, AccountLockLease):
+        if lock_value.expires_at_monotonic <= now_monotonic:
+            return None
+        return lock_value.owner_job_id
+    if isinstance(lock_value, dict):
+        raw_owner = lock_value.get("owner_job_id", lock_value.get("owner"))
+        if not isinstance(raw_owner, str) or not raw_owner.strip():
+            return None
+        raw_expire = lock_value.get("expires_at_monotonic", lock_value.get("expires_at"))
+        if raw_expire is None:
+            return raw_owner
+        try:
+            expires_at = float(raw_expire)
+        except (TypeError, ValueError):
+            return None
+        if expires_at <= now_monotonic:
+            return None
+        return raw_owner
+    return None
+
+
+def _active_lock_owners(
+    *,
+    lock_table: dict[str, Any],
+    now_monotonic: float,
+) -> dict[str, str]:
+    owners: dict[str, str] = {}
+    for name in list(lock_table.keys()):
+        owner = _decode_lock_owner(lock_table.get(name), now_monotonic=now_monotonic)
+        if owner is None:
+            lock_table.pop(name, None)
+            continue
+        owners[name] = owner
+    return owners
+
+
+def _write_lock_entry(
+    *,
+    lock_table: dict[str, Any],
+    lock_name: str,
+    owner_job_id: str,
+    now_monotonic: float,
+    lease_seconds: int,
+) -> None:
+    if lease_seconds <= 0:
+        lock_table[lock_name] = owner_job_id
+        return
+    lock_table[lock_name] = AccountLockLease(
+        owner_job_id=owner_job_id,
+        expires_at_monotonic=now_monotonic + float(lease_seconds),
+    )
+
+
+def _is_lock_owned_by(lock_value: Any, *, owner_job_id: str, now_monotonic: float) -> bool:
+    owner = _decode_lock_owner(lock_value, now_monotonic=now_monotonic)
+    return owner == owner_job_id
 
 
 async def _run_step_safely(
@@ -60,9 +129,11 @@ async def run_maintain_pipeline_cycle(
     *,
     state: MaintainQueueState,
     run_step: Callable[[MaintainStepWorkItem], Awaitable[MaintainPipelineStepOutcome]],
-    account_locks: dict[str, str] | None = None,
+    account_locks: dict[str, Any] | None = None,
     allow_scan_parallel: bool = True,
     fail_fast: bool = True,
+    account_lock_lease_seconds: int = 0,
+    now_monotonic: Callable[[], float] = time.monotonic,
 ) -> MaintainPipelineCycleResult:
     """Run one maintain pipeline cycle and apply step transitions.
 
@@ -72,10 +143,12 @@ async def run_maintain_pipeline_cycle(
     - Action-step execution honors account-level locks.
     """
 
-    lock_table = {} if account_locks is None else account_locks
+    current_now = now_monotonic()
+    lock_table: dict[str, Any] = {} if account_locks is None else account_locks
+    lock_owners_for_claim = _active_lock_owners(lock_table=lock_table, now_monotonic=current_now)
     claim = claim_maintain_pipeline_work(
         state=state,
-        account_locks=lock_table,
+        account_locks=lock_owners_for_claim,
         allow_scan_parallel=allow_scan_parallel,
     )
     if not claim.work_items:
@@ -92,7 +165,13 @@ async def run_maintain_pipeline_cycle(
             continue
         reserved_locks_by_job[item.job_id] = lock_names
         for name in lock_names:
-            lock_table[name] = item.job_id
+            _write_lock_entry(
+                lock_table=lock_table,
+                lock_name=name,
+                owner_job_id=item.job_id,
+                now_monotonic=current_now,
+                lease_seconds=account_lock_lease_seconds,
+            )
 
     queue_state = claim.state
     had_failure = False
@@ -124,7 +203,7 @@ async def run_maintain_pipeline_cycle(
     finally:
         for job_id, lock_names in reserved_locks_by_job.items():
             for name in lock_names:
-                if lock_table.get(name) == job_id:
+                if _is_lock_owned_by(lock_table.get(name), owner_job_id=job_id, now_monotonic=current_now):
                     lock_table.pop(name, None)
 
     return MaintainPipelineCycleResult(
@@ -140,5 +219,6 @@ __all__ = [
     "STEP_STATUS_FAILED",
     "MaintainPipelineStepOutcome",
     "MaintainPipelineCycleResult",
+    "AccountLockLease",
     "run_maintain_pipeline_cycle",
 ]

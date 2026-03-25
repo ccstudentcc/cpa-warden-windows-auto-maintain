@@ -24,6 +24,8 @@
   "maintain_high_backlog_batch_size": 220,
   "maintain_high_backlog_enter_threshold": null,
   "maintain_high_backlog_exit_threshold": null,
+  "next_batch_buffer_limit": null,
+  "account_lock_lease_seconds": 30,
   "incremental_maintain_min_interval_seconds": 20,
   "incremental_maintain_full_guard_seconds": 90,
   "deep_scan_interval_loops": 120,

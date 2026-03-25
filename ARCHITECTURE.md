@@ -207,6 +207,7 @@ Rollout/rollback controls:
 - Channel lifecycle and retry counters are isolated.
 - Upload runs in serial batches (`UPLOAD_BATCH_SIZE`) with scope files.
 - Upload stability wait uses a frozen-batch model: in-window new/updated rows do not reset the current wait timer; they are deferred to subsequent queue intake.
+- Upload queue intake supports optional backpressure cap via `next_batch_buffer_limit` (default `null` = uncapped).
 - Scheduled maintain is full scope.
 - Post-upload maintain is incremental and derived from completed upload batch names.
 - Maintain queue state keeps a unified Job model for full/incremental and separate step queues (`scan/delete_401/quota/reenable/finalize`).
@@ -214,6 +215,7 @@ Rollout/rollback controls:
 - Maintain step engine enforces serial order per job and supports cross-job pipeline concurrency:
   - one action-stage job can run while another job runs scan
   - action-stage claim respects account-name locks to avoid conflicting side effects
+- Maintain account locks support optional lease expiry via `account_lock_lease_seconds` to prevent stale lock starvation.
 - Full and incremental maintain jobs share the same step engine and transition rules.
 - Smart scheduler adapts upload/maintain batching and incremental maintain deferral under backlog pressure.
 - Smart scheduler batch planning now consumes total backlog, not only local queue length.

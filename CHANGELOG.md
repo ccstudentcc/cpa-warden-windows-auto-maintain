@@ -61,6 +61,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Extended `tests/test_warden_maintain_service_module.py` with maintain step-order validation and partial-step execution coverage.
 - Upload stability wait now freezes the current candidate batch and defers in-window new/updated rows to the next queue intake instead of resetting the timer indefinitely.
 - Upload pending queue merge is now path-coalesced (`last-writer-wins`) so active deep-scan intake replaces stale versions of the same file path.
+- Upload queue merge now supports optional buffer cap (`NEXT_BATCH_BUFFER_LIMIT` / `next_batch_buffer_limit`) to bound pending buffer growth under sustained bursts.
 - Smart scheduler batch selection now consumes a shared total-backlog estimate (`upload pending + incremental pending + full-maintain equivalent`) when deciding upload and incremental-maintain batch sizes.
 - Smart scheduler now supports optional backlog signal smoothing and hysteresis thresholds:
   - `BACKLOG_EWMA_ALPHA` / `backlog_ewma_alpha`
@@ -69,6 +70,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Incremental maintain defer semantics are narrowed to the small-fill case only (`batch_too_small_waiting_fill`) when upload-side fill source is active; cooldown/full-guard backlog-priority defer reasons were removed.
 - `cwma/auto/runtime/channel_runtime_adapter.py` now computes total backlog at maintain/upload start boundaries and passes it to scheduler policy consistently (including panel next-batch projections via `panel_runtime_adapter`).
 - Added Stage-5 scheduler/defer regression coverage in `tests/test_auto_modules_state.py` and host-level Stage-5 integration coverage in `tests/test_auto_maintain.py`.
+- Maintain pipeline runtime now supports optional account-lock lease handling (`ACCOUNT_LOCK_LEASE_SECONDS` / `account_lock_lease_seconds`) with stale-lease cleanup before action-step claim.
 - Stage-7 hardening now applies the shared temp sandbox bootstrap across unittest modules that rely on `tempfile`, making full discovery (`273` tests) pass consistently in constrained Windows/Python 3.14 environments.
 - Stage-7 rollout/rollback documentation is now synchronized across `README.md`, `README.zh-CN.md`, `ARCHITECTURE.md`, and `cwma/auto/BOUNDARY_MAP.md` with explicit `INPROCESS_EXECUTION_ENABLED` guidance.
 - In-process channel startup now forces `CPA_WARDEN_DISABLE_RICH_PROGRESS=1` so nested `cpa_warden` runs do not render Rich live progress bars that interfere with watcher fixed-panel terminal UI.

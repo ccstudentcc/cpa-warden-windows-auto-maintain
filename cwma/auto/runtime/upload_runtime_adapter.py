@@ -95,9 +95,15 @@ class UploadRuntimeAdapter:
             discovered_pending_snapshot=discovered_pending_snapshot,
             queue_reason=queue_reason,
             preserve_retry_state=preserve_retry_state,
+            buffer_limit=self.host.settings.next_batch_buffer_limit,
         )
         self.host._apply_upload_queue_state(merge_result.state)
         merged_pending = merge_result.merged_pending_snapshot
+        if merge_result.overflow_count > 0:
+            self.log(
+                "Upload pending buffer limit reached. "
+                f"dropped_overflow={merge_result.overflow_count}, limit={self.host.settings.next_batch_buffer_limit}"
+            )
         self.log(f"Upload batch queued. pending={len(merged_pending)}")
         self.host.update_channel_progress(CHANNEL_UPLOAD, stage=STAGE_PENDING, force_render=True)
         return merged_pending
