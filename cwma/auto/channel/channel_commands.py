@@ -9,6 +9,7 @@ def build_maintain_command(
     maintain_db_path: Path,
     maintain_log_file: Path,
     maintain_names_file: Path | None = None,
+    maintain_steps: tuple[str, ...] | None = None,
     assume_yes: bool = False,
 ) -> list[str]:
     cmd = list(command_base) + [
@@ -21,6 +22,8 @@ def build_maintain_command(
     ]
     if maintain_names_file is not None:
         cmd.extend(["--maintain-names-file", str(maintain_names_file)])
+    if maintain_steps:
+        cmd.extend(["--maintain-steps", ",".join(maintain_steps)])
     if assume_yes:
         cmd.append("--yes")
     return cmd

@@ -25,6 +25,8 @@ class WardenCliModuleTests(unittest.TestCase):
                 "55",
                 "--quota-action",
                 "disable",
+                "--maintain-steps",
+                "scan,quota,finalize",
                 "--quota-disable-threshold",
                 "0.3",
                 "--upload-method",
@@ -39,6 +41,7 @@ class WardenCliModuleTests(unittest.TestCase):
         self.assertEqual(args.provider, "foo")
         self.assertEqual(args.probe_workers, 55)
         self.assertEqual(args.quota_action, "disable")
+        self.assertEqual(args.maintain_steps, "scan,quota,finalize")
         self.assertAlmostEqual(args.quota_disable_threshold, 0.3)
         self.assertEqual(args.upload_method, "multipart")
         self.assertTrue(args.auto_register)
@@ -66,4 +69,3 @@ class WardenCliModuleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

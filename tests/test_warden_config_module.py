@@ -11,6 +11,7 @@ from cwma.warden.config import (
     build_settings,
     config_lookup,
     load_config_json,
+    parse_optional_maintain_steps,
     parse_bool_config,
 )
 from tests.temp_sandbox import TempSandboxState, setup_tempfile_sandbox, teardown_tempfile_sandbox
@@ -42,6 +43,7 @@ def _build_args(**overrides: object) -> argparse.Namespace:
         "quota_action": None,
         "quota_disable_threshold": None,
         "maintain_names_file": None,
+        "maintain_steps": None,
         "upload_names_file": None,
         "db_path": None,
         "invalid_output": None,
@@ -140,6 +142,23 @@ class WardenConfigModuleTests(unittest.TestCase):
         defaults = build_default_settings_values(target_type="openai")
         settings = build_settings(args, {}, defaults=defaults)
         self.assertEqual(settings["target_type"], "openai")
+
+    def test_build_settings_parses_maintain_steps_from_args_and_conf(self) -> None:
+        from_args = build_settings(
+            _build_args(mode="maintain", maintain_steps="scan,quota,finalize"),
+            {},
+        )
+        self.assertEqual(from_args["maintain_steps"], ("scan", "quota", "finalize"))
+
+        from_conf = build_settings(
+            _build_args(mode="maintain"),
+            {"maintain_steps": ["scan", "delete_401"]},
+        )
+        self.assertEqual(from_conf["maintain_steps"], ("scan", "delete_401"))
+
+    def test_parse_optional_maintain_steps_rejects_invalid_type(self) -> None:
+        with self.assertRaises(RuntimeError):
+            _ = parse_optional_maintain_steps(123)
 
 
 if __name__ == "__main__":

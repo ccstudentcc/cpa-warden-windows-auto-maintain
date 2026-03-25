@@ -279,6 +279,7 @@ async def run_maintain_async(
     mark_quota_already_disabled: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
     summarize_action_results: Callable[[str, list[dict[str, Any]]], None],
     logger: Any,
+    steps: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     return await run_maintain_steps_async(
         conn,
@@ -292,7 +293,7 @@ async def run_maintain_async(
         mark_quota_already_disabled=mark_quota_already_disabled,
         summarize_action_results=summarize_action_results,
         logger=logger,
-        steps=None,
+        steps=steps,
     )
 
 

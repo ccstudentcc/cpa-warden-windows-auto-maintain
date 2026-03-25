@@ -150,12 +150,15 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
             maintain_db_path=Path("m.sqlite3"),
             maintain_log_file=Path("m.log"),
             maintain_names_file=Path("names.txt"),
+            maintain_steps=("scan", "quota", "finalize"),
             assume_yes=True,
         )
         self.assertIn("--mode", cmd)
         self.assertIn("maintain", cmd)
         self.assertIn("--maintain-names-file", cmd)
         self.assertIn("names.txt", cmd)
+        self.assertIn("--maintain-steps", cmd)
+        self.assertIn("scan,quota,finalize", cmd)
         self.assertIn("--yes", cmd)
 
     def test_build_upload_command_with_scope(self) -> None:
@@ -271,15 +274,22 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
             attempt=1,
             max_attempts=3,
             scope_names={"a.json"},
+            maintain_steps=("scan", "quota"),
             write_scope_file=lambda names: Path(f"scope-{len(names)}.txt"),
-            build_command=lambda scope_file: ["maintain", str(scope_file) if scope_file else "-"],
+            build_command=lambda scope_file, maintain_steps: [
+                "maintain",
+                str(scope_file) if scope_file else "-",
+                ",".join(maintain_steps or tuple()),
+            ],
             format_start_message=lambda attempt, max_attempts, reason, scope_names: (
                 f"a={attempt}/{max_attempts}|r={reason}|n={len(scope_names or set())}"
             ),
         )
         self.assertEqual(prep.scope_file, Path("scope-1.txt"))
         self.assertTrue(prep.started_incremental)
+        self.assertEqual(prep.maintain_steps, ("scan", "quota"))
         self.assertEqual(prep.command[0], "maintain")
+        self.assertIn("scan,quota", prep.command)
         self.assertIn("n=1", prep.log_message)
 
     def test_prepare_upload_start_without_scope_file(self) -> None:

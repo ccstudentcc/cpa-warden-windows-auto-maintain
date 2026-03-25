@@ -18,6 +18,10 @@ def build_parser(default_config_path: str) -> argparse.ArgumentParser:
     parser.add_argument("--quota-action", choices=["disable", "delete"], help="限额账号处理动作")
     parser.add_argument("--quota-disable-threshold", type=float, help="剩余额度比例触发禁用阈值（0~1，默认 0 表示仅耗尽）")
     parser.add_argument("--maintain-names-file", help="维护范围名称文件（每行一个 auth 名称，仅 maintain 模式生效）")
+    parser.add_argument(
+        "--maintain-steps",
+        help="维护步骤选择（逗号分隔），例如 scan,quota,finalize；仅 maintain 模式生效",
+    )
     parser.add_argument("--upload-names-file", help="上传范围名称文件（每行一个 auth 名称，仅 upload 模式生效）")
     parser.add_argument("--db-path", help="SQLite 状态库路径")
     parser.add_argument("--invalid-output", help="401 导出文件路径")
@@ -74,4 +78,3 @@ def build_parser(default_config_path: str) -> argparse.ArgumentParser:
 def parse_cli_args(default_config_path: str, argv: list[str] | None = None) -> argparse.Namespace:
     parser = build_parser(default_config_path)
     return parser.parse_args(argv)
-

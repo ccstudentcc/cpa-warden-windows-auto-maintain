@@ -9,6 +9,7 @@ from typing import Callable
 class MaintainStartPrep:
     scope_names: set[str] | None
     scope_file: Path | None
+    maintain_steps: tuple[str, ...] | None
     command: list[str]
     log_message: str
     started_incremental: bool
@@ -29,18 +30,20 @@ def prepare_maintain_start(
     attempt: int,
     max_attempts: int,
     scope_names: set[str] | None,
+    maintain_steps: tuple[str, ...] | None,
     write_scope_file: Callable[[set[str]], Path],
-    build_command: Callable[[Path | None], list[str]],
+    build_command: Callable[[Path | None, tuple[str, ...] | None], list[str]],
     format_start_message: Callable[[int, int, str, set[str] | None], str],
 ) -> MaintainStartPrep:
     scope_file: Path | None = None
     if scope_names is not None:
         scope_file = write_scope_file(scope_names)
-    command = build_command(scope_file)
+    command = build_command(scope_file, maintain_steps)
     log_message = format_start_message(attempt, max_attempts, reason, scope_names)
     return MaintainStartPrep(
         scope_names=scope_names,
         scope_file=scope_file,
+        maintain_steps=maintain_steps,
         command=command,
         log_message=log_message,
         started_incremental=scope_names is not None,

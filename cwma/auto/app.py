@@ -457,12 +457,17 @@ class AutoMaintainer:
         else:
             self.maintain_output_thread = thread
 
-    def build_maintain_command(self, maintain_names_file: Path | None = None) -> list[str]:
+    def build_maintain_command(
+        self,
+        maintain_names_file: Path | None = None,
+        maintain_steps: tuple[str, ...] | None = None,
+    ) -> list[str]:
         return build_maintain_command_rows(
             command_base=self.command_base(),
             maintain_db_path=self.settings.maintain_db_path,
             maintain_log_file=self.settings.maintain_log_file,
             maintain_names_file=maintain_names_file,
+            maintain_steps=maintain_steps,
             assume_yes=self.settings.maintain_assume_yes,
         )
 

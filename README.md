@@ -218,6 +218,7 @@ Precedence:
 ```bash
 uv run python cpa_warden.py --mode scan
 uv run python cpa_warden.py --mode maintain --yes
+uv run python cpa_warden.py --mode maintain --maintain-steps scan,quota,finalize --yes
 uv run python cpa_warden.py --mode upload --upload-dir ./auth_files --upload-recursive
 uv run python cpa_warden.py --mode maintain-refill --min-valid-accounts 200 --upload-dir ./auth_files
 ```

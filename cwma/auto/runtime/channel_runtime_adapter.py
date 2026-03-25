@@ -84,7 +84,11 @@ class ChannelRuntimeHost(Protocol):
     def _apply_upload_queue_state(self, state: Any) -> None: ...
     def _set_maintain_process(self, process: Any) -> None: ...
     def _set_upload_process(self, process: Any) -> None: ...
-    def build_maintain_command(self, maintain_names_file: Path | None = None) -> list[str]: ...
+    def build_maintain_command(
+        self,
+        maintain_names_file: Path | None = None,
+        maintain_steps: tuple[str, ...] | None = None,
+    ) -> list[str]: ...
     def build_upload_command(self, upload_names_file: Path | None = None) -> list[str]: ...
     def parse_child_progress_line(self, name: str, line: str) -> None: ...
     def mark_channel_running(self, name: str) -> None: ...
@@ -274,8 +278,12 @@ class ChannelRuntimeAdapter:
             attempt=self.host.maintain_attempt,
             max_attempts=max_attempts,
             scope_names=decision.scope_names,
+            maintain_steps=None,
             write_scope_file=lambda names: write_scope_names(self.host.maintain_names_file, names),
-            build_command=self.host.build_maintain_command,
+            build_command=lambda scope_file, maintain_steps: self.host.build_maintain_command(
+                scope_file,
+                maintain_steps,
+            ),
             format_start_message=lambda attempt, max_attempts, reason, scope_names: (
                 format_maintain_start_message_rows(
                     attempt=attempt,

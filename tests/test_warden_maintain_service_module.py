@@ -211,6 +211,48 @@ class WardenMaintainServiceModuleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["quota_action_results"]), 1)
         self.assertEqual(result["reenable_results"], [])
 
+    async def test_run_maintain_async_accepts_steps_override(self) -> None:
+        settings = self._base_settings()
+        call_seq: list[str] = []
+
+        async def _run_scan(conn: Any, cfg: dict[str, Any], scope: set[str] | None) -> dict[str, Any]:
+            return {
+                "candidate_records": [
+                    {"name": "a.json"},
+                    {"name": "b.json", "disabled": 0},
+                ],
+                "invalid_records": [{"name": "a.json"}],
+                "quota_records": [{"name": "b.json", "disabled": 0, "is_invalid_401": 0}],
+                "recovered_records": [],
+            }
+
+        async def _run_action(**kwargs: Any) -> list[dict[str, Any]]:
+            fn_name = str(kwargs["fn_name"])
+            if fn_name == "delete":
+                call_seq.append("delete")
+                return [{"name": "a.json", "ok": True}]
+            call_seq.append("quota")
+            return [{"name": "b.json", "ok": True}]
+
+        result = await run_maintain_async(
+            object(),
+            settings,
+            resolve_maintain_name_scope=lambda cfg: None,
+            run_scan_async=_run_scan,
+            run_action_group_async=_run_action,
+            confirm_action=lambda message, assume_yes: True,
+            apply_action_results=lambda records_by_name, results, **kwargs: [],
+            upsert_auth_accounts=lambda conn, rows: None,
+            mark_quota_already_disabled=lambda records: records,
+            summarize_action_results=lambda label, rows: None,
+            logger=_DummyLogger(),
+            steps=[MAINTAIN_STEP_SCAN, MAINTAIN_STEP_QUOTA, MAINTAIN_STEP_FINALIZE],
+        )
+
+        self.assertEqual(call_seq, ["quota"])
+        self.assertEqual(result["delete_401_results"], [])
+        self.assertEqual(len(result["quota_action_results"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

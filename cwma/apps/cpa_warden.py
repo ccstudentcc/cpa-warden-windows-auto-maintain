@@ -965,6 +965,7 @@ async def run_maintain_async(conn: sqlite3.Connection, settings: dict[str, Any])
         mark_quota_already_disabled=mark_quota_already_disabled,
         summarize_action_results=summarize_action_results,
         logger=LOGGER,
+        steps=settings.get("maintain_steps"),
     )
 
 
@@ -1165,7 +1166,7 @@ def main() -> int:
 
     ensure_credentials(settings, interactive)
     LOGGER.debug(
-        "运行参数: mode=%s target_type=%s provider=%s probe_workers=%s action_workers=%s timeout=%s retries=%s delete_retries=%s quota_action=%s quota_disable_threshold=%s delete_401=%s auto_reenable=%s reenable_scope=%s maintain_names_file=%s upload_names_file=%s upload_dir=%s upload_workers=%s upload_retries=%s upload_method=%s upload_recursive=%s upload_force=%s min_valid_accounts=%s refill_strategy=%s auto_register=%s register_timeout=%s register_workdir=%s db_path=%s",
+        "运行参数: mode=%s target_type=%s provider=%s probe_workers=%s action_workers=%s timeout=%s retries=%s delete_retries=%s quota_action=%s quota_disable_threshold=%s delete_401=%s auto_reenable=%s reenable_scope=%s maintain_names_file=%s maintain_steps=%s upload_names_file=%s upload_dir=%s upload_workers=%s upload_retries=%s upload_method=%s upload_recursive=%s upload_force=%s min_valid_accounts=%s refill_strategy=%s auto_register=%s register_timeout=%s register_workdir=%s db_path=%s",
         settings["mode"],
         settings["target_type"],
         settings["provider"] or "",
@@ -1180,6 +1181,7 @@ def main() -> int:
         settings["auto_reenable"],
         settings["reenable_scope"],
         settings["maintain_names_file"],
+        ",".join(settings["maintain_steps"] or tuple()),
         settings["upload_names_file"],
         settings["upload_dir"],
         settings["upload_workers"],

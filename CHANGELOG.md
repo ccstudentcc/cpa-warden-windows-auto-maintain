@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `ARCHITECTURE.md` rewritten as current-state boundary/model reference (instead of stage-history-heavy narrative)
   - `CONTRIBUTING.md` now defines doc ownership/update rules to keep cross-doc consistency
 - Added CLI option `--upload-names-file` (upload mode) to constrain upload candidates to a provided name set
+- Added maintain step selector `--maintain-steps` (comma-separated) to run maintain flow with explicit step subsets (for example `scan,quota,finalize`) while preserving default full-step behavior when omitted.
 - Added `smart_scheduler.py` policy helper for adaptive upload batching and incremental-maintain pacing decisions
 - Watcher upload scheduling now supports `UPLOAD_BATCH_SIZE` and executes serial scoped batches so post-upload incremental maintain can start earlier
 - Watcher now supports smart scheduling knobs for low/high-frequency compatibility:

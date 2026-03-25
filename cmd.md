@@ -21,6 +21,8 @@ uv run python cpa_warden.py --mode scan
 ```bash
 uv run python cpa_warden.py --mode maintain --yes
 uv run python cpa_warden.py --mode maintain --maintain-names-file ./.auto_maintain_state/maintain_names_scope.txt --yes
+# 按步骤运行（示例：只执行 scan + quota + finalize）
+uv run python cpa_warden.py --mode maintain --maintain-steps scan,quota,finalize --yes
 ```
 
 ### 上传（全目录/按范围）

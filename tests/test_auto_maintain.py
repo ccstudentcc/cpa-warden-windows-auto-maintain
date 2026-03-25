@@ -664,6 +664,10 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertIn("--maintain-names-file", scoped)
             self.assertIn(str(base / "scope.txt"), scoped)
 
+            stepped = maintainer.build_maintain_command(None, ("scan", "quota"))
+            self.assertIn("--maintain-steps", stepped)
+            self.assertIn("scan,quota", stepped)
+
     def test_delete_uploaded_files_prunes_empty_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

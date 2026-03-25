@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,23 @@ def load_config_json(path: str, required: bool = False) -> dict[str, Any]:
         raise RuntimeError(f"读取配置文件失败: {exc}") from exc
 
     return data
+
+
+def parse_optional_maintain_steps(raw: Any) -> tuple[str, ...] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        tokens = [item.strip() for item in raw.split(",")]
+        normalized = tuple(token for token in tokens if token)
+        return normalized or None
+    if isinstance(raw, Iterable):
+        tokens: list[str] = []
+        for item in raw:
+            token = str(item).strip()
+            if token:
+                tokens.append(token)
+        return tuple(tokens) or None
+    raise RuntimeError("maintain_steps 必须是逗号分隔字符串或字符串数组")
 
 
 def build_settings(
@@ -172,6 +190,11 @@ def build_settings(
             if args.maintain_names_file is not None
             else config_lookup(conf, "maintain_names_file", default="")
         ).strip(),
+        "maintain_steps": parse_optional_maintain_steps(
+            args.maintain_steps
+            if args.maintain_steps is not None
+            else config_lookup(conf, "maintain_steps", default=None)
+        ),
         "upload_names_file": str(
             args.upload_names_file
             if args.upload_names_file is not None
@@ -291,4 +314,3 @@ def build_settings(
             raise RuntimeError("auto_register=true 时必须提供 register_command")
 
     return settings
-
