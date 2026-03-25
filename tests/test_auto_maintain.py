@@ -1111,6 +1111,35 @@ class AutoMaintainTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     _ = load_settings(args)
 
+    def test_load_settings_rejects_invalid_next_batch_buffer_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            watch_cfg = Path(tmp) / "watch.json"
+            watch_cfg.write_text("{}", encoding="utf-8")
+            args = argparse.Namespace(once=False, watch_config=str(watch_cfg))
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "NEXT_BATCH_BUFFER_LIMIT": "0",
+                },
+                clear=True,
+            ):
+                with self.assertRaises(ValueError):
+                    _ = load_settings(args)
+
+    def test_settings_log_rows_include_new_pressure_and_lock_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            auth_dir = base / "auth"
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            settings = _build_settings(base, auth_dir)
+            settings.next_batch_buffer_limit = 321
+            settings.account_lock_lease_seconds = 42
+            maintainer = AutoMaintainer(settings)
+
+            rows = dict(maintainer._settings_log_rows())
+            self.assertEqual(rows["NEXT_BATCH_BUFFER_LIMIT"], 321)
+            self.assertEqual(rows["ACCOUNT_LOCK_LEASE_SECONDS"], 42)
+
     def test_render_progress_snapshot_includes_queue_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
