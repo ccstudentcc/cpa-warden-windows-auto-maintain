@@ -90,6 +90,7 @@ Responsibilities:
 - file-system and ZIP side effects
 - lock lifecycle and shutdown/sleep cadence
 - config loading/parsing boundary
+- rollout/rollback runtime toggles surfaced via config/env (for example `inprocess_execution_enabled` / `INPROCESS_EXECUTION_ENABLED`)
 
 ### UI
 
@@ -146,6 +147,22 @@ Responsibilities:
   - `jobs_full/jobs_incremental`
   - `steps_qr/steps_retry/retry_jobs`
   - step-level retry visibility (e.g. `delete_401:1`)
+
+## Stage 7 Test Mapping Update
+
+- `tests/temp_sandbox.py` is the shared unittest temp sandbox helper for Python 3.14 Windows runners; ownership is test-infra support and it is consumed by modules with `tempfile.TemporaryDirectory()` usage.
+- The following suites are now explicitly wired to the shared temp sandbox bootstrap:
+  - `tests/test_auto_maintain.py`
+  - `tests/test_auto_modules_process_channel.py`
+  - `tests/test_auto_modules_state.py`
+  - `tests/test_warden_config_module.py`
+  - `tests/test_warden_db_repository_module.py`
+  - `tests/test_warden_exports_module.py`
+  - `tests/test_warden_maintain_scope_module.py`
+  - `tests/test_warden_upload_scope_module.py`
+  - plus existing temp-sandboxed suites (`test_auto_inprocess_channel_module.py`, `test_auto_upload_stability_module.py`)
+- Validation target for Stage-7 hardening is full-suite stability via:
+  - `uv run python -m unittest discover -s tests -p "test_*.py"`
 
 ## Stage 2.6 Test Modules Map (Closeout Completed)
 

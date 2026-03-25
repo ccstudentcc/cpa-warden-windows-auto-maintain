@@ -32,6 +32,7 @@
 - 上传稳定等待已采用“冻结当前候选批次”策略；窗口内新增/更新项延后到下一轮入队，且按路径合并待上传项（`last-writer-wins`）
 - 智能调度批次决策已改为共享“总积压”信号（上传待处理 + 增量维护待处理 + 全量维护等价积压）；增量 defer 语义已收敛为仅 `batch_too_small_waiting_fill`
 - 仪表盘面板已支持 maintain 步骤队列可观测（`steps_qr` / `steps_retry`）、full/incremental 作业计数，以及通道/流水线并行状态提示
+- Stage 7 加固已完成：通过工作区临时目录沙箱修复 Python 3.14 Windows 下全量 unittest 稳定性问题，并补齐了 in-process 执行灰度/回滚文档
 
 ## 文档架构（避免冗余）
 
@@ -171,6 +172,7 @@ start_auto_maintain_optimized.bat
   - 总积压规则：上传/增量维护批次选择共享同一积压估算（上传待处理 + 增量待处理 + 全量维护等价积压）
   - 增量 defer 规则：仅用于“小批补充等待”（`batch_too_small_waiting_fill`），不再使用 cooldown/full-guard 旧语义
 - 运行行为：`run_maintain_on_start`、`run_upload_on_start`、`run_maintain_after_upload`
+- 执行后端开关：`inprocess_execution_enabled`（`false` 使用 legacy 子进程，`true` 使用进程内通道执行）
 - 失败策略：`maintain_retry_count`、`upload_retry_count`、`command_retry_delay_seconds`、`continue_on_command_failure`
 - 安全策略：`allow_multi_instance`、`maintain_assume_yes`
 - 归档入口：`inspect_zip_files`、`auto_extract_zip_json`、`delete_zip_after_extract`、`archive_extensions`、`bandizip_*`、`use_windows_zip_fallback`
@@ -184,7 +186,7 @@ start_auto_maintain_optimized.bat
 - `MAINTAIN_DB_PATH`、`UPLOAD_DB_PATH`
 - `MAINTAIN_LOG_FILE`、`UPLOAD_LOG_FILE`
 - 调度和节奏控制（`*_INTERVAL_*`、`*_BATCH_*`、`*_BACKLOG_*`）
-- 行为开关（`RUN_*`、`ALLOW_MULTI_INSTANCE`、`CONTINUE_ON_COMMAND_FAILURE`、`MAINTAIN_ASSUME_YES`）
+- 行为开关（`RUN_*`、`ALLOW_MULTI_INSTANCE`、`CONTINUE_ON_COMMAND_FAILURE`、`MAINTAIN_ASSUME_YES`、`INPROCESS_EXECUTION_ENABLED`）
 - 归档控制（`INSPECT_ZIP_FILES`、`AUTO_EXTRACT_ZIP_JSON`、`ARCHIVE_EXTENSIONS`、`BANDIZIP_*`、`USE_WINDOWS_ZIP_FALLBACK`）
 - 面板开关（`AUTO_MAINTAIN_FIXED_PANEL`、`AUTO_MAINTAIN_PANEL_COLOR`）
 
@@ -193,6 +195,17 @@ start_auto_maintain_optimized.bat
 1. 环境变量
 2. `--watch-config` / `WATCH_CONFIG_PATH` JSON
 3. 内置默认值
+
+## Stage 7 灰度与回滚
+
+- 默认仍保持可回滚安全：`inprocess_execution_enabled=false`（子进程后端）。
+- 灰度上线建议：
+  1. 在 `auto_maintain.config.json` 打开 `inprocess_execution_enabled=true`（或设置 `INPROCESS_EXECUTION_ENABLED=1`）
+  2. 先跑短窗口 `--once` 检查，再进入常规 watcher 窗口观察
+  3. 灰度期间保持 fail-fast（`continue_on_command_failure=false`）
+- 快速回滚：
+  - 将 `inprocess_execution_enabled=false`（或 `INPROCESS_EXECUTION_ENABLED=0`）并重启 watcher
+  - 行为会回到 legacy 子进程生命周期，不影响根入口命令
 
 ## 核心 CLI 兼容性
 
@@ -227,6 +240,8 @@ uv run python -m unittest -v tests/test_auto_maintain.py
 ```bash
 uv run python -m unittest discover -s tests -p "test_*.py"
 ```
+
+说明：测试套件已通过 `tests/temp_sandbox.py` 将 `tempfile.TemporaryDirectory()` 适配到仓库工作区安全目录，避免受限 Windows/Python 3.14 环境下的权限波动导致全量回归不稳定。
 
 ## 参与贡献
 

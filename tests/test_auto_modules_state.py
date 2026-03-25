@@ -72,6 +72,18 @@ from cwma.auto.state.upload_queue import (
 )
 from cwma.auto.state.upload_scan_cadence import decide_upload_deep_scan
 from cwma.scheduler.smart_scheduler import SmartSchedulerConfig, SmartSchedulerPolicy
+from tests.temp_sandbox import TempSandboxState, setup_tempfile_sandbox, teardown_tempfile_sandbox
+
+_TEMP_SANDBOX_STATE: TempSandboxState | None = None
+
+
+def setUpModule() -> None:
+    global _TEMP_SANDBOX_STATE
+    _TEMP_SANDBOX_STATE = setup_tempfile_sandbox()
+
+
+def tearDownModule() -> None:
+    teardown_tempfile_sandbox(_TEMP_SANDBOX_STATE)
 
 
 class AutoModuleStateTests(unittest.TestCase):

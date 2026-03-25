@@ -76,6 +76,18 @@ from cwma.auto.infra.zip_intake import (
     list_zip_paths,
     ps_quote,
 )
+from tests.temp_sandbox import TempSandboxState, setup_tempfile_sandbox, teardown_tempfile_sandbox
+
+_TEMP_SANDBOX_STATE: TempSandboxState | None = None
+
+
+def setUpModule() -> None:
+    global _TEMP_SANDBOX_STATE
+    _TEMP_SANDBOX_STATE = setup_tempfile_sandbox()
+
+
+def tearDownModule() -> None:
+    teardown_tempfile_sandbox(_TEMP_SANDBOX_STATE)
 
 
 class AutoModuleProcessChannelTests(unittest.TestCase):

@@ -25,29 +25,18 @@ from cwma.auto.state.maintain_queue import (
     MaintainQueueState,
 )
 from cwma.auto.state.snapshots import compute_uploaded_baseline as compute_uploaded_baseline_rows
+from tests.temp_sandbox import TempSandboxState, setup_tempfile_sandbox, teardown_tempfile_sandbox
 
-_ORIGINAL_TEMP_ENV: dict[str, str | None] = {}
-_SANDBOX_TEMP_KEYS = ("TMPDIR", "TEMP", "TMP")
+_TEMP_SANDBOX_STATE: TempSandboxState | None = None
 
 
 def setUpModule() -> None:
-    # Keep tempfile writes inside repository workspace for sandboxed runners.
-    sandbox_temp = (Path.cwd() / ".tmp_unittest_temp").resolve()
-    sandbox_temp.mkdir(parents=True, exist_ok=True)
-    global _ORIGINAL_TEMP_ENV
-    _ORIGINAL_TEMP_ENV = {key: os.environ.get(key) for key in _SANDBOX_TEMP_KEYS}
-    for key in _SANDBOX_TEMP_KEYS:
-        os.environ[key] = str(sandbox_temp)
-    tempfile.tempdir = str(sandbox_temp)
+    global _TEMP_SANDBOX_STATE
+    _TEMP_SANDBOX_STATE = setup_tempfile_sandbox()
 
 
 def tearDownModule() -> None:
-    tempfile.tempdir = None
-    for key, value in _ORIGINAL_TEMP_ENV.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
+    teardown_tempfile_sandbox(_TEMP_SANDBOX_STATE)
 
 
 class _DoneProcess:

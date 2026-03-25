@@ -21,7 +21,7 @@ Out of scope:
 
 ## 2. Current Status Snapshot
 
-As of `2026-03-24`, `cwma/auto` uses capability-oriented package boundaries:
+As of `2026-03-25`, `cwma/auto` uses capability-oriented package boundaries:
 
 - `orchestration`
 - `channel`
@@ -51,6 +51,12 @@ UI Stage-6 step-queue observability is now in place:
 
 - panel snapshot composition consumes maintain pipeline queue state and projects per-step `queued/running/retry` counters (`scan/delete_401/quota/reenable/finalize`)
 - panel output now includes full/incremental maintain job counters and parallel-state hints (`channels`, `pipeline`, `channels+pipeline`)
+
+Stage-7 hardening/docs/rollout is now in place:
+
+- in-process execution is explicitly rollout-gated by `INPROCESS_EXECUTION_ENABLED` / `inprocess_execution_enabled` (default `false`, subprocess fallback preserved)
+- test hardening now routes `tempfile.TemporaryDirectory()` through a workspace-safe sandbox helper (`tests/temp_sandbox.py`) for Python 3.14 + Windows stability in constrained environments
+- README/README.zh-CN/ARCHITECTURE/BOUNDARY_MAP/CHANGELOG are synchronized for rollback and rollout guidance
 
 ## 3. Documentation Architecture
 
@@ -188,6 +194,11 @@ Runtime-local copy:
 
 - `auto_maintain.config.json` (ignored by git)
 
+Rollout/rollback controls:
+
+- `inprocess_execution_enabled` (`INPROCESS_EXECUTION_ENABLED`) gates in-process channel backend rollout
+- default remains `false` to keep subprocess lifecycle as immediate rollback path
+
 ## 10. Concurrency and Scheduling Model
 
 - Two independent process channels:
@@ -217,6 +228,9 @@ Runtime-local copy:
 
 - Default policy is fail-fast (`continue_on_command_failure = false`).
 - `--once` mode exits non-zero on unresolved failure.
+- In-process execution rollout is reversible at config/env level:
+  - enable: `inprocess_execution_enabled=true` (or `INPROCESS_EXECUTION_ENABLED=1`)
+  - rollback: `inprocess_execution_enabled=false` (or `INPROCESS_EXECUTION_ENABLED=0`)
 - Single-instance safety is enforced in two layers on Windows:
   - launcher lock (`auto_maintain_launcher.lock`)
   - runtime lock (`auto_maintain.lock`, Windows file lock via `msvcrt`)
@@ -254,6 +268,10 @@ CPA domain split suites:
 
 - `tests/test_warden_*_module.py` files (CLI/config/models/api/db/services/exports/interactive/runtime_ops)
 - maintain service step-engine behavior is covered in `tests/test_warden_maintain_service_module.py`
+
+Stage-7 hardening note:
+
+- `tests/temp_sandbox.py` is the shared temp sandbox bootstrap for unittest modules that rely on `tempfile.TemporaryDirectory()`; it stabilizes test I/O on Python 3.14 Windows runners by using workspace-local temp dirs.
 
 ## 13. Architecture Change Checklist
 

@@ -32,6 +32,7 @@ See [NOTICE](NOTICE) for attribution details.
 - Upload stability wait now freezes the current candidate batch, defers in-window new/updated rows to next-round intake, and merges pending rows by path (`last-writer-wins`)
 - Smart scheduler batch sizing is now driven by a shared total-backlog signal (upload pending + incremental pending + full-maintain equivalent backlog), and incremental defer is narrowed to `batch_too_small_waiting_fill` only
 - Dashboard panel now exposes maintain step-queue observability (`steps_qr` / `steps_retry`), full-vs-incremental job counters, and channel/pipeline parallel-state hints
+- Stage-7 hardening is complete: full unittest discovery is stable under Python 3.14 on Windows via workspace-temp sandboxing, and rollout/rollback guidance is now documented for in-process execution
 
 ## Documentation Architecture
 
@@ -171,6 +172,7 @@ Full schema is tracked in `auto_maintain.config.example.json`. Frequently adjust
   - total-backlog rule: upload/incremental batch selection consumes a shared backlog estimate (upload pending + incremental pending + full-maintain equivalent)
   - incremental defer rule: defer is used only for small-batch fill waiting (`batch_too_small_waiting_fill`), not cooldown/full-guard legacy reasons
 - runtime behavior: `run_maintain_on_start`, `run_upload_on_start`, `run_maintain_after_upload`
+- execution backend toggle: `inprocess_execution_enabled` (`false` = legacy subprocess mode; `true` = in-process channel execution)
 - failure policy: `maintain_retry_count`, `upload_retry_count`, `command_retry_delay_seconds`, `continue_on_command_failure`
 - safety: `allow_multi_instance`, `maintain_assume_yes`
 - archive intake: `inspect_zip_files`, `auto_extract_zip_json`, `delete_zip_after_extract`, `archive_extensions`, `bandizip_*`, `use_windows_zip_fallback`
@@ -184,7 +186,7 @@ Main variables consumed by `auto_maintain.py` include:
 - `MAINTAIN_DB_PATH`, `UPLOAD_DB_PATH`
 - `MAINTAIN_LOG_FILE`, `UPLOAD_LOG_FILE`
 - scheduler and cadence controls (`*_INTERVAL_*`, `*_BATCH_*`, `*_BACKLOG_*`)
-- behavior toggles (`RUN_*`, `ALLOW_MULTI_INSTANCE`, `CONTINUE_ON_COMMAND_FAILURE`, `MAINTAIN_ASSUME_YES`)
+- behavior toggles (`RUN_*`, `ALLOW_MULTI_INSTANCE`, `CONTINUE_ON_COMMAND_FAILURE`, `MAINTAIN_ASSUME_YES`, `INPROCESS_EXECUTION_ENABLED`)
 - archive controls (`INSPECT_ZIP_FILES`, `AUTO_EXTRACT_ZIP_JSON`, `ARCHIVE_EXTENSIONS`, `BANDIZIP_*`, `USE_WINDOWS_ZIP_FALLBACK`)
 - dashboard toggles (`AUTO_MAINTAIN_FIXED_PANEL`, `AUTO_MAINTAIN_PANEL_COLOR`)
 
@@ -193,6 +195,17 @@ Precedence:
 1. Environment variables
 2. `--watch-config` / `WATCH_CONFIG_PATH` JSON
 3. Built-in defaults
+
+## Rollout and Rollback (Stage 7)
+
+- Default remains rollback-safe: `inprocess_execution_enabled=false` (subprocess backend).
+- Canary rollout path:
+  1. enable `inprocess_execution_enabled=true` in `auto_maintain.config.json` (or set `INPROCESS_EXECUTION_ENABLED=1`)
+  2. run short-window `--once` checks, then monitor normal watcher windows
+  3. keep fail-fast enabled (`continue_on_command_failure=false`) during rollout
+- Instant rollback path:
+  - set `inprocess_execution_enabled=false` (or `INPROCESS_EXECUTION_ENABLED=0`) and restart watcher
+  - this reverts to legacy subprocess lifecycle semantics without changing CLI entrypoints
 
 ## Core CLI Compatibility
 
@@ -227,6 +240,8 @@ Optional full local suite:
 ```bash
 uv run python -m unittest discover -s tests -p "test_*.py"
 ```
+
+Note: the test suite now patches `tempfile.TemporaryDirectory()` to a workspace-safe implementation (`tests/temp_sandbox.py`) so full discovery remains stable in constrained Windows/Python 3.14 environments.
 
 ## Contributing
 

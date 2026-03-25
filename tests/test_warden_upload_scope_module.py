@@ -9,6 +9,18 @@ from cwma.warden.services.upload_scope import (
     select_upload_candidates,
     validate_and_digest_json_file,
 )
+from tests.temp_sandbox import TempSandboxState, setup_tempfile_sandbox, teardown_tempfile_sandbox
+
+_TEMP_SANDBOX_STATE: TempSandboxState | None = None
+
+
+def setUpModule() -> None:
+    global _TEMP_SANDBOX_STATE
+    _TEMP_SANDBOX_STATE = setup_tempfile_sandbox()
+
+
+def tearDownModule() -> None:
+    teardown_tempfile_sandbox(_TEMP_SANDBOX_STATE)
 
 
 class WardenUploadScopeModuleTests(unittest.TestCase):
@@ -68,4 +80,3 @@ class WardenUploadScopeModuleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

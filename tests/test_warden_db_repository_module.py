@@ -19,6 +19,18 @@ from cwma.warden.db.repository import (
 )
 from cwma.warden.db.schema import init_db
 from cwma.warden.models import AUTH_ACCOUNT_COLUMNS
+from tests.temp_sandbox import TempSandboxState, setup_tempfile_sandbox, teardown_tempfile_sandbox
+
+_TEMP_SANDBOX_STATE: TempSandboxState | None = None
+
+
+def setUpModule() -> None:
+    global _TEMP_SANDBOX_STATE
+    _TEMP_SANDBOX_STATE = setup_tempfile_sandbox()
+
+
+def tearDownModule() -> None:
+    teardown_tempfile_sandbox(_TEMP_SANDBOX_STATE)
 
 
 class WardenDbRepositoryModuleTests(unittest.TestCase):

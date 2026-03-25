@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added maintain pipeline runtime module `cwma/auto/runtime/maintain_pipeline_runtime.py` for step-cycle orchestration (`1 action + 1 scan` pipeline claim policy per cycle).
 - Added maintain pipeline runtime test suite `tests/test_auto_maintain_pipeline_runtime_module.py` covering step-order progression, retry requeue, account-lock conflict handling, and full/incremental shared executor behavior.
 - Added upload stability suite `tests/test_auto_upload_stability_module.py` covering frozen-batch stability wait and deferred next-round intake behavior.
+- Added shared test temp sandbox helper `tests/temp_sandbox.py` to stabilize `tempfile.TemporaryDirectory()` behavior on Python 3.14 Windows runners.
 
 ### Changed
 
@@ -62,6 +63,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Incremental maintain defer semantics are narrowed to the small-fill case only (`batch_too_small_waiting_fill`) when upload-side fill source is active; cooldown/full-guard backlog-priority defer reasons were removed.
 - `cwma/auto/runtime/channel_runtime_adapter.py` now computes total backlog at maintain/upload start boundaries and passes it to scheduler policy consistently (including panel next-batch projections via `panel_runtime_adapter`).
 - Added Stage-5 scheduler/defer regression coverage in `tests/test_auto_modules_state.py` and host-level Stage-5 integration coverage in `tests/test_auto_maintain.py`.
+- Stage-7 hardening now applies the shared temp sandbox bootstrap across unittest modules that rely on `tempfile`, making full discovery (`273` tests) pass consistently in constrained Windows/Python 3.14 environments.
+- Stage-7 rollout/rollback documentation is now synchronized across `README.md`, `README.zh-CN.md`, `ARCHITECTURE.md`, and `cwma/auto/BOUNDARY_MAP.md` with explicit `INPROCESS_EXECUTION_ENABLED` guidance.
 
 ## [cwma 0.1.0] - 2026-03-23
 

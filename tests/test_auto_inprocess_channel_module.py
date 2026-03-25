@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 import unittest
 from pathlib import Path
@@ -14,26 +13,18 @@ from cwma.auto.infra.inprocess_supervisor import (
     start_channel as start_inprocess_channel,
 )
 from cwma.auto.state.upload_queue import UploadQueueState
+from tests.temp_sandbox import TempSandboxState, setup_tempfile_sandbox, teardown_tempfile_sandbox
 
-_ORIGINAL_TEMP_ENV: dict[str, str | None] = {}
-_SANDBOX_TEMP_KEYS = ("TMPDIR", "TEMP", "TMP")
+_TEMP_SANDBOX_STATE: TempSandboxState | None = None
 
 
 def setUpModule() -> None:
-    sandbox_temp = (Path.cwd() / ".tmp_unittest_temp").resolve()
-    sandbox_temp.mkdir(parents=True, exist_ok=True)
-    global _ORIGINAL_TEMP_ENV
-    _ORIGINAL_TEMP_ENV = {key: os.environ.get(key) for key in _SANDBOX_TEMP_KEYS}
-    for key in _SANDBOX_TEMP_KEYS:
-        os.environ[key] = str(sandbox_temp)
+    global _TEMP_SANDBOX_STATE
+    _TEMP_SANDBOX_STATE = setup_tempfile_sandbox()
 
 
 def tearDownModule() -> None:
-    for key, value in _ORIGINAL_TEMP_ENV.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
+    teardown_tempfile_sandbox(_TEMP_SANDBOX_STATE)
 
 
 def _build_settings(base_dir: Path, auth_dir: Path, *, inprocess: bool) -> Settings:
