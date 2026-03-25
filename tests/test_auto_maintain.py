@@ -1012,6 +1012,43 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertTrue(settings.run_upload_on_start)
             self.assertEqual(settings.archive_extensions, (".zip", ".rar"))
 
+    def test_load_settings_rejects_invalid_backlog_ewma_alpha(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            watch_cfg = Path(tmp) / "watch.json"
+            watch_cfg.write_text(
+                json.dumps(
+                    {
+                        "backlog_ewma_alpha": 1.5,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(once=False, watch_config=str(watch_cfg))
+            with mock.patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(ValueError):
+                    _ = load_settings(args)
+
+    def test_load_settings_accepts_empty_hysteresis_threshold_env_as_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            watch_cfg = Path(tmp) / "watch.json"
+            watch_cfg.write_text("{}", encoding="utf-8")
+            args = argparse.Namespace(once=False, watch_config=str(watch_cfg))
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "UPLOAD_HIGH_BACKLOG_ENTER_THRESHOLD": "",
+                    "UPLOAD_HIGH_BACKLOG_EXIT_THRESHOLD": "",
+                    "MAINTAIN_HIGH_BACKLOG_ENTER_THRESHOLD": "",
+                    "MAINTAIN_HIGH_BACKLOG_EXIT_THRESHOLD": "",
+                },
+                clear=True,
+            ):
+                settings = load_settings(args)
+            self.assertIsNone(settings.upload_high_backlog_enter_threshold)
+            self.assertIsNone(settings.upload_high_backlog_exit_threshold)
+            self.assertIsNone(settings.maintain_high_backlog_enter_threshold)
+            self.assertIsNone(settings.maintain_high_backlog_exit_threshold)
+
     def test_render_progress_snapshot_includes_queue_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
