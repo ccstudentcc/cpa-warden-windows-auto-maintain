@@ -160,33 +160,41 @@ start_auto_maintain_optimized.bat
 - 监听周期：`15s`
 - 上传稳定等待：`3s`
 - 上传批次大小：`200`
+- 上传高积压模式：阈值 `600`，批次 `300`
+- 增量维护批次大小：`250`
+- 维护高积压模式：阈值 `750`，批次 `350`
+- 深度扫描节奏：`deep_scan_interval_loops=120`
+- 活跃探测节奏：`active_probe_interval_seconds=1`、`active_upload_deep_scan_interval_seconds=2`
+- 增量维护保护参数：`incremental_maintain_min_interval_seconds=1`、`incremental_maintain_full_guard_seconds=90`
 - 智能调度与自适应批处理：开启
-- 上传后维护：开启
+- 启动即上传：开启
 - 启动即维护：关闭
+- 上传后维护：开启
+- 维护自动确认（assume-yes）：开启
 - 上传成功后删除源 JSON：开启
 - 归档检测与自动解压：开启
 - 进程内执行：开启（示例配置）
 - 单实例锁：开启
-- 命令失败即停：开启
+- 重试/失败策略：`maintain_retry_count=1`、`upload_retry_count=1`、`command_retry_delay_seconds=20`，默认失败即停
 
 ## 关键 Watcher 配置项
 
 完整配置请以 `auto_maintain.config.example.json` 为准。常用项：
 
-- 路径：`auth_dir`、`config_path`、`state_dir`、`maintain_db_path`、`upload_db_path`
-- 轮询节奏：`maintain_interval_seconds`、`watch_interval_seconds`、`upload_stable_wait_seconds`
-- 上传调度：`upload_batch_size`、`adaptive_upload_batching`、`upload_high_backlog_*`
-- 维护调度：`adaptive_maintain_batching`、`incremental_maintain_*`、`maintain_high_backlog_*`
+- 路径：`auth_dir`、`config_path`、`state_dir`、`maintain_db_path`、`upload_db_path`、`maintain_log_file`、`upload_log_file`
+- 轮询节奏：`maintain_interval_seconds`、`watch_interval_seconds`、`upload_stable_wait_seconds`、`deep_scan_interval_loops`、`active_probe_interval_seconds`、`active_upload_deep_scan_interval_seconds`
+- 上传调度：`smart_schedule_enabled`、`upload_batch_size`、`adaptive_upload_batching`、`upload_high_backlog_*`
+- 维护调度：`adaptive_maintain_batching`、`incremental_maintain_*`、`maintain_high_backlog_*`、`account_lock_lease_seconds`
   - 调度模式切换规则：低积压偏小批次，提升上传/维护交错实时性；高积压偏大批次，加速队列清空
   - 总积压规则：上传/增量维护批次选择共享同一积压估算（上传待处理 + 增量待处理 + 全量维护等价积压）
   - 增量 defer 规则：仅用于“智能小批补充等待”（`batch_too_small_waiting_fill`，需预测补充能力足够），不再使用 cooldown/full-guard 旧语义
   - 可选平滑/滞回参数：`backlog_ewma_alpha`、`scheduler_hysteresis_enabled`、`*_high_backlog_enter_threshold`、`*_high_backlog_exit_threshold`
   - 可选背压/锁参数：`next_batch_buffer_limit`（限制待上传缓冲区增长），`account_lock_lease_seconds`（账号锁租约自动过期窗口）
-- 运行行为：`run_maintain_on_start`、`run_upload_on_start`、`run_maintain_after_upload`
+- 运行行为：`run_maintain_on_start`、`run_upload_on_start`、`run_maintain_after_upload`、`maintain_assume_yes`、`delete_uploaded_files_after_upload`
 - 执行后端开关：`inprocess_execution_enabled`（`false` 使用 legacy 子进程，`true` 使用进程内通道执行）
 - 失败策略：`maintain_retry_count`、`upload_retry_count`、`command_retry_delay_seconds`、`continue_on_command_failure`
 - 安全策略：`allow_multi_instance`、`maintain_assume_yes`
-- 归档入口：`inspect_zip_files`、`auto_extract_zip_json`、`delete_zip_after_extract`、`archive_extensions`、`bandizip_*`、`use_windows_zip_fallback`
+- 归档入口：`inspect_zip_files`、`auto_extract_zip_json`、`delete_zip_after_extract`、`archive_extensions`、`bandizip_path`、`bandizip_timeout_seconds`、`bandizip_prefer_console`、`bandizip_hide_window`、`use_windows_zip_fallback`
   - `bandizip_prefer_console=true`：优先解析控制台二进制（`bc.exe`，其次 `bz.exe`），不回退 GUI `Bandizip.exe`
   - `use_windows_zip_fallback=true`：仅对 `.zip` 启用回退（不作用于 `.7z` / `.rar`）
 

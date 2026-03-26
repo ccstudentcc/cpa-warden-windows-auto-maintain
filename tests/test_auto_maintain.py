@@ -359,6 +359,9 @@ class AutoMaintainTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertIsNotNone(maintainer.upload_process)
             self.assertEqual(maintainer.inflight_upload_snapshot, batch_snapshot[:2])
+            self.assertEqual(maintainer.upload_progress_state.get("stage"), "running")
+            self.assertEqual(maintainer.upload_progress_state.get("done"), 0)
+            self.assertEqual(maintainer.upload_progress_state.get("total"), 2)
             cmd = popen.call_args.args[0]
             self.assertIn("--upload-names-file", cmd)
             scope_path = Path(cmd[cmd.index("--upload-names-file") + 1])

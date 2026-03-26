@@ -160,33 +160,41 @@ start_auto_maintain_optimized.bat
 - watch interval: `15s`
 - upload stable wait: `3s`
 - upload batch size: `200`
+- upload high backlog mode: threshold `600`, batch `300`
+- incremental maintain batch size: `250`
+- maintain high backlog mode: threshold `750`, batch `350`
+- deep scan cadence: `deep_scan_interval_loops=120`
+- active cadence: `active_probe_interval_seconds=1`, `active_upload_deep_scan_interval_seconds=2`
+- incremental maintain guardrails: `incremental_maintain_min_interval_seconds=1`, `incremental_maintain_full_guard_seconds=90`
 - smart scheduler and adaptive batching: enabled
-- maintain-after-upload: enabled
+- run-upload-on-start: enabled
 - run-maintain-on-start: disabled
+- maintain-after-upload: enabled
+- maintain assume-yes: enabled
 - delete uploaded source JSON: enabled
 - archive inspect + auto extract: enabled
 - in-process execution: enabled (profile setting)
 - single-instance lock: enabled
-- fail-fast on command failure: enabled
+- retry/failure policy: `maintain_retry_count=1`, `upload_retry_count=1`, `command_retry_delay_seconds=20`, fail-fast enabled
 
 ## Key Watcher Config Fields
 
 Full schema is tracked in `auto_maintain.config.example.json`. Frequently adjusted keys:
 
-- paths: `auth_dir`, `config_path`, `state_dir`, `maintain_db_path`, `upload_db_path`
-- cadence: `maintain_interval_seconds`, `watch_interval_seconds`, `upload_stable_wait_seconds`
-- upload scheduling: `upload_batch_size`, `adaptive_upload_batching`, `upload_high_backlog_*`
-- maintain scheduling: `adaptive_maintain_batching`, `incremental_maintain_*`, `maintain_high_backlog_*`
+- paths: `auth_dir`, `config_path`, `state_dir`, `maintain_db_path`, `upload_db_path`, `maintain_log_file`, `upload_log_file`
+- cadence: `maintain_interval_seconds`, `watch_interval_seconds`, `upload_stable_wait_seconds`, `deep_scan_interval_loops`, `active_probe_interval_seconds`, `active_upload_deep_scan_interval_seconds`
+- upload scheduling: `smart_schedule_enabled`, `upload_batch_size`, `adaptive_upload_batching`, `upload_high_backlog_*`
+- maintain scheduling: `adaptive_maintain_batching`, `incremental_maintain_*`, `maintain_high_backlog_*`, `account_lock_lease_seconds`
   - scheduler mode switching rule: low backlog favors smaller slices for faster upload/maintain interleaving; high backlog favors larger slices for faster queue drain
   - total-backlog rule: upload/incremental batch selection consumes a shared backlog estimate (upload pending + incremental pending + full-maintain equivalent)
   - incremental defer rule: defer is used only for smart small-batch fill waiting (`batch_too_small_waiting_fill`) when predicted upload fill can close the gap; not cooldown/full-guard legacy reasons
   - optional smoothing/hysteresis knobs: `backlog_ewma_alpha`, `scheduler_hysteresis_enabled`, `*_high_backlog_enter_threshold`, `*_high_backlog_exit_threshold`
   - optional pressure/lock knobs: `next_batch_buffer_limit` (cap pending upload buffer growth), `account_lock_lease_seconds` (stale account-lock auto-expiry window)
-- runtime behavior: `run_maintain_on_start`, `run_upload_on_start`, `run_maintain_after_upload`
+- runtime behavior: `run_maintain_on_start`, `run_upload_on_start`, `run_maintain_after_upload`, `maintain_assume_yes`, `delete_uploaded_files_after_upload`
 - execution backend toggle: `inprocess_execution_enabled` (`false` = legacy subprocess mode; `true` = in-process channel execution)
 - failure policy: `maintain_retry_count`, `upload_retry_count`, `command_retry_delay_seconds`, `continue_on_command_failure`
 - safety: `allow_multi_instance`, `maintain_assume_yes`
-- archive intake: `inspect_zip_files`, `auto_extract_zip_json`, `delete_zip_after_extract`, `archive_extensions`, `bandizip_*`, `use_windows_zip_fallback`
+- archive intake: `inspect_zip_files`, `auto_extract_zip_json`, `delete_zip_after_extract`, `archive_extensions`, `bandizip_path`, `bandizip_timeout_seconds`, `bandizip_prefer_console`, `bandizip_hide_window`, `use_windows_zip_fallback`
   - `bandizip_prefer_console=true`: resolve console binaries first (`bc.exe`, then `bz.exe`) and do not fall back to GUI `Bandizip.exe`
   - `use_windows_zip_fallback=true`: fallback applies to `.zip` only (not `.7z` / `.rar`)
 

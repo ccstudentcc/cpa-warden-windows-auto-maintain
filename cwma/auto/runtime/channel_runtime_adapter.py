@@ -392,6 +392,15 @@ class ChannelRuntimeAdapter:
         )
         self.log(prep.log_message)
         self.host.inflight_upload_snapshot = list(prep.batch)
+        # Reset panel progress immediately for a new upload batch so stale totals
+        # from previous batches are not shown before the child emits fresh progress.
+        self.host.update_channel_progress(
+            CHANNEL_UPLOAD,
+            stage=STAGE_RUNNING,
+            done=0,
+            total=len(prep.batch),
+            force_render=True,
+        )
         return self._start_and_finalize_channel_flow(
             channel=CHANNEL_UPLOAD,
             command=prep.command,
