@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: `2026-03-25`
+Last updated: `2026-03-26`
 
 ## 1. Goal and Scope
 
@@ -36,16 +36,20 @@ Maintain pipeline Stage-3 runtime pieces are now in place:
 - step-level claim/advance/requeue transitions are implemented in `cwma/auto/state/maintain_queue.py`
 - in-process maintain pipeline cycle execution (`run_maintain_pipeline_cycle`) is provided by `cwma/auto/runtime/maintain_pipeline_runtime.py`
 - maintain service execution is now modeled as explicit ordered steps (`scan -> delete_401 -> quota -> reenable -> finalize`) in `cwma/warden/services/maintain.py`
+- subprocess maintain-channel start (`cwma/auto/runtime/channel_runtime_adapter.py`) now claims a single pipeline work item (`allow_scan_parallel=False`) and passes explicit `--maintain-steps` derived from claimed step (`scan` or `scan+<action-step>`)
+- claimed/running jobs are preserved in pipeline state (not dropped on start), and are advanced/requeued by `mark_maintain_success` / `mark_maintain_runtime_retry` based on runtime outcome
 
 Upload intake Stage-4 stability/queue hardening is now in place:
 
 - stability wait freezes the current candidate batch and defers in-window new/updated rows to next-round intake
 - pending upload queue merge is path-coalesced (`last-writer-wins`) to prevent stale duplicate row versions for the same file path
+- Bandizip command resolution prefers console binaries (`bc.exe` then `bz.exe`) in console-preferred mode and avoids GUI fallback; Windows built-in unzip fallback is constrained to `.zip` archives only
 
 Scheduling Stage-5 total-backlog policy is now in place:
 
 - upload/incremental maintain batch sizing accepts a shared total-backlog signal (`pending upload + pending incremental + full-maintain equivalent backlog`)
-- incremental maintain defer semantics are narrowed to the single small-fill case (`batch_too_small_waiting_fill`) when upload-side fill source is active
+- incremental maintain defer semantics now use smart small-fill prediction (`batch_too_small_waiting_fill`) based on maintain gap vs predicted upload fill capability
+- watch-loop sleep cadence uses active-probe interval while either channel is running or pending queue/retry work exists (`pending upload`, `pending maintain`, `pending upload retry`)
 
 UI Stage-6 step-queue observability is now in place:
 
@@ -143,6 +147,7 @@ Watcher lifecycle (`cwma/auto/app.py` + runtime adapters):
    - run active probes while channels are running
    - run upload deep-scan cadence checks
    - start idle channels with pending work
+   - if either channel has pending/retry work, use active-probe sleep cadence instead of full watch interval
 6. On upload success:
    - update uploaded baseline and pending snapshots
    - apply cleanup policy
@@ -225,9 +230,9 @@ Rollout/rollback controls:
 - Smart scheduler optionally supports EWMA backlog smoothing and enter/exit hysteresis thresholds:
   - `backlog_ewma_alpha` controls smoothing intensity (`1.0` keeps raw signal behavior)
   - `scheduler_hysteresis_enabled` + `*_high_backlog_enter_threshold` / `*_high_backlog_exit_threshold` can reduce mode flapping when backlog oscillates near thresholds
-- Incremental maintain defer is constrained to a narrow fill behavior:
-  - defer only when current incremental pending is below the minimum fill threshold of the planned batch and upload-side fill source exists
-  - no defer for cooldown/full-guard legacy reasons
+- Incremental maintain defer is constrained to a smart fill behavior:
+  - defer only when current incremental pending is below planned batch and predicted upload fill can close most/all of the gap soon
+  - no defer when fill signal is weak/absent, and no cooldown/full-guard legacy reasons
 
 ## 11. Failure and Safety Model
 

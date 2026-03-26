@@ -30,7 +30,14 @@ from ..channel.channel_status import (
     STATUS_SHUTDOWN,
     STATUS_SUCCESS,
 )
-from ..state.maintain_queue import decide_maintain_start_scope
+from ..state.maintain_queue import (
+    MAINTAIN_STEP_DELETE_401,
+    MAINTAIN_STEP_FINALIZE,
+    MAINTAIN_STEP_QUOTA,
+    MAINTAIN_STEP_REENABLE,
+    MAINTAIN_STEP_SCAN,
+    decide_maintain_start_scope,
+)
 from ..runtime.channel_runtime import (
     poll_maintain_channel,
     poll_upload_channel,
@@ -140,6 +147,20 @@ class ChannelRuntimeAdapter:
         self.get_monotonic = get_monotonic or (lambda: (lambda: 0.0))
         self.get_popen_factory = get_popen_factory or (lambda: None)
         self.log = log
+
+    @staticmethod
+    def _resolve_maintain_command_steps(step: str | None) -> tuple[str, ...] | None:
+        if step == MAINTAIN_STEP_SCAN:
+            return (MAINTAIN_STEP_SCAN,)
+        if step == MAINTAIN_STEP_DELETE_401:
+            return (MAINTAIN_STEP_SCAN, MAINTAIN_STEP_DELETE_401)
+        if step == MAINTAIN_STEP_QUOTA:
+            return (MAINTAIN_STEP_SCAN, MAINTAIN_STEP_QUOTA)
+        if step == MAINTAIN_STEP_REENABLE:
+            return (MAINTAIN_STEP_SCAN, MAINTAIN_STEP_REENABLE)
+        if step == MAINTAIN_STEP_FINALIZE:
+            return (MAINTAIN_STEP_SCAN, MAINTAIN_STEP_FINALIZE)
+        return None
 
     def _apply_channel_start_flow_feedback(
         self,
@@ -278,7 +299,7 @@ class ChannelRuntimeAdapter:
             attempt=self.host.maintain_attempt,
             max_attempts=max_attempts,
             scope_names=decision.scope_names,
-            maintain_steps=None,
+            maintain_steps=self._resolve_maintain_command_steps(decision.step),
             write_scope_file=lambda names: write_scope_names(self.host.maintain_names_file, names),
             build_command=lambda scope_file, maintain_steps: self.host.build_maintain_command(
                 scope_file,

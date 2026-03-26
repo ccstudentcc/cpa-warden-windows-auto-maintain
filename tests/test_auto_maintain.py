@@ -527,7 +527,7 @@ class AutoMaintainTests(unittest.TestCase):
             settings.incremental_maintain_batch_size = 6
             maintainer = AutoMaintainer(settings)
 
-            maintainer.queue_maintain("post-upload maintain", names={"a.json", "b.json"})
+            maintainer.queue_maintain("post-upload maintain", names={"a.json", "b.json", "c.json"})
             maintainer.pending_upload_snapshot = [f"{auth_dir / 'u1.json'}|1|1"]
             maintainer.upload_process = _DoneProcess(0)
 

@@ -66,6 +66,7 @@ class QueueMaintainResult:
 class MaintainStartDecision:
     state: MaintainQueueState
     scope_names: set[str] | None
+    step: str | None
     should_start: bool
     skip_reason: str | None
 
@@ -152,6 +153,17 @@ def _queued_job_ids_in_order(pipeline: MaintainPipelineState) -> list[str]:
     return ordered
 
 
+def _queued_job_ids_from_queues(pipeline: MaintainPipelineState) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for queue in _pipeline_step_queues(pipeline):
+        for job_id in queue:
+            if job_id in pipeline.jobs and job_id not in seen:
+                seen.add(job_id)
+                ordered.append(job_id)
+    return ordered
+
+
 def _step_queue_for(pipeline: MaintainPipelineState, *, step: str) -> list[str]:
     if step == MAINTAIN_STEP_SCAN:
         return pipeline.maintain_scan_queue
@@ -188,6 +200,25 @@ def _build_work_item(job: MaintainJob) -> MaintainStepWorkItem:
         scope_names=None if job.names is None else _clean_names(job.names),
         reason=job.reason,
     )
+
+
+def _running_pipeline_work_item(state: MaintainQueueState) -> MaintainStepWorkItem | None:
+    pipeline = state.pipeline
+    queued_ids = {
+        job_id
+        for queue in _pipeline_step_queues(pipeline)
+        for job_id in queue
+        if job_id in pipeline.jobs
+    }
+    running_jobs = [
+        job
+        for job_id, job in pipeline.jobs.items()
+        if job_id not in queued_ids
+    ]
+    if not running_jobs:
+        return None
+    running_jobs.sort(key=lambda job: (job.created_at, job.job_id))
+    return _build_work_item(running_jobs[0])
 
 
 def _has_account_lock_conflict(
@@ -413,7 +444,7 @@ def _build_state_from_pipeline(
     *,
     fallback_reason: str | None = None,
 ) -> MaintainQueueState:
-    ordered_job_ids = _queued_job_ids_in_order(pipeline)
+    ordered_job_ids = _queued_job_ids_from_queues(pipeline)
     if not ordered_job_ids:
         return MaintainQueueState(
             pending=False,
@@ -585,69 +616,76 @@ def decide_maintain_start_scope(
     batch_size: int,
 ) -> MaintainStartDecision:
     normalized_state = _normalize_queue_state(state)
-    if not normalized_state.pending:
+    claim = claim_maintain_pipeline_work(
+        state=normalized_state,
+        allow_scan_parallel=False,
+    )
+    if not claim.work_items:
         return MaintainStartDecision(
-            state=normalized_state,
+            state=claim.state,
             scope_names=None,
+            step=None,
             should_start=False,
             skip_reason=None,
         )
 
-    pipeline = _clone_pipeline(normalized_state.pipeline)
-    selected_job_id: str | None = None
-    for queued_job_id in pipeline.maintain_scan_queue:
-        if queued_job_id in pipeline.jobs:
-            selected_job_id = queued_job_id
-            break
+    selected_item = claim.work_items[0]
+    next_state = claim.state
+    scope_names = selected_item.scope_names
 
-    if selected_job_id is None:
-        return MaintainStartDecision(
-            state=_build_state_from_pipeline(pipeline),
-            scope_names=None,
-            should_start=False,
-            skip_reason=None,
-        )
+    if (
+        selected_item.step == MAINTAIN_STEP_SCAN
+        and selected_item.scope_type == MAINTAIN_SCOPE_INCREMENTAL
+        and scope_names is not None
+    ):
+        pending_names = sorted(_clean_names(scope_names))
+        if not pending_names:
+            pipeline = _clone_pipeline(claim.state.pipeline)
+            pipeline.jobs.pop(selected_item.job_id, None)
+            next_state = _build_state_from_pipeline(pipeline)
+            return MaintainStartDecision(
+                state=next_state,
+                scope_names=None,
+                step=None,
+                should_start=False,
+                skip_reason="incremental scope is empty",
+            )
 
-    selected_job = pipeline.jobs[selected_job_id]
-    if selected_job.scope_type == MAINTAIN_SCOPE_FULL:
-        _drop_job_from_step_queues(pipeline, selected_job_id)
-        pipeline.jobs.pop(selected_job_id, None)
-        return MaintainStartDecision(
-            state=_build_state_from_pipeline(pipeline),
-            scope_names=None,
-            should_start=True,
-            skip_reason=None,
-        )
-
-    pending_names = sorted(_clean_names(selected_job.names))
-    selected_names = set(pending_names[:batch_size])
-    remaining_names = set(pending_names[batch_size:])
-    if not selected_names:
-        _drop_job_from_step_queues(pipeline, selected_job_id)
-        pipeline.jobs.pop(selected_job_id, None)
-        return MaintainStartDecision(
-            state=_build_state_from_pipeline(pipeline),
-            scope_names=None,
-            should_start=False,
-            skip_reason="incremental scope is empty",
-        )
-
-    if remaining_names:
-        pipeline.jobs[selected_job_id] = MaintainJob(
-            job_id=selected_job.job_id,
-            scope_type=selected_job.scope_type,
-            names=remaining_names,
-            reason="queued incremental maintain",
-            created_at=selected_job.created_at,
-            stage_cursor=selected_job.stage_cursor,
-        )
-    else:
-        _drop_job_from_step_queues(pipeline, selected_job_id)
-        pipeline.jobs.pop(selected_job_id, None)
+        normalized_batch_size = max(1, int(batch_size))
+        selected_names = set(pending_names[:normalized_batch_size])
+        remaining_names = set(pending_names[normalized_batch_size:])
+        if remaining_names:
+            pipeline = _clone_pipeline(claim.state.pipeline)
+            selected_job = pipeline.jobs.get(selected_item.job_id)
+            if selected_job is not None:
+                pipeline.jobs[selected_item.job_id] = MaintainJob(
+                    job_id=selected_job.job_id,
+                    scope_type=selected_job.scope_type,
+                    names=selected_names,
+                    reason=selected_job.reason,
+                    created_at=selected_job.created_at,
+                    stage_cursor=selected_job.stage_cursor,
+                )
+                next_job_id = _allocate_job_id(pipeline)
+                pipeline.jobs[next_job_id] = MaintainJob(
+                    job_id=next_job_id,
+                    scope_type=MAINTAIN_SCOPE_INCREMENTAL,
+                    names=remaining_names,
+                    reason="queued incremental maintain",
+                    created_at=selected_job.created_at,
+                    stage_cursor=MAINTAIN_STEP_SCAN,
+                )
+                pipeline.maintain_scan_queue.append(next_job_id)
+                next_state = _build_state_from_pipeline(
+                    pipeline,
+                    fallback_reason=normalized_state.reason,
+                )
+        scope_names = selected_names
 
     return MaintainStartDecision(
-        state=_build_state_from_pipeline(pipeline),
-        scope_names=selected_names,
+        state=next_state,
+        scope_names=scope_names,
+        step=selected_item.step,
         should_start=True,
         skip_reason=None,
     )
@@ -732,8 +770,15 @@ def mark_maintain_retry(
 
 
 def mark_maintain_success(state: MaintainRuntimeState) -> MaintainRuntimeState:
+    running_item = _running_pipeline_work_item(state.queue)
+    next_queue = state.queue
+    if running_item is not None:
+        next_queue = advance_maintain_pipeline_after_success(
+            state=state.queue,
+            work_item=running_item,
+        )
     return MaintainRuntimeState(
-        queue=state.queue,
+        queue=next_queue,
         inflight_names=None,
         attempt=0,
         retry_due_at=0.0,
@@ -747,11 +792,19 @@ def mark_maintain_runtime_retry(
     retry_delay_seconds: int,
     retry_reason: str = "maintain retry",
 ) -> MaintainRuntimeState:
-    queue = mark_maintain_retry(
-        state=state.queue,
-        inflight_names=state.inflight_names,
-        retry_reason=retry_reason,
-    )
+    running_item = _running_pipeline_work_item(state.queue)
+    if running_item is not None:
+        queue = requeue_maintain_pipeline_after_retry(
+            state=state.queue,
+            work_item=running_item,
+            retry_reason=retry_reason,
+        )
+    else:
+        queue = mark_maintain_retry(
+            state=state.queue,
+            inflight_names=state.inflight_names,
+            retry_reason=retry_reason,
+        )
     return MaintainRuntimeState(
         queue=queue,
         inflight_names=None,

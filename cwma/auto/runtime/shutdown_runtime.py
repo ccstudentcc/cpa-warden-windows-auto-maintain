@@ -55,14 +55,24 @@ def current_loop_sleep_seconds(
     *,
     upload_running: bool,
     maintain_running: bool,
+    has_pending_upload: bool = False,
+    has_pending_maintain: bool = False,
+    has_pending_upload_retry: bool = False,
     watch_interval_seconds: int,
     active_probe_interval_seconds: int,
 ) -> int:
     """Resolve current loop sleep seconds based on channel activity."""
 
-    if (not upload_running) and (not maintain_running):
-        return watch_interval_seconds
-    return min(watch_interval_seconds, active_probe_interval_seconds)
+    has_active_or_pending_work = (
+        upload_running
+        or maintain_running
+        or has_pending_upload
+        or has_pending_maintain
+        or has_pending_upload_retry
+    )
+    if has_active_or_pending_work:
+        return min(watch_interval_seconds, active_probe_interval_seconds)
+    return watch_interval_seconds
 
 
 def sleep_between_watch_cycles(

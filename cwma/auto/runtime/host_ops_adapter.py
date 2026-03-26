@@ -230,7 +230,7 @@ class HostOpsAdapter:
         if exit_code == 0:
             return 0
 
-        if self.host.settings.use_windows_zip_fallback:
+        if self.host.settings.use_windows_zip_fallback and zip_path.suffix.lower() == ".zip":
             self.get_log()(f"Trying Windows built-in unzip fallback: {zip_path.name}")
             return extract_zip_with_windows_builtin_rows(
                 zip_path=zip_path,

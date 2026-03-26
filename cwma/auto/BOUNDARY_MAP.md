@@ -48,6 +48,7 @@ Owner scope:
 Responsibilities:
 - maintain/upload start + poll lifecycle
 - maintain step pipeline runtime policy (`scan/delete_401/quota/reenable/finalize`) and step-cycle execution contract
+- maintain channel start-step mapping from claimed pipeline work item (`allow_scan_parallel=False` claim + `--maintain-steps` projection)
 - channel-specific retry/success/failure semantics
 - channel progress/status feedback shaping
 
@@ -89,9 +90,11 @@ Responsibilities:
 - process lifecycle + stdout/stderr pumping
 - file-system and ZIP side effects
 - lock lifecycle and shutdown/sleep cadence
+- pending-aware watch-loop active-probe sleep resolution (`running` or `pending/retry` => active cadence)
 - config loading/parsing boundary
 - rollout/rollback runtime toggles surfaced via config/env (for example `inprocess_execution_enabled` / `INPROCESS_EXECUTION_ENABLED`)
 - optional intake/lock pressure controls surfaced via config/env (`next_batch_buffer_limit` / `NEXT_BATCH_BUFFER_LIMIT`, `account_lock_lease_seconds` / `ACCOUNT_LOCK_LEASE_SECONDS`)
+- archive extraction/listing command resolution and fallback guardrails (Bandizip console-first + `.zip`-only Windows fallback)
 
 ### UI
 
@@ -135,11 +138,11 @@ Responsibilities:
 
 - `tests/test_auto_modules_state.py` now includes Stage-5 scheduler/defer assertions for:
   - total-backlog-aware batch sizing on upload and incremental maintain policy entrypoints
-  - narrowed incremental defer semantics (`batch_too_small_waiting_fill` only)
+  - smart incremental defer semantics (`batch_too_small_waiting_fill`) based on maintain gap vs predicted upload fill
   - optional EWMA smoothing and hysteresis enter/exit threshold behavior under backlog oscillation
 - `tests/test_auto_maintain.py` now includes host-level batch/defer integration assertions for:
   - upload batch expansion from total backlog signal when full maintain is pending
-  - incremental maintain defer/no-defer boundaries under small-fill vs sufficient-fill scenarios
+  - incremental maintain defer/no-defer boundaries under small-fill/sufficient-fill and weak/no-fill scenarios
 
 ## Stage 6 Test Mapping Update
 
@@ -167,6 +170,15 @@ Responsibilities:
   - plus existing temp-sandboxed suites (`test_auto_inprocess_channel_module.py`, `test_auto_upload_stability_module.py`)
 - Validation target for Stage-7 hardening is full-suite stability via:
   - `uv run python -m unittest discover -s tests -p "test_*.py"`
+
+## Stage 8 Test Mapping Update
+
+- `tests/test_auto_modules_process_channel.py` now includes archive-intake hardening coverage for:
+  - Bandizip 6.26 console binary preference (`bc.exe` before `bz.exe`)
+  - console-preferred mode skipping GUI `Bandizip.exe` fallback
+  - host-op fallback guardrail (`use_windows_zip_fallback` applies to `.zip` only)
+- `tests/test_auto_shutdown_runtime_module.py` covers watch-loop sleep policy with pending queue/retry work (active probe cadence without requiring a running child process).
+- `tests/test_auto_maintain_pipeline_state_module.py` and `tests/test_auto_modules_state.py` assert maintain-start running semantics (claimed job remains in pipeline as running; queue visibility reflects only queued jobs).
 
 ## Stage 2.6 Test Modules Map (Closeout Completed)
 

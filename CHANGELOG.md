@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added shared test temp sandbox helper `tests/temp_sandbox.py` to stabilize `tempfile.TemporaryDirectory()` behavior on Python 3.14 Windows runners.
 - Added Gate-B comparison report generator `tools/stage_comparison_report.py` and tool tests `tests/test_stage_comparison_report_tool_module.py` for baseline-vs-candidate KPI checks and markdown report output.
 - Added G1/G2 quality gate runner `tools/quality_gate_runner.py` and tool tests `tests/test_quality_gate_runner_tool_module.py` for one-command compile/test gate execution and summary report output.
+- Added shutdown-cadence regression suite `tests/test_auto_shutdown_runtime_module.py` covering active-probe sleep behavior when pending queue/retry work exists without running child processes.
 
 ### Changed
 
@@ -58,6 +59,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Stage-2.6 capability test mapping closeout completed: retired `tests/test_auto_modules.py`, aligned architecture/boundary docs to split suites, and updated regression commands to run only `process_channel` / `state` / `ui` modules
 - Auto module layout now groups canonical implementations into capability subpackages (`cwma/auto/orchestration`, `channel`, `state`, `infra`, `ui`) and removes redundant top-level compatibility wrappers after import/test migration
 - Maintain queue state transitions now expose explicit step-level claim/advance/requeue operations in `cwma/auto/state/maintain_queue.py`, including account-lock-aware action-step conflict checks.
+- Maintain start decision now claims one pipeline work item (`allow_scan_parallel=False`) and carries claimed step metadata (`step`) so subprocess mode can execute explicit `--maintain-steps`; started jobs remain in pipeline running state and are advanced/requeued on success/retry.
 - `cwma/warden/services/maintain.py` now provides an explicit maintain step engine (`scan -> delete_401 -> quota -> reenable -> finalize`) with ordered-step validation via `run_maintain_steps_async`; `run_maintain_async` remains the compatible full-flow entrypoint.
 - Extended `tests/test_warden_maintain_service_module.py` with maintain step-order validation and partial-step execution coverage.
 - Upload stability wait now freezes the current candidate batch and defers in-window new/updated rows to the next queue intake instead of resetting the timer indefinitely.
@@ -68,8 +70,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `BACKLOG_EWMA_ALPHA` / `backlog_ewma_alpha`
   - `SCHEDULER_HYSTERESIS_ENABLED` / `scheduler_hysteresis_enabled`
   - `*_HIGH_BACKLOG_ENTER_THRESHOLD` / `*_HIGH_BACKLOG_EXIT_THRESHOLD` (upload + maintain)
-- Incremental maintain defer semantics are narrowed to the small-fill case only (`batch_too_small_waiting_fill`) when upload-side fill source is active; cooldown/full-guard backlog-priority defer reasons were removed.
+- Incremental maintain defer semantics are narrowed to smart small-fill waiting only (`batch_too_small_waiting_fill`) with prediction-based gating (`pending gap` vs `predicted upload fill`); cooldown/full-guard backlog-priority defer reasons were removed.
 - `cwma/auto/runtime/channel_runtime_adapter.py` now computes total backlog at maintain/upload start boundaries and passes it to scheduler policy consistently (including panel next-batch projections via `panel_runtime_adapter`).
+- Watch-loop sleep cadence now switches to `ACTIVE_PROBE_INTERVAL_SECONDS` whenever there is active or pending channel work (`running upload/maintain` or `pending upload/maintain/retry`), reducing idle wait between queued batches.
+- Archive intake command resolution now prefers Bandizip console binaries (`bc.exe` then `bz.exe`) in console-preferred mode, skips GUI fallback there, and limits Windows built-in fallback to `.zip` only.
 - Added Stage-5 scheduler/defer regression coverage in `tests/test_auto_modules_state.py` and host-level Stage-5 integration coverage in `tests/test_auto_maintain.py`.
 - Maintain pipeline runtime now supports optional account-lock lease handling (`ACCOUNT_LOCK_LEASE_SECONDS` / `account_lock_lease_seconds`) with stale-lease cleanup before action-step claim.
 - Stage-7 hardening now applies the shared temp sandbox bootstrap across unittest modules that rely on `tempfile`, making full discovery (`273` tests) pass consistently in constrained Windows/Python 3.14 environments.

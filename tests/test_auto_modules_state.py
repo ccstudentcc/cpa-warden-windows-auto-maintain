@@ -161,7 +161,7 @@ class AutoModuleStateTests(unittest.TestCase):
     def test_smart_scheduler_does_not_defer_incremental_when_fill_is_enough(self) -> None:
         policy = self._build_scheduler_policy()
         deferred, reason = policy.should_defer_incremental_maintain(
-            pending_incremental_count=2,
+            pending_incremental_count=4,
             planned_batch_size=4,
             pending_upload_count=60,
             upload_running=True,
@@ -175,6 +175,17 @@ class AutoModuleStateTests(unittest.TestCase):
             pending_incremental_count=1,
             planned_batch_size=4,
             pending_upload_count=0,
+            upload_running=False,
+        )
+        self.assertFalse(deferred)
+        self.assertEqual(reason, "")
+
+    def test_smart_scheduler_does_not_defer_when_upload_fill_is_too_small(self) -> None:
+        policy = self._build_scheduler_policy()
+        deferred, reason = policy.should_defer_incremental_maintain(
+            pending_incremental_count=8,
+            planned_batch_size=30,
+            pending_upload_count=4,
             upload_running=False,
         )
         self.assertFalse(deferred)
@@ -743,11 +754,13 @@ class AutoModuleStateTests(unittest.TestCase):
         state = MaintainQueueState(pending=True, reason="scheduled maintain", names=None)
         decision = decide_maintain_start_scope(state=state, batch_size=0)
         self.assertTrue(decision.should_start)
+        self.assertEqual(decision.step, "scan")
         self.assertIsNone(decision.scope_names)
         self.assertFalse(decision.state.pending)
         self.assertIsNone(decision.state.reason)
         self.assertIsNone(decision.state.names)
-        self.assertEqual(decision.state.pipeline.jobs, {})
+        self.assertEqual(len(decision.state.pipeline.jobs), 1)
+        self.assertEqual(decision.state.pipeline.maintain_scan_queue, [])
 
     def test_queue_maintain_request_full_overrides_incremental_pipeline_jobs(self) -> None:
         state = clear_maintain_queue_state()

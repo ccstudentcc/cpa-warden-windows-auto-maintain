@@ -26,6 +26,9 @@ class LifecycleRuntimeHost(Protocol):
     shutdown_reason: str | None
     upload_process: Any
     maintain_process: Any
+    pending_upload_snapshot: list[str] | None
+    pending_upload_retry: bool
+    pending_maintain: bool
     stable_snapshot_file: Path
     deferred_upload_snapshot_after_stability_wait: list[str]
     _windows_console_handler: Any
@@ -126,6 +129,9 @@ class LifecycleRuntimeAdapter:
         return current_loop_sleep_seconds_runtime(
             upload_running=self.host.upload_process is not None,
             maintain_running=self.host.maintain_process is not None,
+            has_pending_upload=self.host.pending_upload_snapshot is not None,
+            has_pending_maintain=bool(self.host.pending_maintain),
+            has_pending_upload_retry=bool(self.host.pending_upload_retry),
             watch_interval_seconds=self.host.settings.watch_interval_seconds,
             active_probe_interval_seconds=self.host.settings.active_probe_interval_seconds,
         )

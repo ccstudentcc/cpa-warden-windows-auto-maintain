@@ -101,19 +101,27 @@ def _iter_bandizip_candidates(
         configured_path = Path(configured)
         configured_name = configured_path.name.lower()
         if prefer_console and configured_name == "bandizip.exe":
+            # In console-preferred mode we skip GUI Bandizip.exe to avoid long hangs/timeouts.
+            ordered.append(str(configured_path.with_name("bc.exe")))
             ordered.append(str(configured_path.with_name("bz.exe")))
-            ordered.append(configured)
         else:
             ordered.append(configured)
             if configured_name == "bandizip.exe":
+                ordered.append(str(configured_path.with_name("bc.exe")))
                 ordered.append(str(configured_path.with_name("bz.exe")))
             elif configured_name == "bz.exe":
-                ordered.append(str(configured_path.with_name("Bandizip.exe")))
+                ordered.append(str(configured_path.with_name("bc.exe")))
+                if not prefer_console:
+                    ordered.append(str(configured_path.with_name("Bandizip.exe")))
+            elif configured_name == "bc.exe":
+                ordered.append(str(configured_path.with_name("bz.exe")))
+                if not prefer_console:
+                    ordered.append(str(configured_path.with_name("Bandizip.exe")))
 
     if prefer_console:
-        ordered.extend(["bz.exe", "Bandizip.exe"])
+        ordered.extend(["bc.exe", "bz.exe"])
     else:
-        ordered.extend(["Bandizip.exe", "bz.exe"])
+        ordered.extend(["Bandizip.exe", "bc.exe", "bz.exe"])
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -225,7 +233,7 @@ def list_non_zip_json_entries_with_bandizip(
                     hide_window=hide_window,
                 )
             except subprocess.TimeoutExpired:
-                log(f"Bandizip list timeout: {archive_path.name}")
+                log(f"Bandizip list timeout ({Path(resolved).name}): {archive_path.name}")
                 continue
             except OSError:
                 continue
@@ -243,7 +251,7 @@ def list_non_zip_json_entries_with_bandizip(
     if not tried_commands:
         log(
             f"Bandizip list command unavailable for {archive_path.name}. "
-            "Set BANDIZIP_PATH or ensure Bandizip.exe/bz.exe is in PATH."
+            "Set BANDIZIP_PATH or ensure Bandizip.exe/bc.exe/bz.exe is in PATH."
         )
     return None
 
@@ -338,7 +346,7 @@ def extract_zip_with_bandizip(
                     hide_window=hide_window,
                 )
             except subprocess.TimeoutExpired:
-                log(f"Bandizip extract timeout: {zip_path.name}")
+                log(f"Bandizip extract timeout ({Path(resolved).name}): {zip_path.name}")
                 continue
             except OSError:
                 continue
@@ -359,7 +367,7 @@ def extract_zip_with_bandizip(
     else:
         log(
             f"Bandizip not found for {zip_path.name}. "
-            "Set BANDIZIP_PATH or ensure Bandizip.exe/bz.exe is in PATH."
+            "Set BANDIZIP_PATH or ensure Bandizip.exe/bc.exe/bz.exe is in PATH."
         )
     return 1
 

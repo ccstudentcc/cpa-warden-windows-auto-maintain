@@ -64,16 +64,28 @@ class AutoMaintainPipelineStateTests(unittest.TestCase):
         decision = decide_maintain_start_scope(state=state, batch_size=2)
 
         self.assertTrue(decision.should_start)
+        self.assertEqual(decision.step, "scan")
         self.assertEqual(len(decision.scope_names or set()), 2)
         self.assertTrue(decision.state.pending)
         self.assertEqual(len(decision.state.names or set()), 1)
-        self.assertEqual(len(decision.state.pipeline.jobs), 1)
+        self.assertEqual(len(decision.state.pipeline.jobs), 2)
+        self.assertEqual(len(decision.state.pipeline.maintain_scan_queue), 1)
         remaining_job_id = decision.state.pipeline.maintain_scan_queue[0]
         self.assertEqual(
             decision.state.pipeline.jobs[remaining_job_id].scope_type,
             MAINTAIN_SCOPE_INCREMENTAL,
         )
         self.assertEqual(decision.state.pipeline.jobs[remaining_job_id].names, decision.state.names)
+        running_job_ids = set(decision.state.pipeline.jobs.keys()) - set(
+            decision.state.pipeline.maintain_scan_queue
+        )
+        self.assertEqual(len(running_job_ids), 1)
+        running_job_id = running_job_ids.pop()
+        self.assertEqual(
+            decision.state.pipeline.jobs[running_job_id].scope_type,
+            MAINTAIN_SCOPE_INCREMENTAL,
+        )
+        self.assertEqual(decision.state.pipeline.jobs[running_job_id].names, decision.scope_names)
 
     def test_decide_start_scope_consumes_full_job(self) -> None:
         state = clear_maintain_queue_state()
@@ -81,9 +93,10 @@ class AutoMaintainPipelineStateTests(unittest.TestCase):
         decision = decide_maintain_start_scope(state=state, batch_size=1)
 
         self.assertTrue(decision.should_start)
+        self.assertEqual(decision.step, "scan")
         self.assertIsNone(decision.scope_names)
         self.assertFalse(decision.state.pending)
-        self.assertEqual(decision.state.pipeline.jobs, {})
+        self.assertEqual(len(decision.state.pipeline.jobs), 1)
         self.assertEqual(decision.state.pipeline.maintain_scan_queue, [])
 
 

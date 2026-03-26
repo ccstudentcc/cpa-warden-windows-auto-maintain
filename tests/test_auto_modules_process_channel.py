@@ -7,6 +7,7 @@ import unittest
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from cwma.auto.channel.channel_commands import (
@@ -72,10 +73,12 @@ from cwma.auto.infra.zip_intake import (
     extract_zip_with_bandizip,
     extract_zip_with_windows_builtin,
     inspect_zip_archives,
+    list_non_zip_json_entries_with_bandizip,
     list_zip_json_entries,
     list_zip_paths,
     ps_quote,
 )
+from cwma.auto.runtime.host_ops_adapter import HostOpsAdapter
 from tests.temp_sandbox import TempSandboxState, setup_tempfile_sandbox, teardown_tempfile_sandbox
 
 _TEMP_SANDBOX_STATE: TempSandboxState | None = None
@@ -657,7 +660,48 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(any("Bandizip not found" in item for item in logs))
 
-    def test_extract_zip_with_bandizip_prefers_bz_console_binary(self) -> None:
+    def test_extract_zip_with_bandizip_prefers_bc_console_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            zip_path = base_dir / "x.zip"
+            zip_path.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+            commands: list[list[str]] = []
+
+            def _which(name: str) -> str | None:
+                mapping = {
+                    "bc.exe": r"C:\\Program Files\\Bandizip\\bc.exe",
+                    "bz.exe": r"C:\\Program Files\\Bandizip\\bz.exe",
+                    "Bandizip.exe": r"C:\\Program Files\\Bandizip\\Bandizip.exe",
+                }
+                return mapping.get(name)
+
+            def _run(cmd: list[str], **kwargs: object) -> mock.Mock:
+                commands.append(cmd)
+                result = mock.Mock()
+                result.returncode = 0
+                result.stdout = ""
+                result.stderr = ""
+                return result
+
+            with mock.patch("cwma.auto.infra.zip_intake.shutil.which", side_effect=_which), mock.patch(
+                "cwma.auto.infra.zip_intake.subprocess.run",
+                side_effect=_run,
+            ):
+                code = extract_zip_with_bandizip(
+                    zip_path=zip_path,
+                    output_dir=base_dir,
+                    base_dir=base_dir,
+                    bandizip_path="",
+                    timeout_seconds=5,
+                    prefer_console=True,
+                    hide_window=False,
+                    log=lambda _msg: None,
+                )
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(len(commands), 1)
+        self.assertTrue(commands[0][0].lower().endswith("bc.exe"))
+
+    def test_extract_zip_with_bandizip_uses_bz_when_bc_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
             zip_path = base_dir / "x.zip"
@@ -696,6 +740,83 @@ class AutoModuleProcessChannelTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertGreaterEqual(len(commands), 1)
         self.assertTrue(commands[0][0].lower().endswith("bz.exe"))
+
+    def test_extract_zip_with_bandizip_prefer_console_skips_gui_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            zip_path = base_dir / "x.7z"
+            zip_path.write_bytes(b"7z")
+
+            with mock.patch(
+                "cwma.auto.infra.zip_intake.shutil.which",
+                side_effect=lambda name: r"C:\\Program Files\\Bandizip\\Bandizip.exe" if name == "Bandizip.exe" else None,
+            ), mock.patch("cwma.auto.infra.zip_intake.subprocess.run") as run_mock:
+                code = extract_zip_with_bandizip(
+                    zip_path=zip_path,
+                    output_dir=base_dir,
+                    base_dir=base_dir,
+                    bandizip_path="Bandizip.exe",
+                    timeout_seconds=5,
+                    prefer_console=True,
+                    hide_window=False,
+                    log=lambda _msg: None,
+                )
+
+        self.assertEqual(code, 1)
+        run_mock.assert_not_called()
+
+    def test_list_non_zip_entries_prefer_console_skips_gui_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            archive_path = base_dir / "x.7z"
+            archive_path.write_bytes(b"7z")
+
+            with mock.patch(
+                "cwma.auto.infra.zip_intake.shutil.which",
+                side_effect=lambda name: r"C:\\Program Files\\Bandizip\\Bandizip.exe" if name == "Bandizip.exe" else None,
+            ), mock.patch("cwma.auto.infra.zip_intake.subprocess.run") as run_mock:
+                entries = list_non_zip_json_entries_with_bandizip(
+                    archive_path=archive_path,
+                    base_dir=base_dir,
+                    bandizip_path="Bandizip.exe",
+                    timeout_seconds=5,
+                    prefer_console=True,
+                    hide_window=False,
+                    log=lambda _msg: None,
+                )
+
+        self.assertIsNone(entries)
+        run_mock.assert_not_called()
+
+    def test_host_ops_fallback_only_applies_to_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            logs: list[str] = []
+            settings = SimpleNamespace(
+                base_dir=base_dir,
+                bandizip_path="",
+                bandizip_timeout_seconds=5,
+                bandizip_prefer_console=True,
+                bandizip_hide_window=True,
+                use_windows_zip_fallback=True,
+            )
+            host = SimpleNamespace(settings=settings)
+            adapter = HostOpsAdapter(host=host, get_log=lambda: logs.append)
+
+            with mock.patch(
+                "cwma.auto.runtime.host_ops_adapter.extract_zip_with_bandizip_rows",
+                return_value=1,
+            ) as bandizip_mock, mock.patch(
+                "cwma.auto.runtime.host_ops_adapter.extract_zip_with_windows_builtin_rows",
+                return_value=0,
+            ) as fallback_mock:
+                zip_code = adapter.extract_zip_with_bandizip(base_dir / "a.zip", base_dir)
+                seven_z_code = adapter.extract_zip_with_bandizip(base_dir / "a.7z", base_dir)
+
+        self.assertEqual(zip_code, 0)
+        self.assertEqual(seven_z_code, 1)
+        self.assertEqual(bandizip_mock.call_count, 2)
+        fallback_mock.assert_called_once()
 
     def test_extract_zip_with_windows_builtin_returns_one_when_shell_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

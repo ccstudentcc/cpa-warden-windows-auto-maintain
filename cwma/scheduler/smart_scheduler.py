@@ -250,13 +250,22 @@ class SmartSchedulerPolicy:
             return False, ""
         if planned_batch_size <= 0:
             return False, ""
-        if not upload_running and pending_upload_count <= 0:
-            return False, ""
         if pending_incremental_count >= planned_batch_size:
             return False, ""
-
-        min_fill_count = max(1, (planned_batch_size + 1) // 2)
-        if pending_incremental_count < min_fill_count:
+        gap = planned_batch_size - pending_incremental_count
+        predicted_fill = max(0, pending_upload_count)
+        if upload_running:
+            predicted_fill = max(
+                predicted_fill,
+                max(1, self.config.base_upload_batch_size // 4),
+            )
+        if predicted_fill <= 0:
+            return False, ""
+        if predicted_fill >= gap:
             return True, "batch_too_small_waiting_fill"
-
+        if (
+            pending_incremental_count <= max(1, planned_batch_size // 3)
+            and predicted_fill >= max(1, gap // 2)
+        ):
+            return True, "batch_too_small_waiting_fill"
         return False, ""

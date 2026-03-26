@@ -19,7 +19,7 @@
 
 详细说明见 [NOTICE](NOTICE)。
 
-## 项目最新状态（2026-03-25）
+## 项目最新状态（2026-03-26）
 
 - `cwma/auto` 已按能力分组：`orchestration`、`channel`、`state`、`infra`、`ui`，并通过 `runtime` 适配层装配
 - Stage-2.6 的能力拆分测试映射已收敛为：
@@ -29,8 +29,11 @@
 - 旧的 `cwma/auto/*.py` 顶层兼容包装模块已移除，当前以子包路径为准
 - maintain 队列已升级为分阶段作业模型；全量与增量任务共享显式的步骤级状态转换
 - maintain 服务已通过步骤引擎与流水线运行策略执行有序步骤（`scan -> delete_401 -> quota -> reenable -> finalize`）
+- maintain 通道启动已改为一次 claim 一个 pipeline 工作项（`allow_scan_parallel=False`），并映射到 `--maintain-steps`（`scan` 或 `scan+<action-step>`）；运行中 job 保留在 pipeline 中，由 success/retry 推进步骤
 - 上传稳定等待已采用“冻结当前候选批次”策略；窗口内新增/更新项延后到下一轮入队，且按路径合并待上传项（`last-writer-wins`）
-- 智能调度批次决策已改为共享“总积压”信号（上传待处理 + 增量维护待处理 + 全量维护等价积压）；增量 defer 语义已收敛为仅 `batch_too_small_waiting_fill`
+- 智能调度批次决策已改为共享“总积压”信号（上传待处理 + 增量维护待处理 + 全量维护等价积压）；增量 defer 已升级为“智能小批补充预测”（`batch_too_small_waiting_fill`）
+- watch 循环休眠策略已优化：即使当前没有子进程在跑，只要存在 upload/maintain/retry pending，也会走 `ACTIVE_PROBE_INTERVAL_SECONDS`
+- 归档入口已改为 Bandizip 控制台优先（`bc.exe` 优先，其次 `bz.exe`）；在 console 优先模式不再回退 GUI，Windows 内置解压回退仅对 `.zip` 生效
 - 仪表盘面板已支持 maintain 步骤队列可观测（`steps_qr` / `steps_retry`）、full/incremental 作业计数，以及通道/流水线并行状态提示
 - Stage 7 加固已完成：通过工作区临时目录沙箱修复 Python 3.14 Windows 下全量 unittest 稳定性问题，并补齐了 in-process 执行灰度/回滚文档
 
@@ -57,11 +60,13 @@
 - 上传/增量维护调度可根据积压自动在“实时并行”与“吞吐清队列”模式间切换
 - 上传/增量维护批次不再只看单队列局部压力，而是由统一总积压驱动
 - maintain 任务按显式分阶段流水线执行，步骤顺序可预测，并对 action 阶段应用账号级锁冲突规避
+- maintain 运行中 job 会保留在 pipeline 状态中，并按 success/retry 进行步骤推进或回队
 - 维护/上传运行数据库与日志分离
+- 即使通道空闲，只要存在 pending 队列，也会使用 active-probe 节奏保持响应
 - 上传稳定等待采用冻结当前批次策略，避免等待窗口内变更无限重置计时
-- 增量维护仅在“当前批次过小且存在上传侧补充来源”时才 defer（`batch_too_small_waiting_fill`）
+- 增量维护仅在“当前批次过小且预测上传补充可较快补齐缺口”时才 defer（`batch_too_small_waiting_fill`）；补充信号弱或无补充来源时不盲等
 - 终端面板直接展示 maintain pipeline 的 queue/running/retry/defer 状态，并区分 full/incremental 作业与并行状态
-- 支持归档入口（`.zip/.7z/.rar`，Bandizip 优先，`.zip` 可回退 Windows 内置解压）
+- 支持归档入口（`.zip/.7z/.rar`）：Bandizip 控制台二进制优先（`bc.exe`/`bz.exe`），Windows 回退仅 `.zip`
 - 上传后清理文件并清理空目录
 - 双层单实例保护（启动器锁 + Python 运行时锁）
 - 默认失败即停，重试策略显式可控
@@ -92,7 +97,7 @@
 3. 可选巡检归档（`.zip/.7z/.rar`），并把解压出的 JSON 变化并入同一上传管线。
 4. 按配置排队首轮维护/上传检查。
 5. 在各自通道空闲时独立启动 `upload` 与 `maintain`。
-6. 子进程运行期间执行主动探测，并按通道独立轮询/重试，同时推进 maintain 步骤引擎周期。
+6. 只要通道运行中或存在 pending 队列，就执行主动探测，并按通道独立轮询/重试，同时推进 maintain 步骤引擎周期。
 7. 上传稳定等待阶段冻结当前候选批次；窗口内新增/更新项延后到下一轮队列入队。
 8. 上传成功后更新基线、执行清理，并按配置排队上传后增量维护。
 9. `--once` 模式仅在运行中与排队任务都收敛后退出；未恢复失败返回非零。
@@ -170,7 +175,7 @@ start_auto_maintain_optimized.bat
 - 维护调度：`adaptive_maintain_batching`、`incremental_maintain_*`、`maintain_high_backlog_*`
   - 调度模式切换规则：低积压偏小批次，提升上传/维护交错实时性；高积压偏大批次，加速队列清空
   - 总积压规则：上传/增量维护批次选择共享同一积压估算（上传待处理 + 增量待处理 + 全量维护等价积压）
-  - 增量 defer 规则：仅用于“小批补充等待”（`batch_too_small_waiting_fill`），不再使用 cooldown/full-guard 旧语义
+  - 增量 defer 规则：仅用于“智能小批补充等待”（`batch_too_small_waiting_fill`，需预测补充能力足够），不再使用 cooldown/full-guard 旧语义
   - 可选平滑/滞回参数：`backlog_ewma_alpha`、`scheduler_hysteresis_enabled`、`*_high_backlog_enter_threshold`、`*_high_backlog_exit_threshold`
   - 可选背压/锁参数：`next_batch_buffer_limit`（限制待上传缓冲区增长），`account_lock_lease_seconds`（账号锁租约自动过期窗口）
 - 运行行为：`run_maintain_on_start`、`run_upload_on_start`、`run_maintain_after_upload`
@@ -178,6 +183,8 @@ start_auto_maintain_optimized.bat
 - 失败策略：`maintain_retry_count`、`upload_retry_count`、`command_retry_delay_seconds`、`continue_on_command_failure`
 - 安全策略：`allow_multi_instance`、`maintain_assume_yes`
 - 归档入口：`inspect_zip_files`、`auto_extract_zip_json`、`delete_zip_after_extract`、`archive_extensions`、`bandizip_*`、`use_windows_zip_fallback`
+  - `bandizip_prefer_console=true`：优先解析控制台二进制（`bc.exe`，其次 `bz.exe`），不回退 GUI `Bandizip.exe`
+  - `use_windows_zip_fallback=true`：仅对 `.zip` 启用回退（不作用于 `.7z` / `.rar`）
 
 ## 环境变量
 

@@ -19,7 +19,7 @@ This repository is a derivative project based on `cpa-warden`.
 
 See [NOTICE](NOTICE) for attribution details.
 
-## Latest Project Status (2026-03-25)
+## Latest Project Status (2026-03-26)
 
 - `cwma/auto` is now capability-grouped: `orchestration`, `channel`, `state`, `infra`, `ui`, plus `runtime` adapters
 - Stage-2.6 capability split test mapping is closed out:
@@ -29,8 +29,11 @@ See [NOTICE](NOTICE) for attribution details.
 - Redundant top-level `cwma/auto/*.py` compatibility wrappers have been removed; canonical paths are subpackage paths
 - Maintain queue is now modeled as staged jobs with explicit step-level transitions shared by full and incremental runs
 - Maintain service now executes explicit ordered steps (`scan -> delete_401 -> quota -> reenable -> finalize`) through a step engine + pipeline runtime policy
+- Maintain channel start now claims one pipeline work item (`allow_scan_parallel=False`) and maps it to `--maintain-steps` (`scan` or `scan+<action-step>`), while keeping running jobs in pipeline state for success/retry step advancement
 - Upload stability wait now freezes the current candidate batch, defers in-window new/updated rows to next-round intake, and merges pending rows by path (`last-writer-wins`)
-- Smart scheduler batch sizing is now driven by a shared total-backlog signal (upload pending + incremental pending + full-maintain equivalent backlog), and incremental defer is narrowed to `batch_too_small_waiting_fill` only
+- Smart scheduler batch sizing is now driven by a shared total-backlog signal (upload pending + incremental pending + full-maintain equivalent backlog), and incremental defer now uses smart small-fill prediction (`batch_too_small_waiting_fill`)
+- Watch-loop sleep cadence now switches to `ACTIVE_PROBE_INTERVAL_SECONDS` when there is pending upload/maintain/retry work, even if no child process is currently running
+- Archive intake now prefers Bandizip console binaries in order (`bc.exe` first, then `bz.exe`) and skips GUI fallback in console-preferred mode; Windows built-in fallback is limited to `.zip` only
 - Dashboard panel now exposes maintain step-queue observability (`steps_qr` / `steps_retry`), full-vs-incremental job counters, and channel/pipeline parallel-state hints
 - Stage-7 hardening is complete: full unittest discovery is stable under Python 3.14 on Windows via workspace-temp sandboxing, and rollout/rollback guidance is now documented for in-process execution
 
@@ -57,11 +60,13 @@ The goal is not replacing `cpa_warden.py`, but running it safely and continuousl
 - auto-switch between real-time interleaving and backlog-drain throughput modes for upload/incremental-maintain scheduling
 - drive upload/incremental batch sizing from total backlog rather than local single-queue pressure only
 - execute maintain work as an explicit staged pipeline with deterministic step ordering and account-lock-aware action claims
+- preserve running maintain jobs inside pipeline state and advance/requeue by step after command success/retry
 - isolate maintain/upload runtime DB and log files
+- keep loop responsiveness high by using active-probe cadence while pending queue work exists
 - keep upload stability wait bounded by freezing the current batch and deferring in-window changes to the next queue intake
-- allow incremental maintain defer only when current incremental slice is too small and upload-side fill source is active (`batch_too_small_waiting_fill`)
+- allow incremental maintain defer only when current slice is too small and upload-side fill is predicted to catch up soon (`batch_too_small_waiting_fill`); do not over-wait on weak/no fill signals
 - render maintain pipeline queue/running/retry/defer state directly in panel output, including full/incremental job split and parallel-state visibility
-- support archive intake (`.zip/.7z/.rar`, Bandizip first, Windows fallback for `.zip`)
+- support archive intake (`.zip/.7z/.rar`) with Bandizip console-first resolution (`bc.exe`/`bz.exe`) and `.zip`-only Windows fallback
 - clean uploaded files and prune empty directories
 - keep single-instance safety (launcher lock + Python runtime lock)
 - fail fast by default, with explicit retry controls
@@ -92,7 +97,7 @@ Deep module ownership and dependency rules are maintained in [ARCHITECTURE.md](A
 3. Optionally inspect archives (`.zip/.7z/.rar`) and feed extracted JSON changes into the same upload pipeline.
 4. Queue startup maintain/upload checks according to settings.
 5. Start `upload` and `maintain` independently when each channel is idle.
-6. While child processes run, keep active probes, channel-local poll/retry handling, and maintain step-engine cycle progression.
+6. While channels are active or queues are pending, keep active probes, channel-local poll/retry handling, and maintain step-engine progression.
 7. During upload stability wait, freeze the current candidate batch; defer in-window new/updated rows to the next queue intake.
 8. On upload success, update baseline, apply cleanup, and optionally queue scoped post-upload maintain.
 9. In `--once` mode, exit only after pending/running work resolves; unresolved failure exits non-zero.
@@ -170,7 +175,7 @@ Full schema is tracked in `auto_maintain.config.example.json`. Frequently adjust
 - maintain scheduling: `adaptive_maintain_batching`, `incremental_maintain_*`, `maintain_high_backlog_*`
   - scheduler mode switching rule: low backlog favors smaller slices for faster upload/maintain interleaving; high backlog favors larger slices for faster queue drain
   - total-backlog rule: upload/incremental batch selection consumes a shared backlog estimate (upload pending + incremental pending + full-maintain equivalent)
-  - incremental defer rule: defer is used only for small-batch fill waiting (`batch_too_small_waiting_fill`), not cooldown/full-guard legacy reasons
+  - incremental defer rule: defer is used only for smart small-batch fill waiting (`batch_too_small_waiting_fill`) when predicted upload fill can close the gap; not cooldown/full-guard legacy reasons
   - optional smoothing/hysteresis knobs: `backlog_ewma_alpha`, `scheduler_hysteresis_enabled`, `*_high_backlog_enter_threshold`, `*_high_backlog_exit_threshold`
   - optional pressure/lock knobs: `next_batch_buffer_limit` (cap pending upload buffer growth), `account_lock_lease_seconds` (stale account-lock auto-expiry window)
 - runtime behavior: `run_maintain_on_start`, `run_upload_on_start`, `run_maintain_after_upload`
@@ -178,6 +183,8 @@ Full schema is tracked in `auto_maintain.config.example.json`. Frequently adjust
 - failure policy: `maintain_retry_count`, `upload_retry_count`, `command_retry_delay_seconds`, `continue_on_command_failure`
 - safety: `allow_multi_instance`, `maintain_assume_yes`
 - archive intake: `inspect_zip_files`, `auto_extract_zip_json`, `delete_zip_after_extract`, `archive_extensions`, `bandizip_*`, `use_windows_zip_fallback`
+  - `bandizip_prefer_console=true`: resolve console binaries first (`bc.exe`, then `bz.exe`) and do not fall back to GUI `Bandizip.exe`
+  - `use_windows_zip_fallback=true`: fallback applies to `.zip` only (not `.7z` / `.rar`)
 
 ## Environment Variables
 
