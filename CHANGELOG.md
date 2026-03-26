@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+- no user-visible changes yet.
+
+## [cwma 0.2.0] - 2026-03-26
+
 ### Added
 
 - Added Stage-0 baseline replay tooling and artifacts:

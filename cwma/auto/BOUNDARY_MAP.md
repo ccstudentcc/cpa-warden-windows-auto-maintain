@@ -1,5 +1,7 @@
 # CWMA Auto Boundary Map (Stage 2.6)
 
+Release line: `cwma v0.2.0` (`2026-03-26`)
+
 ## Purpose
 
 This document defines capability-oriented ownership boundaries for `cwma/auto` and `cwma/auto/runtime`:

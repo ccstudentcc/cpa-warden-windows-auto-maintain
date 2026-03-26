@@ -19,6 +19,8 @@ This repository is a derivative project based on `cpa-warden`.
 
 See [NOTICE](NOTICE) for attribution details.
 
+Current release line: `cwma v0.2.0` (`2026-03-26`)
+
 ## Latest Project Status (2026-03-26)
 
 - `cwma/auto` is now capability-grouped: `orchestration`, `channel`, `state`, `infra`, `ui`, plus `runtime` adapters
@@ -154,14 +156,16 @@ start_auto_maintain_optimized.bat
 
 ## Profile Defaults (From `auto_maintain.config.example.json`)
 
-- maintain interval: `2400s`
+- maintain interval: `3600s`
 - watch interval: `15s`
-- upload stable wait: `5s`
-- upload batch size: `100`
+- upload stable wait: `3s`
+- upload batch size: `200`
 - smart scheduler and adaptive batching: enabled
 - maintain-after-upload: enabled
+- run-maintain-on-start: disabled
 - delete uploaded source JSON: enabled
 - archive inspect + auto extract: enabled
+- in-process execution: enabled (profile setting)
 - single-instance lock: enabled
 - fail-fast on command failure: enabled
 
@@ -209,7 +213,7 @@ Precedence:
 
 ## Rollout and Rollback (Stage 7)
 
-- Default remains rollback-safe: `inprocess_execution_enabled=false` (subprocess backend).
+- Built-in default remains rollback-safe: `inprocess_execution_enabled=false` (subprocess backend). The shipped example profile currently enables in-process execution.
 - Canary rollout path:
   1. enable `inprocess_execution_enabled=true` in `auto_maintain.config.json` (or set `INPROCESS_EXECUTION_ENABLED=1`)
   2. run short-window `--once` checks, then monitor normal watcher windows

@@ -2,6 +2,8 @@
 
 Last updated: `2026-03-26`
 
+Release line: `cwma v0.2.0` (`2026-03-26`)
+
 ## 1. Goal and Scope
 
 This repository provides a Windows-first automation layer on top of upstream-compatible CPA tooling.

@@ -19,6 +19,8 @@
 
 详细说明见 [NOTICE](NOTICE)。
 
+当前发布线：`cwma v0.2.0`（`2026-03-26`）
+
 ## 项目最新状态（2026-03-26）
 
 - `cwma/auto` 已按能力分组：`orchestration`、`channel`、`state`、`infra`、`ui`，并通过 `runtime` 适配层装配
@@ -154,14 +156,16 @@ start_auto_maintain_optimized.bat
 
 ## 默认配置（来自 `auto_maintain.config.example.json`）
 
-- 维护周期：`2400s`
+- 维护周期：`3600s`
 - 监听周期：`15s`
-- 上传稳定等待：`5s`
-- 上传批次大小：`100`
+- 上传稳定等待：`3s`
+- 上传批次大小：`200`
 - 智能调度与自适应批处理：开启
 - 上传后维护：开启
+- 启动即维护：关闭
 - 上传成功后删除源 JSON：开启
 - 归档检测与自动解压：开启
+- 进程内执行：开启（示例配置）
 - 单实例锁：开启
 - 命令失败即停：开启
 
@@ -209,7 +213,7 @@ start_auto_maintain_optimized.bat
 
 ## Stage 7 灰度与回滚
 
-- 默认仍保持可回滚安全：`inprocess_execution_enabled=false`（子进程后端）。
+- 内置默认值仍保持可回滚安全：`inprocess_execution_enabled=false`（子进程后端）；当前仓库示例配置文件默认开启进程内执行。
 - 灰度上线建议：
   1. 在 `auto_maintain.config.json` 打开 `inprocess_execution_enabled=true`（或设置 `INPROCESS_EXECUTION_ENABLED=1`）
   2. 先跑短窗口 `--once` 检查，再进入常规 watcher 窗口观察
