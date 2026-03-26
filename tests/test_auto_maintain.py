@@ -452,7 +452,7 @@ class AutoMaintainTests(unittest.TestCase):
                 return_value={"AUTO_TEST_ENV": "1"},
             ) as env_builder, mock.patch(
                 "auto_maintain.time.monotonic",
-                side_effect=[100.0, 101.5],
+                return_value=101.5,
             ):
                 result = maintainer.maybe_start_upload()
 
