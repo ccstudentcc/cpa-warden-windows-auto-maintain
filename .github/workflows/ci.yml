@@ -32,6 +32,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Verify lockfile is up to date
+        run: uv lock --check
+
       - name: Sync dependencies
         run: uv sync --locked
 
